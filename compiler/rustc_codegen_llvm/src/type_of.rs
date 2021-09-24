@@ -118,6 +118,13 @@ fn struct_llfields<'a, 'tcx>(
             target_offset,
             effective_field_align.bytes()
         );
+        if target_offset < offset {
+            println!("BUG!");
+            tracing::info!("BUG LAYOUT: {:#?}", layout);
+            tracing::info!("i={}, offset={:?}, target_offset={:?}", i, offset, target_offset);
+            tracing::info!("field0={:#?}", layout.field(cx, 0));
+            tracing::info!("field1={:#?}", layout.field(cx, 1));
+        }
         assert!(target_offset >= offset);
         let padding = target_offset - offset;
         if padding != Size::ZERO {

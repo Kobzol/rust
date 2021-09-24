@@ -256,7 +256,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let result = match substs {
                     UpvarSubsts::Generator(substs) => {
                         // We implicitly set the discriminant to 0. See
-                        // librustc_mir/transform/deaggregator.rs for details.
+                        // rustc_mir_transform/src/deaggregator.rs for details.
                         let movability = movability.unwrap();
                         Box::new(AggregateKind::Generator(closure_id, substs, movability))
                     }

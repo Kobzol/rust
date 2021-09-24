@@ -1418,11 +1418,15 @@ enum SavedLocalEligibility {
 // Also included in the layout are the upvars and the discriminant.
 // These are included as fields on the "outer" layout; they are not part
 // of any variant.
+// TODO: change documentation
 impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
     /// Compute the eligibility and assignment of each local.
+    /// Saved locals corresponding to upvars will not be returned in the return value, as they are
+    /// already stored (saved) in the generator implicitly.
     fn generator_saved_local_eligibility(
         &self,
         info: &GeneratorLayout<'tcx>,
+        upvar_count: usize,
     ) -> (BitSet<GeneratorSavedLocal>, IndexVec<GeneratorSavedLocal, SavedLocalEligibility>) {
         use SavedLocalEligibility::*;
 
@@ -1498,7 +1502,9 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
             let mut used_variants = BitSet::new_empty(info.variant_fields.len());
             for assignment in &assignments {
                 if let Assigned(idx) = assignment {
-                    used_variants.insert(*idx);
+                    if *idx != VariantIdx::new(0) {
+                        used_variants.insert(*idx);
+                    }
                 }
             }
             if used_variants.count() < 2 {
@@ -1511,8 +1517,14 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
 
         // Write down the order of our locals that will be promoted to the prefix.
         {
+            for upvar in 0..upvar_count {
+                let local = GeneratorSavedLocal::new(upvar);
+                ineligible_locals.remove(local);
+                assignments[local] = Ineligible(Some(upvar as u32));
+            }
             for (idx, local) in ineligible_locals.iter().enumerate() {
-                assignments[local] = Ineligible(Some(idx as u32));
+                // Skip over tag and upvars
+                assignments[local] = Ineligible(Some((upvar_count + 1 + idx) as u32));
             }
         }
         debug!("generator saved local assignments: {:?}", assignments);
@@ -1535,12 +1547,15 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
             None => return Err(LayoutError::Unknown(ty)),
             Some(info) => info,
         };
-        let (ineligible_locals, assignments) = self.generator_saved_local_eligibility(&info);
+        let upvar_count = substs.as_generator().prefix_tys().count();
+
+        let (ineligible_locals, assignments) =
+            self.generator_saved_local_eligibility(&info, upvar_count);
 
         // Build a prefix layout, including "promoting" all ineligible
         // locals as part of the prefix. We compute the layout of all of
         // these fields at once to get optimal packing.
-        let tag_index = substs.as_generator().prefix_tys().count();
+        let tag_index = upvar_count;
 
         // `info.variant_fields` already accounts for the reserved variants, so no need to add them.
         let max_discr = (info.variant_fields.len() - 1) as u128;
@@ -1558,6 +1573,12 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
             .map(|local| subst_field(info.field_tys[local]))
             .map(|ty| tcx.mk_maybe_uninit(ty))
             .map(|ty| self.layout_of(ty));
+
+        // The upvars are stored at the beginning of the generators
+        // They are also included in the 0th (unresumed) variant
+        // The promoted locals are placed directly after the upvars.
+        // Because of this the rest of the code can handle upvars and promoted locals in a generic
+        // way.
         let prefix_layouts = substs
             .as_generator()
             .prefix_tys()
@@ -1580,34 +1601,56 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
         // GeneratorLayout.
         debug!("prefix = {:#?}", prefix);
         let (outer_fields, promoted_offsets, promoted_memory_index) = match prefix.fields {
-            FieldsShape::Arbitrary { mut offsets, memory_index } => {
-                let mut inverse_memory_index = invert_mapping(&memory_index);
+            FieldsShape::Arbitrary { offsets, memory_index } => {
+                let inverse_memory_index = invert_mapping(&memory_index);
 
-                // "a" (`0..b_start`) and "b" (`b_start..`) correspond to
-                // "outer" and "promoted" fields respectively.
-                let b_start = (tag_index + 1) as u32;
-                let offsets_b = offsets.split_off(b_start as usize);
-                let offsets_a = offsets;
+                // Outer fields - upvars and tag
+                let after_tag = tag_index + 1;
+                let offsets_outer: Vec<_> = offsets.iter().take(after_tag).cloned().collect();
+                let mut inverse_memory_index_outer = inverse_memory_index.clone();
+                inverse_memory_index_outer.retain(|&i| i < after_tag as u32);
 
-                // Disentangle the "a" and "b" components of `inverse_memory_index`
-                // by preserving the order but keeping only one disjoint "half" each.
-                // FIXME(eddyb) build a better abstraction for permutations, if possible.
-                let inverse_memory_index_b: Vec<_> =
-                    inverse_memory_index.iter().filter_map(|&i| i.checked_sub(b_start)).collect();
-                inverse_memory_index.retain(|&i| i < b_start);
-                let inverse_memory_index_a = inverse_memory_index;
+                // Promoted fields - upvars and promoted locals
+                let offsets_promoted = offsets;
+                let inverse_memory_index_promoted = inverse_memory_index;
+                /*let mut offsets_promoted = offsets;
+                offsets_promoted.remove(tag_index);
+                // Keep indices lower than tag, remove tag, and lower indices higher than tag
+                let tag_source_index = inverse_memory_index[tag_index];
+                let inverse_memory_index_promoted: Vec<_> = inverse_memory_index
+                    .into_iter()
+                    .filter_map(|source_index| {
+                        if source_index != tag_source_index {
+                            if source_index >= tag_source_index {
+                                Some(source_index - 1)
+                            } else {
+                                Some(source_index)
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();*/
 
-                // Since `inverse_memory_index_{a,b}` each only refer to their
+                // Since `inverse_memory_index_{outer,promoted}` each only refer to their
                 // respective fields, they can be safely inverted
-                let memory_index_a = invert_mapping(&inverse_memory_index_a);
-                let memory_index_b = invert_mapping(&inverse_memory_index_b);
+                let memory_index_outer = invert_mapping(&inverse_memory_index_outer);
+                let memory_index_promoted = invert_mapping(&inverse_memory_index_promoted);
 
-                let outer_fields =
-                    FieldsShape::Arbitrary { offsets: offsets_a, memory_index: memory_index_a };
-                (outer_fields, offsets_b, memory_index_b)
+                let outer_fields = FieldsShape::Arbitrary {
+                    offsets: offsets_outer,
+                    memory_index: memory_index_outer,
+                };
+                (outer_fields, offsets_promoted, memory_index_promoted)
             }
             _ => bug!(),
         };
+
+        for (index, layout) in prefix_layouts.iter().enumerate() {
+            info!("LAYOUT, prefix_layout_{}={:#?}", index, layout);
+        }
+        info!("LAYOUT, tag_index={:?}, upvar_count={:?}, prefix_layouts.len()={:?}, prefix_size={:?}", tag_index, upvar_count, prefix_layouts.len(), prefix_size);
+        info!("LAYOUT, outer_fields={:#?}, promoted_offsets={:#?}, promoted_memory_index={:#?}", outer_fields, promoted_offsets, promoted_memory_index);
 
         let mut size = prefix.size;
         let mut align = prefix.align;
@@ -1626,11 +1669,14 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     })
                     .map(|local| subst_field(info.field_tys[*local]));
 
+                let x = variant_only_tys
+                    .map(|ty| self.layout_of(ty))
+                    .collect::<Result<Vec<_>, _>>()?;
+                info!("VARIANT, index={:?}, variant_only_tys={:#?}", index, x);
+
                 let mut variant = self.univariant_uninterned(
                     ty,
-                    &variant_only_tys
-                        .map(|ty| self.layout_of(ty))
-                        .collect::<Result<Vec<_>, _>>()?,
+                    &x,
                     &ReprOptions::default(),
                     StructKind::Prefixed(prefix_size, prefix_align.abi),
                 )?;
@@ -1713,7 +1759,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
             size,
             align,
         });
-        debug!("generator layout ({:?}): {:#?}", ty, layout);
+        info!("generator layout ({:?}): {:#?}", ty, layout);
         Ok(layout)
     }
 
