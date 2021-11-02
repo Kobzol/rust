@@ -58,10 +58,10 @@ use rustc_hir::lang_items::LangItem;
 use rustc_index::bit_set::{BitMatrix, BitSet};
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_middle::mir::dump_mir;
-use rustc_middle::mir::visit::{MutVisitor, PlaceContext, Visitor};
+use rustc_middle::mir::visit::{MutVisitor, PlaceContext, TyContext, Visitor};
 use rustc_middle::mir::*;
 use rustc_middle::ty::subst::{Subst, SubstsRef};
-use rustc_middle::ty::GeneratorSubsts;
+use rustc_middle::ty::{CanonicalUserTypeAnnotation, Const, GeneratorSubsts, Region, UserTypeAnnotationIndex, Variance};
 use rustc_middle::ty::{self, AdtDef, Ty, TyCtxt};
 use rustc_mir_dataflow::impls::{
     MaybeBorrowedLocals, MaybeLiveLocals, MaybeRequiresStorage, MaybeStorageLive,
@@ -71,6 +71,7 @@ use rustc_mir_dataflow::{self, Analysis};
 use rustc_target::abi::VariantIdx;
 use rustc_target::spec::PanicStrategy;
 use std::{iter, ops};
+use rustc_span::Span;
 
 pub struct StateTransform;
 
@@ -450,6 +451,7 @@ fn locals_live_across_suspend_points(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     always_live_locals: &storage::AlwaysLiveLocals,
+    upvar_locals: &[Local],
     movable: bool,
 ) -> LivenessInfo {
     let body_ref: &Body<'_> = &body;
@@ -490,6 +492,11 @@ fn locals_live_across_suspend_points(
     let mut live_locals_at_suspension_points = Vec::new();
     let mut source_info_at_suspension_points = Vec::new();
     let mut live_locals_at_any_suspension_point = BitSet::new_empty(body.local_decls.len());
+
+    // Upvars are always stored in the generator
+    for local in upvar_locals {
+        live_locals_at_any_suspension_point.insert(*local);
+    }
 
     for (block, data) in body.basic_blocks().iter_enumerated() {
         if let TerminatorKind::Yield { .. } = data.terminator().kind {
@@ -763,6 +770,7 @@ fn sanitize_witness<'tcx>(
 fn compute_layout<'tcx>(
     liveness: LivenessInfo,
     body: &mut Body<'tcx>,
+    upvar_locals: &[Local],
 ) -> (
     FxHashMap<Local, (Ty<'tcx>, VariantIdx, usize)>,
     GeneratorLayout<'tcx>,
@@ -776,34 +784,58 @@ fn compute_layout<'tcx>(
         storage_liveness,
     } = liveness;
 
-    // Gather live local types and their indices.
-    let mut locals = IndexVec::<GeneratorSavedLocal, _>::new();
-    let mut tys = IndexVec::<GeneratorSavedLocal, _>::new();
-    for (saved_local, local) in saved_locals.iter_enumerated() {
-        locals.push(local);
-        tys.push(body.local_decls[local].ty);
-        debug!("generator saved local {:?} => {:?}", saved_local, local);
-    }
+    // info!("saved_locals={:#?}", saved_locals.0);
+    // info!("live_locals_at_suspension_points={:#?}", live_locals_at_suspension_points);
 
-    // Leave empty variants for the UNRESUMED, RETURNED, and POISONED states.
+    // Leave variants for the UNRESUMED, RETURNED, and POISONED states.
     // In debuginfo, these will correspond to the beginning (UNRESUMED) or end
     // (RETURNED, POISONED) of the function.
     const RESERVED_VARIANTS: usize = 3;
     let body_span = body.source_scopes[OUTERMOST_SOURCE_SCOPE].span;
-    let mut variant_source_info: IndexVec<VariantIdx, SourceInfo> = [
+    let mut variant_source_info: IndexVec<VariantIdx, SourceInfo> = std::array::IntoIter::new([
         SourceInfo::outermost(body_span.shrink_to_lo()),
         SourceInfo::outermost(body_span.shrink_to_hi()),
         SourceInfo::outermost(body_span.shrink_to_hi()),
-    ]
-    .iter()
-    .copied()
+    ])
     .collect();
 
     // Build the generator variant field list.
     // Create a map from local indices to generator struct indices.
     let mut variant_fields: IndexVec<VariantIdx, IndexVec<Field, GeneratorSavedLocal>> =
         iter::repeat(IndexVec::new()).take(RESERVED_VARIANTS).collect();
+
+    // Gather live local types and their indices.
+    // Store upvars in the UNRESUMED variant.
+    let mut locals = IndexVec::<GeneratorSavedLocal, _>::new();
+    let mut tys = IndexVec::<GeneratorSavedLocal, _>::new();
+    let unresumed_idx = VariantIdx::new(UNRESUMED);
     let mut remap = FxHashMap::default();
+
+    for (saved_local, local) in saved_locals.iter_enumerated() {
+        locals.push(local);
+        tys.push(body.local_decls[local].ty);
+
+        if let Some(upvar_index) = upvar_locals.iter().position(|v| *v == local) {
+            variant_fields[unresumed_idx].push(saved_local);
+            remap.entry(local).or_insert((
+                tys[saved_local],
+                unresumed_idx,
+                upvar_index
+            ));
+        }
+    }
+
+    /*
+    The invariant that parameter upvars are located in _3... DOES NOT ALWAYS HOLD!!!!!
+    */
+
+    // info!("saved_locals={:#?}", saved_locals.0);
+    // info!("saved_locals_ext={:#?}", saved_locals.iter_enumerated().collect::<Vec<_>>());
+    // info!("upvar_locals={:#?}", upvar_locals);
+    // info!("REMAP={:#?}", remap);
+    // info!("tys={:#?}", tys);
+    // info!("local_decls={:#?}", body.local_decls.raw);
+
     for (suspension_point_idx, live_locals) in live_locals_at_suspension_points.iter().enumerate() {
         let variant_index = VariantIdx::from(RESERVED_VARIANTS + suspension_point_idx);
         let mut fields = IndexVec::new();
@@ -1250,7 +1282,7 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
             ty::Generator(_, substs, movability) => {
                 let substs = substs.as_generator();
                 (
-                    substs.upvar_tys().collect(),
+                    substs.upvar_tys().collect::<Vec<_>>(),
                     substs.witness(),
                     substs.discr_ty(tcx),
                     movability == hir::Movability::Movable,
@@ -1283,8 +1315,14 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
 
         // When first entering the generator, move the resume argument into its new local.
         let source_info = SourceInfo::outermost(body.span);
-        let stmts = &mut body.basic_blocks_mut()[BasicBlock::new(0)].statements;
-        stmts.insert(
+        let first_block = &mut body.basic_blocks_mut()[BasicBlock::new(0)];
+        let mut upvar_collector = ExtractGeneratorUpvarLocals::new(upvars.len());
+        upvar_collector.visit_basic_block_data(BasicBlock::new(0), first_block);
+        let upvar_locals = upvar_collector.upvar_locals;
+        assert_eq!(upvar_locals.len(), upvars.len());
+        assert!(!upvar_locals.iter().any(|l| l.as_usize() == 0));
+
+        first_block.statements.insert(
             0,
             Statement {
                 source_info,
@@ -1298,9 +1336,9 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
         let always_live_locals = storage::AlwaysLiveLocals::new(&body);
 
         let liveness_info =
-            locals_live_across_suspend_points(tcx, body, &always_live_locals, movable);
+            locals_live_across_suspend_points(tcx, body, &always_live_locals, &upvar_locals, movable);
 
-        sanitize_witness(tcx, body, interior, upvars, &liveness_info.saved_locals);
+        sanitize_witness(tcx, body, interior, upvars.clone(), &liveness_info.saved_locals);
 
         if tcx.sess.opts.debugging_opts.validate_mir {
             let mut vis = EnsureGeneratorFieldAssignmentsNeverAlias {
@@ -1315,7 +1353,7 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
         // Extract locals which are live across suspension point into `layout`
         // `remap` gives a mapping from local indices onto generator struct indices
         // `storage_liveness` tells us which locals have live storage at suspension points
-        let (remap, layout, storage_liveness) = compute_layout(liveness_info, body);
+        let (remap, layout, storage_liveness) = compute_layout(liveness_info, body, &upvar_locals);
 
         let can_return = can_return(tcx, body, tcx.param_env(body.source.def_id()));
 
@@ -1364,6 +1402,46 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
 
         // Create the Generator::resume function
         create_generator_resume_function(tcx, transform, body, can_return);
+    }
+}
+
+/// Finds locals that are assigned from generator upvars.
+/// These usually start at _3, but not always.
+struct ExtractGeneratorUpvarLocals {
+    upvar_locals: Vec<Local>
+}
+
+impl ExtractGeneratorUpvarLocals {
+    fn new(upvar_count: usize) -> Self {
+        Self {
+            upvar_locals: vec!(Local::new(0); upvar_count)
+        }
+    }
+}
+
+struct FindGeneratorFieldAccess {
+    index: Option<usize>
+}
+
+impl Visitor<'tcx> for FindGeneratorFieldAccess {
+    fn visit_projection(&mut self, place_ref: PlaceRef<'tcx>, context: PlaceContext, location: Location) {
+        if place_ref.local.as_usize() == 1 {
+            if place_ref.projection.len() == 1 {
+                if let PlaceElem::Field(field, _) = place_ref.projection[0] {
+                    self.index = Some(field.as_usize());
+                }
+            }
+        }
+    }
+}
+
+impl Visitor<'tcx> for ExtractGeneratorUpvarLocals {
+    fn visit_assign(&mut self, place: &Place<'tcx>, rvalue: &Rvalue<'tcx>, location: Location) {
+        let mut visitor = FindGeneratorFieldAccess { index: None };
+        visitor.visit_rvalue(rvalue, location);
+        if let Some(index) = visitor.index {
+            self.upvar_locals[index] = place.local;
+        }
     }
 }
 
