@@ -6,7 +6,7 @@ use std::lazy::SyncOnceCell as OnceCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::{slice, vec};
+use std::vec;
 
 use arrayvec::ArrayVec;
 
@@ -215,8 +215,7 @@ impl ExternalCrate {
         // Failing that, see if there's an attribute specifying where to find this
         // external crate
         let did = DefId { krate: self.crate_num, index: CRATE_DEF_INDEX };
-        tcx.get_attrs(did)
-            .lists(sym::doc)
+        attr_items(tcx.get_attrs(did), sym::doc)
             .filter(|a| a.has_name(sym::html_root_url))
             .filter_map(|a| a.value_str())
             .map(to_remote)
@@ -232,7 +231,7 @@ impl ExternalCrate {
             if let Res::Def(DefKind::Mod, def_id) = res {
                 let attrs = tcx.get_attrs(def_id);
                 let mut keyword = None;
-                for attr in attrs.lists(sym::doc) {
+                for attr in attr_items(attrs, sym::doc) {
                     if attr.has_name(sym::keyword) {
                         if let Some(v) = attr.value_str() {
                             keyword = Some(v);
@@ -294,7 +293,7 @@ impl ExternalCrate {
             if let Res::Def(DefKind::Mod, def_id) = res {
                 let attrs = tcx.get_attrs(def_id);
                 let mut prim = None;
-                for attr in attrs.lists(sym::doc) {
+                for attr in attr_items(attrs, sym::doc) {
                     if let Some(v) = attr.value_str() {
                         if attr.has_name(sym::primitive) {
                             prim = PrimitiveType::from_symbol(v);
@@ -725,44 +724,19 @@ crate struct Module {
     crate span: Span,
 }
 
-crate struct ListAttributesIter<'a> {
-    attrs: slice::Iter<'a, ast::Attribute>,
-    current_list: vec::IntoIter<ast::NestedMetaItem>,
+/// Finds attributes with the given name and returns their nested items.
+crate fn attr_items(
+    attrs: &[ast::Attribute],
     name: Symbol,
-}
-
-impl<'a> Iterator for ListAttributesIter<'a> {
-    type Item = ast::NestedMetaItem;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(nested) = self.current_list.next() {
-            return Some(nested);
-        }
-
-        for attr in &mut self.attrs {
-            if let Some(list) = attr.meta_item_list() {
-                if attr.has_name(self.name) {
-                    self.current_list = list.into_iter();
-                    if let Some(nested) = self.current_list.next() {
-                        return Some(nested);
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let lower = self.current_list.len();
-        (lower, None)
-    }
+) -> impl Iterator<Item = ast::NestedMetaItem> + '_ {
+    attrs
+        .iter()
+        .filter(move |attr| attr.has_name(name))
+        .filter_map(ast::Attribute::meta_item_list)
+        .flatten()
 }
 
 crate trait AttributesExt {
-    /// Finds an attribute as List and returns the list of attributes nested inside.
-    fn lists(&self, name: Symbol) -> ListAttributesIter<'_>;
-
     fn span(&self) -> Option<rustc_span::Span>;
 
     fn inner_docs(&self) -> bool;
@@ -773,10 +747,6 @@ crate trait AttributesExt {
 }
 
 impl AttributesExt for [ast::Attribute] {
-    fn lists(&self, name: Symbol) -> ListAttributesIter<'_> {
-        ListAttributesIter { attrs: self.iter(), current_list: Vec::new().into_iter(), name }
-    }
-
     /// Return the span of the first doc-comment, if it exists.
     fn span(&self) -> Option<rustc_span::Span> {
         self.iter().find(|attr| attr.doc_str().is_some()).map(|attr| attr.span)
@@ -860,7 +830,7 @@ impl AttributesExt for [ast::Attribute] {
 
         // treat #[target_feature(enable = "feat")] attributes as if they were
         // #[doc(cfg(target_feature = "feat"))] attributes as well
-        for attr in self.lists(sym::target_feature) {
+        for attr in attr_items(self, sym::target_feature) {
             if attr.has_name(sym::enable) {
                 if let Some(feat) = attr.value_str() {
                     let meta = attr::mk_name_value_item_str(
@@ -882,18 +852,11 @@ impl AttributesExt for [ast::Attribute] {
 crate trait NestedAttributesExt {
     /// Returns `true` if the attribute list contains a specific `Word`
     fn has_word(self, word: Symbol) -> bool;
-    fn get_word_attr(self, word: Symbol) -> Option<ast::NestedMetaItem>;
 }
 
-impl<I: Iterator<Item = ast::NestedMetaItem> + IntoIterator<Item = ast::NestedMetaItem>>
-    NestedAttributesExt for I
-{
-    fn has_word(self, word: Symbol) -> bool {
-        self.into_iter().any(|attr| attr.is_word() && attr.has_name(word))
-    }
-
-    fn get_word_attr(mut self, word: Symbol) -> Option<ast::NestedMetaItem> {
-        self.find(|attr| attr.is_word() && attr.has_name(word))
+impl<I: Iterator<Item = ast::NestedMetaItem>> NestedAttributesExt for I {
+    fn has_word(mut self, word: Symbol) -> bool {
+        self.any(|attr| attr.is_word() && attr.has_name(word))
     }
 }
 
@@ -1001,10 +964,6 @@ crate struct Attributes {
 }
 
 impl Attributes {
-    crate fn lists(&self, name: Symbol) -> ListAttributesIter<'_> {
-        self.other_attrs.lists(name)
-    }
-
     crate fn has_doc_flag(&self, flag: Symbol) -> bool {
         for attr in &self.other_attrs {
             if !attr.has_name(sym::doc) {
@@ -1110,7 +1069,7 @@ impl Attributes {
     crate fn get_doc_aliases(&self) -> Box<[Symbol]> {
         let mut aliases = FxHashSet::default();
 
-        for attr in self.other_attrs.lists(sym::doc).filter(|a| a.has_name(sym::alias)) {
+        for attr in attr_items(&self.other_attrs, sym::doc).filter(|a| a.has_name(sym::alias)) {
             if let Some(values) = attr.meta_item_list() {
                 for l in values {
                     match l.literal().unwrap().kind {

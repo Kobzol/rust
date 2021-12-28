@@ -22,7 +22,7 @@ use super::{
     BASIC_KEYWORDS,
 };
 
-use crate::clean::{self, ExternalCrate};
+use crate::clean::{self, attr_items, ExternalCrate};
 use crate::config::RenderOptions;
 use crate::docfs::{DocFS, PathError};
 use crate::error::Error;
@@ -430,7 +430,7 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
 
         // Crawl the crate attributes looking for attributes which control how we're
         // going to emit HTML
-        for attr in krate.module.attrs.lists(sym::doc) {
+        for attr in attr_items(&krate.module.attrs.other_attrs, sym::doc) {
             match (attr.name_or_empty(), attr.value_str()) {
                 (sym::html_favicon_url, Some(s)) => {
                     layout.favicon = s.to_string();

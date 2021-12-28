@@ -16,7 +16,7 @@ use rustc_span::Span;
 
 use std::mem;
 
-use crate::clean::{self, cfg::Cfg, AttributesExt, NestedAttributesExt};
+use crate::clean::{self, attr_items, cfg::Cfg, NestedAttributesExt};
 use crate::core;
 
 /// This module is used to store stuff from Rust's AST in a more convenient
@@ -55,7 +55,7 @@ fn def_id_to_path(tcx: TyCtxt<'_>, did: DefId) -> Vec<String> {
 crate fn inherits_doc_hidden(tcx: TyCtxt<'_>, mut node: hir::HirId) -> bool {
     while let Some(id) = tcx.hir().get_enclosing_scope(node) {
         node = id;
-        if tcx.hir().attrs(node).lists(sym::doc).has_word(sym::hidden) {
+        if attr_items(tcx.hir().attrs(node), sym::doc).has_word(sym::hidden) {
             return true;
         }
     }
@@ -199,8 +199,9 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
 
         let use_attrs = tcx.hir().attrs(id);
         // Don't inline `doc(hidden)` imports so they can be stripped at a later stage.
-        let is_no_inline = use_attrs.lists(sym::doc).has_word(sym::no_inline)
-            || use_attrs.lists(sym::doc).has_word(sym::hidden);
+        let is_no_inline = attr_items(&use_attrs, sym::doc).any(|attr| {
+            attr.is_word() && (attr.has_name(sym::no_inline) || attr.has_name(sym::hidden))
+        });
 
         // For cross-crate impl inlining we need to know whether items are
         // reachable in documentation -- a previously unreachable item can be
@@ -208,7 +209,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         // (this is done here because we need to know this upfront).
         if !res_did.is_local() && !is_no_inline {
             let attrs = clean::inline::load_attrs(self.cx, res_did);
-            let self_is_hidden = attrs.lists(sym::doc).has_word(sym::hidden);
+            let self_is_hidden = attr_items(attrs, sym::doc).has_word(sym::hidden);
             if !self_is_hidden {
                 if let Res::Def(kind, did) = res {
                     if kind == DefKind::Mod {

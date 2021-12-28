@@ -96,7 +96,7 @@ crate fn should_have_doc_example(cx: &DocContext<'_>, item: &clean::Item) -> boo
         }
     }
 
-    if cx.tcx.hir().attrs(hir_id).lists(sym::doc).has_word(sym::hidden)
+    if attr_items(&cx.tcx.hir().attrs(hir_id), sym::doc).has_word(sym::hidden)
         || inherits_doc_hidden(cx.tcx, hir_id)
         || cx.tcx.hir().span(hir_id).in_derive_expansion()
     {

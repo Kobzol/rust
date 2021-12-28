@@ -3,7 +3,7 @@ use rustc_span::symbol::sym;
 use std::mem;
 
 use crate::clean;
-use crate::clean::{Item, ItemIdSet, NestedAttributesExt};
+use crate::clean::{attr_items, Item, ItemIdSet, NestedAttributesExt};
 use crate::core::DocContext;
 use crate::fold::{strip_item, DocFolder};
 use crate::passes::{ImplStripper, Pass};
@@ -36,7 +36,7 @@ struct Stripper<'a> {
 
 impl<'a> DocFolder for Stripper<'a> {
     fn fold_item(&mut self, i: Item) -> Option<Item> {
-        if i.attrs.lists(sym::doc).has_word(sym::hidden) {
+        if attr_items(&i.attrs.other_attrs, sym::doc).has_word(sym::hidden) {
             debug!("strip_hidden: stripping {:?} {:?}", i.type_(), i.name);
             // use a dedicated hidden item for given item type if any
             match *i.kind {

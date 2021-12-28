@@ -729,15 +729,14 @@ fn clean_fn_or_proc_macro(
     match macro_kind {
         Some(kind) => {
             if kind == MacroKind::Derive {
-                *name = attrs
-                    .lists(sym::proc_macro_derive)
+                *name = attr_items(attrs, sym::proc_macro_derive)
                     .find_map(|mi| mi.ident())
                     .expect("proc-macro derives require a name")
                     .name;
             }
 
             let mut helpers = Vec::new();
-            for mi in attrs.lists(sym::proc_macro_derive) {
+            for mi in attr_items(attrs, sym::proc_macro_derive) {
                 if !mi.has_name(sym::attributes) {
                     continue;
                 }
@@ -1955,7 +1954,8 @@ fn clean_use_statement(
 
     let visibility = cx.tcx.visibility(import.def_id);
     let attrs = cx.tcx.hir().attrs(import.hir_id());
-    let inline_attr = attrs.lists(sym::doc).get_word_attr(sym::inline);
+    let inline_attr =
+        attr_items(attrs, sym::doc).find(|attr| attr.is_word() && attr.has_name(sym::inline));
     let pub_underscore = visibility.is_public() && name == kw::Underscore;
     let current_mod = cx.tcx.parent_module_from_def_id(import.def_id);
 
