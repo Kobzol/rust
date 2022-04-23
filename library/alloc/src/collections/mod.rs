@@ -10,6 +10,8 @@ mod btree;
 pub mod linked_list;
 #[cfg(not(no_global_oom_handling))]
 pub mod vec_deque;
+#[cfg(not(no_global_oom_handling))]
+pub mod vec_deque2;
 
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
