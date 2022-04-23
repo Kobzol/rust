@@ -62,39 +62,51 @@ const MINIMUM_CAPACITY: usize = 1;
 
 const MAXIMUM_ZST_CAPACITY: usize = 1 << (usize::BITS - 1); // Largest possible power of two
 
-#[derive(Copy, Clone, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 struct Counter(usize);
 
 impl Counter {
-    #[inline(always)]
-    fn wrapped<T, A: Allocator>(&self, buf: &RawVec<T, A>) -> usize {
-        // capacity is always a power of two
-        wrap_index(self.0, buf.capacity())
+    // Returns the wrapped value of the counter.
+    // Capacity has to be a power of two.
+    #[inline]
+    fn to_index(&self, capacity: usize) -> usize {
+        wrap_index(self.0, capacity)
     }
 
-    #[inline(always)]
+    // Returns the wrapped value of the counter.
+    // Capacity has to be a power of two.
+    #[inline]
+    fn wrapped(&self, capacity: usize) -> Self {
+        Self(wrap_index(self.0, capacity))
+    }
+
+    #[inline]
     fn advance(&mut self) {
         self.advance_by(1);
     }
 
-    #[inline(always)]
+    #[inline]
     fn advance_by(&mut self, offset: usize) {
         self.0 = self.0.wrapping_add(offset);
     }
 
-    #[inline(always)]
-    fn offset_by(&self, offset: usize) -> Self {
+    #[inline]
+    fn add(&self, offset: usize) -> Self {
         Self(self.0.wrapping_add(offset))
     }
 
-    #[inline(always)]
+    #[inline]
     fn sub_by(&self, offset: usize) -> Self {
         Self(self.0.wrapping_sub(offset))
     }
+}
 
-    #[inline(always)]
-    fn distance(&self, other: Counter) -> usize {
-        self.0 - other.0
+impl Sub<Self> for Counter {
+    type Output = Self;
+
+    #[inline]
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self(self.0.wrapping_sub(rhs.0))
     }
 }
 
@@ -131,11 +143,13 @@ pub struct VecDeque2<
     T,
     #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global,
 > {
-    // tail and head are pointers into the buffer. Tail always points
-    // to the first element that could be read, Head always points
+    // Tail and head are indices into the buffer. Tail always points
+    // to the first element that could be read, head always points
     // to where data should be written.
-    // If tail == head the buffer is empty. The length of the ringbuffer
-    // is defined as the distance between the two.
+    // If tail == head the buffer is empty.
+    // Both indices are stored modulo (capacity * 2). This allows distinguishing
+    // between empty and full states of the deque and also allows VecDeque2::new()
+    // to not allocate.
     tail: Counter,
     head: Counter,
     buf: RawVec<T, A>,
@@ -217,14 +231,23 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }
 
-    #[inline(always)]
-    fn wrapped_head(&self) -> usize {
-        self.head.wrapped(&self.buf)
+    /// Doubled capacity.
+    /// The indices (head and tail) are always stored modulo this value.
+    #[inline]
+    fn cap_doubled(&self) -> usize {
+        self.cap().wrapping_mul(2)
     }
 
-    #[inline(always)]
+    /// Returns head wrapped to the current capacity.
+    #[inline]
+    fn wrapped_head(&self) -> usize {
+        self.head.to_index(self.cap())
+    }
+
+    /// Returns tail wrapped to the current capacity.
+    #[inline]
     fn wrapped_tail(&self) -> usize {
-        self.tail.wrapped(&self.buf)
+        self.tail.to_index(self.cap())
     }
 
     /// Turn ptr into a slice, since the elements of the backing buffer may be uninitialized,
@@ -279,17 +302,22 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     }*/
 
     /// Returns the index in the underlying buffer for a given logical element
-    /// index + addend.
+    /// `index` + `offset`.
     #[inline]
-    fn wrap_add(&self, idx: Counter, addend: usize) -> usize {
-        idx.offset_by(addend).wrapped(&self.buf)
+    fn offset_index(&self, index: Counter, offset: usize) -> usize {
+        index.add(offset).to_index(self.cap())
     }
 
-    /// Returns the index in the underlying buffer for a given logical element
-    /// index - subtrahend.
+    // Sets the value of head, making sure that it is stored modulo capacity * 2.
     #[inline]
-    fn wrap_sub(&self, idx: Counter, subtrahend: usize) -> usize {
-        idx.sub_by(subtrahend).wrapped(&self.buf)
+    fn set_head(&mut self, value: Counter) {
+        self.head = value.wrapped(self.cap_doubled());
+    }
+
+    // Sets the value of tail, making sure that it is stored modulo capacity * 2.
+    #[inline]
+    fn set_tail(&mut self, value: Counter) {
+        self.tail = value.wrapped(self.cap_doubled());
     }
 
     /// Copies a contiguous block of memory len long from src to dst
@@ -517,8 +545,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         //              H                 T
         // C [o o o o o . . . . . . . . . o o ]
 
-        let tail: usize = self.wrapped_tail();
-        let head: usize = self.wrapped_head();
+        let tail = self.wrapped_tail();
+        let head = self.wrapped_head();
         if tail <= head {
             // A
             // Nop
@@ -527,7 +555,9 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             unsafe {
                 self.copy_nonoverlapping(old_capacity, 0, head);
             }
-            self.head.advance_by(old_capacity);
+            // We need to set the head explicitly to avoid checking if it was within the capacity
+            // or if it was within capacity * 2.
+            self.set_head(Counter(old_capacity).add(head));
             debug_assert!(self.wrapped_head() > tail);
         } else {
             // C
@@ -535,7 +565,9 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             unsafe {
                 self.copy_nonoverlapping(new_tail, tail, old_capacity - tail);
             }
-            self.tail.advance_by(new_tail - tail);
+            // We need to set the tail explicitly to avoid checking if it was within the capacity
+            // or if it was within capacity * 2.
+            self.set_tail(Counter(new_tail));
             debug_assert!(head < self.wrapped_tail());
         }
         debug_assert!(self.cap().is_power_of_two());
@@ -631,7 +663,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn get(&self, index: usize) -> Option<&T> {
         if index < self.len() {
-            let idx = self.wrap_add(self.tail, index);
+            let idx = self.offset_index(self.tail, index);
             unsafe { Some(&*self.ptr().add(idx)) }
         } else {
             None
@@ -660,14 +692,14 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         if index < self.len() {
-            let idx = self.wrap_add(self.tail, index);
+            let idx = self.offset_index(self.tail, index);
             unsafe { Some(&mut *self.ptr().add(idx)) }
         } else {
             None
         }
     }
 
-    /// Swaps elements at indices `i` and `j`.
+    /*/// Swaps elements at indices `i` and `j`.
     ///
     /// `i` and `j` may be equal.
     ///
@@ -697,7 +729,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         let ri = self.wrap_add(self.tail, i);
         let rj = self.wrap_add(self.tail, j);
         unsafe { ptr::swap(self.ptr().add(ri), self.ptr().add(rj)) }
-    }
+    }*/
 
     /// Returns the number of elements the deque can hold without
     /// reallocating.
@@ -972,7 +1004,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }*/
 
-    /// Shortens the deque, keeping the first `len` elements and dropping
+    /*/// Shortens the deque, keeping the first `len` elements and dropping
     /// the rest.
     ///
     /// If `len` is greater than the deque's current length, this has no
@@ -1034,7 +1066,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                 ptr::drop_in_place(drop_front);
             }
         }
-    }
+    }*/
 
     /// Returns a reference to the underlying allocator.
     #[unstable(feature = "allocator_api", issue = "32838")]
@@ -1184,7 +1216,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn len(&self) -> usize {
-        self.head.distance(self.tail)
+        // We need to wrap by doubled capacity to distinguish empty and full cases.
+        (self.head - self.tail).to_index(self.cap_doubled())
     }
 
     /// Returns `true` if the deque is empty.
@@ -1374,7 +1407,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         unsafe { Drain::new(drain_head, head, iter, deque) }
     }*/
 
-    /// Clears the deque, removing all values.
+    /*/// Clears the deque, removing all values.
     ///
     /// # Examples
     ///
@@ -1390,7 +1423,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     #[inline]
     pub fn clear(&mut self) {
         self.truncate(0);
-    }
+    }*/
 
     /*/// Returns `true` if the deque contains an element equal to the
     /// given value.
@@ -1505,7 +1538,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         self.get_mut(self.len().wrapping_sub(1))
     }
 
-    /*/// Removes the first element and returns it, or `None` if the deque is
+    /// Removes the first element and returns it, or `None` if the deque is
     /// empty.
     ///
     /// # Examples
@@ -1521,16 +1554,16 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// assert_eq!(d.pop_front(), Some(2));
     /// assert_eq!(d.pop_front(), None);
     /// ```
-    #[stable(feature = "rust1", since = "1.0.0")]
+    /*#[stable(feature = "rust1", since = "1.0.0")]
     pub fn pop_front(&mut self) -> Option<T> {
         if self.is_empty() {
             None
         } else {
-            let tail = self.tail;
-            self.tail = self.wrap_add(self.tail, 1);
+            let tail = self.wrapped_tail();
+            self.tail.advance();
             unsafe { Some(self.buffer_read(tail)) }
         }
-    }*/
+    }
 
     /// Removes the last element from the deque and returns it, or `None` if
     /// it is empty.
@@ -1557,7 +1590,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }
 
-    /*/// Prepends an element to the deque.
+    /// Prepends an element to the deque.
     ///
     /// # Examples
     ///
@@ -1575,8 +1608,11 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             self.grow();
         }
 
-        self.tail = self.wrap_sub(self.tail, 1);
-        let tail = self.tail;
+        // log::info!("tail before: {:?}", self.tail);
+        self.tail = self.tail.sub_by(1);
+        // eprintln!("tail after: {:?}", self.tail);
+        let tail = self.wrapped_tail();
+        // eprintln!("tail wrapped: {:?}", tail);
         unsafe {
             self.buffer_write(tail, value);
         }
@@ -1601,8 +1637,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
 
         let head = self.head;
-        self.head.advance();
-        unsafe { self.buffer_write(head.wrapped(&self.buf), value) }
+        self.set_head(self.head.add(1));
+        unsafe { self.buffer_write(head.to_index(self.cap()), value) }
     }
 
     #[inline]
@@ -1906,7 +1942,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }*/
 
-    /// Removes and returns the element at `index` from the deque.
+    /*/// Removes and returns the element at `index` from the deque.
     /// Whichever end is closer to the removal point will be moved to make
     /// room, and all the affected elements will be moved to new positions.
     /// Returns `None` if `index` is out of bounds.
@@ -2084,7 +2120,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
 
         elem
-    }
+    }*/
 
     /*/// Splits the deque into two at the given index.
     ///
@@ -2298,7 +2334,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         let old_cap = self.cap();
         let additional = old_cap.max(MINIMUM_CAPACITY);
         self.buf.reserve_exact(old_cap, additional);
-        // assert!(self.cap() == old_cap + additional);
+        assert!(self.cap() == old_cap + additional);
         unsafe {
             self.handle_capacity_increase(old_cap);
         }

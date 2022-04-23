@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn vd2_test_empty_1() {
+    let mut tester: VecDeque2<u64> = VecDeque2::new();
+    assert_eq!(tester.len(), 0);
+    assert!(tester.is_empty());
+    tester.push_back(1);
+    assert_eq!(tester.len(), 1);
+    assert!(!tester.is_empty());
+}
+
+/*#[test]
+fn vd2_test_empty_2() {
+    let mut tester: VecDeque2<u64> = VecDeque2::new();
+    assert_eq!(tester.len(), 0);
+    assert!(tester.empty());
+    tester.push_front(1);
+    assert_eq!(tester.len(), 1);
+    assert!(!tester.empty());
+}*/
+
+/*#[test]
+fn vd2_test_full() {
+    let mut tester: VecDeque2<u64> = VecDeque2::new();
+    tester.push_back(1);
+    tester.push_back(2);
+    tester.push_back(3);
+
+    assert_eq!(tester.len(), 3);
+
+    assert_eq!(tester.get(1), Some(&2));
+    assert_eq!(tester.get(2), Some(&3));
+    assert_eq!(tester.get(0), Some(&1));
+    assert_eq!(tester.get(3), None);
+
+    tester.remove(0);
+
+    assert_eq!(tester.len(), 2);
+    assert_eq!(tester.get(0), Some(&2));
+    assert_eq!(tester.get(1), Some(&3));
+    assert_eq!(tester.get(2), None);
+}*/
+
+/*#[test]
 fn vd2_test_get() {
     let mut tester: VecDeque2<u64> = VecDeque2::new();
     assert_eq!(tester.len(), 0);
@@ -21,8 +63,9 @@ fn vd2_test_get() {
     assert_eq!(tester.get(0), Some(&2));
     assert_eq!(tester.get(1), Some(&3));
     assert_eq!(tester.get(2), None);
-}
+}*/
 
+/*
 #[test]
 fn vd2_test_pop_back() {
     let mut tester: VecDeque2<u64> = VecDeque2::new();
@@ -40,6 +83,39 @@ fn vd2_test_pop_back() {
     tester.pop_back();
     tester.pop_back();
     assert_eq!(tester.len(), 0);
+}
+
+#[test]
+fn vd2_test_push_front() {
+    let mut tester: VecDeque2<u64> = VecDeque2::new();
+    tester.push_back(1);
+    tester.push_front(2);
+    tester.push_back(3);
+    // tester.push_front(4);
+    // tester.push_back(5);
+
+    assert_eq!(tester.len(), 3);
+
+    // assert_eq!(tester.get(0), Some(&4));
+    // assert_eq!(tester.get(1), Some(&2));
+    // assert_eq!(tester.get(2), Some(&1));
+    // assert_eq!(tester.get(3), Some(&3));
+    // assert_eq!(tester.get(4), Some(&5));
+}
+
+#[test]
+fn vd2_test_pop_front() {
+    let mut tester: VecDeque2<u64> = VecDeque2::new();
+    tester.push_back(1);
+    tester.push_back(3);
+    tester.push_back(5);
+
+    assert_eq!(tester.len(), 3);
+
+    assert_eq!(tester.pop_front(), Some(1));
+    assert_eq!(tester.pop_front(), Some(3));
+    assert_eq!(tester.pop_front(), Some(5));
+    assert_eq!(tester.pop_front(), None);
 }
 
 /*
@@ -106,3 +182,4 @@ fn vd2_test_iter() {
         assert_eq!(item, index + 1);
     }
 }
+*/
