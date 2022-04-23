@@ -15,12 +15,31 @@ fn vd2_test_get() {
     assert_eq!(tester.get(0), Some(&1));
     assert_eq!(tester.get(3), None);
 
-    // tester.remove(0);
+    tester.remove(0);
 
     assert_eq!(tester.len(), 2);
     assert_eq!(tester.get(0), Some(&2));
     assert_eq!(tester.get(1), Some(&3));
     assert_eq!(tester.get(2), None);
+}
+
+#[test]
+fn vd2_test_pop_back() {
+    let mut tester: VecDeque2<u64> = VecDeque2::new();
+    assert_eq!(tester.len(), 0);
+    tester.push_back(1);
+    tester.push_back(2);
+    tester.push_back(3);
+    tester.pop_back();
+
+    assert_eq!(tester.len(), 2);
+
+    assert_eq!(tester.get(0), Some(&1));
+    assert_eq!(tester.get(1), Some(&2));
+
+    tester.pop_back();
+    tester.pop_back();
+    assert_eq!(tester.len(), 0);
 }
 
 /*
@@ -74,4 +93,16 @@ fn vd2_test_clear() {
     tester.push_back(3);
     tester.clear();
     assert_eq!(tester.len(), 0);
+}
+
+#[test]
+fn vd2_test_iter() {
+    let mut tester = VecDeque2::new();
+    tester.push_back(1);
+    tester.push_back(2);
+    tester.push_back(3);
+
+    for (index, &item) in tester.iter().enumerate() {
+        assert_eq!(item, index + 1);
+    }
 }

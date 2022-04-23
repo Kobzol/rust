@@ -30,9 +30,9 @@ mod macros;
 #[stable(feature = "drain", since = "1.6.0")]
 pub use self::drain::Drain;
 
-mod drain;
+mod drain;*/
 
-#[stable(feature = "rust1", since = "1.0.0")]
+/*#[stable(feature = "rust1", since = "1.0.0")]
 pub use self::iter_mut::IterMut;
 
 mod iter_mut;
@@ -40,14 +40,14 @@ mod iter_mut;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::into_iter::IntoIter;
 
-mod into_iter;
+mod into_iter;*/
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::iter::Iter;
 
 mod iter;
 
-use self::pair_slices::PairSlices;
+/*use self::pair_slices::PairSlices;
 
 mod pair_slices;*/
 
@@ -67,9 +67,9 @@ struct Counter(usize);
 
 impl Counter {
     #[inline(always)]
-    fn index<T, A: Allocator>(&self, buf: &RawVec<T, A>) -> usize {
+    fn wrapped<T, A: Allocator>(&self, buf: &RawVec<T, A>) -> usize {
         // capacity is always a power of two
-        self.0 & (buf.capacity() - 1)
+        wrap_index(self.0, buf.capacity())
     }
 
     #[inline(always)]
@@ -219,12 +219,12 @@ impl<T, A: Allocator> VecDeque2<T, A> {
 
     #[inline(always)]
     fn wrapped_head(&self) -> usize {
-        self.head.index(&self.buf)
+        self.head.wrapped(&self.buf)
     }
 
     #[inline(always)]
     fn wrapped_tail(&self) -> usize {
-        self.tail.index(&self.buf)
+        self.tail.wrapped(&self.buf)
     }
 
     /// Turn ptr into a slice, since the elements of the backing buffer may be uninitialized,
@@ -282,14 +282,14 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// index + addend.
     #[inline]
     fn wrap_add(&self, idx: Counter, addend: usize) -> usize {
-        idx.offset_by(addend).index(&self.buf)
+        idx.offset_by(addend).wrapped(&self.buf)
     }
 
     /// Returns the index in the underlying buffer for a given logical element
     /// index - subtrahend.
     #[inline]
     fn wrap_sub(&self, idx: Counter, subtrahend: usize) -> usize {
-        idx.sub_by(subtrahend).index(&self.buf)
+        idx.sub_by(subtrahend).wrapped(&self.buf)
     }
 
     /// Copies a contiguous block of memory len long from src to dst
@@ -1043,7 +1043,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         self.buf.allocator()
     }
 
-    /*/// Returns a front-to-back iterator.
+    /// Returns a front-to-back iterator.
     ///
     /// # Examples
     ///
@@ -1060,10 +1060,10 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn iter(&self) -> Iter<'_, T> {
-        Iter { tail: self.tail, head: self.head, ring: unsafe { self.buffer_as_slice() } }
+        Iter { tail: self.wrapped_tail(), head: self.wrapped_head(), ring: unsafe { self.buffer_as_slice() } }
     }
 
-    /// Returns a front-to-back iterator that returns mutable references.
+    /*/// Returns a front-to-back iterator that returns mutable references.
     ///
     /// # Examples
     ///
@@ -1086,7 +1086,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         // `ring` we create is a dereferenceable slice for lifetime '_.
         let ring = ptr::slice_from_raw_parts_mut(self.ptr(), self.cap());
 
-        unsafe { IterMut::new(ring, self.tail, self.head, PhantomData) }
+        unsafe { IterMut::new(ring, self.wrapped_tail(), self.wrapped_head(), PhantomData) }
     }*/
 
     /// Returns a pair of slices which contain, in order, the contents of the
@@ -1530,7 +1530,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             self.tail = self.wrap_add(self.tail, 1);
             unsafe { Some(self.buffer_read(tail)) }
         }
-    }
+    }*/
 
     /// Removes the last element from the deque and returns it, or `None` if
     /// it is empty.
@@ -1551,13 +1551,13 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         if self.is_empty() {
             None
         } else {
-            self.head = self.wrap_sub(self.head, 1);
-            let head = self.head;
+            self.head = self.head.sub_by(1);
+            let head = self.wrapped_head();
             unsafe { Some(self.buffer_read(head)) }
         }
     }
 
-    /// Prepends an element to the deque.
+    /*/// Prepends an element to the deque.
     ///
     /// # Examples
     ///
@@ -1602,7 +1602,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
 
         let head = self.head;
         self.head.advance();
-        unsafe { self.buffer_write(head.index(&self.buf), value) }
+        unsafe { self.buffer_write(head.wrapped(&self.buf), value) }
     }
 
     #[inline]
@@ -1906,7 +1906,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }*/
 
-    /*/// Removes and returns the element at `index` from the deque.
+    /// Removes and returns the element at `index` from the deque.
     /// Whichever end is closer to the removal point will be moved to make
     /// room, and all the affected elements will be moved to new positions.
     /// Returns `None` if `index` is out of bounds.
@@ -1960,7 +1960,9 @@ impl<T, A: Allocator> VecDeque2<T, A> {
 
         let contiguous = self.is_contiguous();
 
-        match (contiguous, distance_to_tail <= distance_to_head, idx >= self.tail) {
+        let tail = self.wrapped_tail();
+        let head = self.wrapped_head();
+        match (contiguous, distance_to_tail <= distance_to_head, idx >= tail) {
             (true, true, _) => {
                 unsafe {
                     // contiguous, remove closer to tail:
@@ -1972,8 +1974,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [. . . . o o o o o o . . . . . .]
                     //               M M
 
-                    self.copy(self.tail + 1, self.tail, index);
-                    self.tail += 1;
+                    self.copy(tail + 1, tail, index);
+                    self.tail.advance();
                 }
             }
             (true, false, _) => {
@@ -1987,8 +1989,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [. . . o o o o o o . . . . . . .]
                     //                     M M
 
-                    self.copy(idx, idx + 1, self.head - idx - 1);
-                    self.head -= 1;
+                    self.copy(idx, idx + 1, head - idx - 1);
+                    self.head = self.head.sub_by(1);
                 }
             }
             (false, true, true) => {
@@ -2002,8 +2004,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [o o o o o o . . . . . . o o o o]
                     //                               M M
 
-                    self.copy(self.tail + 1, self.tail, index);
-                    self.tail = self.wrap_add(self.tail, 1);
+                    self.copy(tail + 1, tail, index);
+                    self.tail.advance();
                 }
             }
             (false, false, false) => {
@@ -2017,8 +2019,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [o o o o o o . . . . . . . o o o]
                     //               M M
 
-                    self.copy(idx, idx + 1, self.head - idx - 1);
-                    self.head -= 1;
+                    self.copy(idx, idx + 1, head - idx - 1);
+                    self.head = self.head.sub_by(1);
                 }
             }
             (false, false, true) => {
@@ -2045,15 +2047,15 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     self.copy(idx, idx + 1, self.cap() - idx - 1);
 
                     // Prevents underflow.
-                    if self.head != 0 {
+                    if head != 0 {
                         // copy first element into empty spot
                         self.copy(self.cap() - 1, 0, 1);
 
                         // move elements in the head section backwards
-                        self.copy(0, 1, self.head - 1);
+                        self.copy(0, 1, head - 1);
                     }
 
-                    self.head = self.wrap_sub(self.head, 1);
+                    self.head = self.head.sub_by(1);
                 }
             }
             (false, true, false) => {
@@ -2074,15 +2076,15 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     self.copy(0, self.cap() - 1, 1);
 
                     // move elements from tail to end forward, excluding the last one
-                    self.copy(self.tail + 1, self.tail, self.cap() - self.tail - 1);
+                    self.copy(tail + 1, tail, self.cap() - tail - 1);
 
-                    self.tail = self.wrap_add(self.tail, 1);
+                    self.tail.advance();
                 }
             }
         }
 
         elem
-    }*/
+    }
 
     /*/// Splits the deque into two at the given index.
     ///
@@ -2151,8 +2153,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
 
         // Cleanup where the ends of the buffers are
-        self.head = self.wrap_sub(self.head, other_len);
-        other.head = other.wrap_index(other_len);
+        self.head = self.head.sub_by(other_len);
+        other.head.advance_by(other_len);
 
         other
     }*/
@@ -2975,8 +2977,8 @@ impl<T> FromIterator<T> for VecDeque2<T> {
         deq.extend(iterator);
         deq
     }
-}
-
+}*/
+/*
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T, A: Allocator> IntoIterator for VecDeque2<T, A> {
     type Item = T;
@@ -3008,8 +3010,8 @@ impl<'a, T, A: Allocator> IntoIterator for &'a mut VecDeque2<T, A> {
         self.iter_mut()
     }
 }
-
-#[stable(feature = "rust1", since = "1.0.0")]
+*/
+/*#[stable(feature = "rust1", since = "1.0.0")]
 impl<T, A: Allocator> Extend<T> for VecDeque2<T, A> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         // This function should be the moral equivalent of:
