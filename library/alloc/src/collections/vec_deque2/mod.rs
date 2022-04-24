@@ -2215,7 +2215,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         elem
     }
 
-    /*/// Splits the deque into two at the given index.
+    /// Splits the deque into two at the given index.
     ///
     /// Returns a newly allocated `VecDeque2`. `self` contains elements `[0, at)`,
     /// and the returned deque contains elements `[at, len)`.
@@ -2282,13 +2282,13 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
 
         // Cleanup where the ends of the buffers are
-        self.head = self.head.sub_by(other_len);
-        other.head.advance_by(other_len);
+        self.set_head(self.head.advance_back(other_len));
+        other.head = other.head.advance(other_len).wrapped_for_storage(other.cap());
 
         other
-    }*/
+    }
 
-    /*/// Moves all the elements of `other` into `self`, leaving `other` empty.
+    /// Moves all the elements of `other` into `self`, leaving `other` empty.
     ///
     /// # Panics
     ///
@@ -2311,17 +2311,17 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         self.reserve(other.len());
         unsafe {
             let (left, right) = other.as_slices();
-            self.copy_slice(self.head, left);
-            self.copy_slice(self.wrap_add(self.head, left.len()), right);
+            self.copy_slice(self.wrapped_head(), left);
+            self.copy_slice(self.offset_index(self.head, left.len()), right);
         }
         // SAFETY: Update pointers after copying to avoid leaving doppelganger
         // in case of panics.
-        self.head = self.wrap_add(self.head, other.len());
+        self.set_head(self.head.advance(other.len()));
         // Silently drop values in `other`.
         other.tail = other.head;
-    }*/
+    }
 
-    /*/// Retains only the elements specified by the predicate.
+    /// Retains only the elements specified by the predicate.
     ///
     /// In other words, remove all elements `e` for which `f(&e)` returns false.
     /// This method operates in place, visiting each element exactly once in the
@@ -2414,7 +2414,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         if cur != idx {
             self.truncate(idx);
         }
-    }*/
+    }
 
     // Double the buffer size. This method is inline(never), so we expect it to only
     // be called in cold paths.
@@ -3050,7 +3050,7 @@ impl<T: PartialEq, A: Allocator> PartialEq for VecDeque2<T, A> {
     }
 }
 
-/*#[stable(feature = "rust1", since = "1.0.0")]
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Eq, A: Allocator> Eq for VecDeque2<T, A> {}
 
 __impl_slice_eq1! { [] VecDeque2<T, A>, Vec<U, A>, }
@@ -3116,7 +3116,7 @@ impl<T> FromIterator<T> for VecDeque2<T> {
         deq.extend(iterator);
         deq
     }
-}*/
+}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T, A: Allocator> IntoIterator for VecDeque2<T, A> {
