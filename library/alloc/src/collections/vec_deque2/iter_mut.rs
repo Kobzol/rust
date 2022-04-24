@@ -2,7 +2,7 @@ use core::fmt;
 use core::iter::{FusedIterator, TrustedLen, TrustedRandomAccess, TrustedRandomAccessNoCoerce};
 use core::marker::PhantomData;
 
-use super::{count, wrap_index, RingSlices};
+use super::{count, RingSlices, Counter};
 
 /// A mutable iterator over the elements of a `VecDeque2`.
 ///
@@ -14,16 +14,16 @@ use super::{count, wrap_index, RingSlices};
 pub struct IterMut<'a, T: 'a> {
     // Internal safety invariant: the entire slice is dereferenceable.
     ring: *mut [T],
-    tail: usize,
-    head: usize,
+    tail: Counter,
+    head: Counter,
     phantom: PhantomData<&'a mut [T]>,
 }
 
 impl<'a, T> IterMut<'a, T> {
     pub(super) unsafe fn new(
         ring: *mut [T],
-        tail: usize,
-        head: usize,
+        tail: Counter,
+        head: Counter,
         phantom: PhantomData<&'a mut [T]>,
     ) -> Self {
         IterMut { ring, tail, head, phantom }
@@ -57,8 +57,8 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         if self.tail == self.head {
             return None;
         }
-        let tail = self.tail;
-        self.tail = wrap_index(self.tail.wrapping_add(1), self.ring.len());
+        let tail = self.tail.to_index(self.ring.len());
+        self.tail = self.tail.advance(1).wrapped_for_storage(self.ring.len());
 
         unsafe {
             let elem = self.ring.get_unchecked_mut(tail);
@@ -89,7 +89,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
             self.tail = self.head;
             None
         } else {
-            self.tail = wrap_index(self.tail.wrapping_add(n), self.ring.len());
+            self.tail = self.tail.advance(n).wrapped_for_storage(self.ring.len());
             self.next()
         }
     }
@@ -105,7 +105,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         // Safety: The TrustedRandomAccess contract requires that callers only pass an index
         // that is in bounds.
         unsafe {
-            let idx = wrap_index(self.tail.wrapping_add(idx), self.ring.len());
+            let idx = self.tail.advance(idx).to_index(self.ring.len());
             &mut *self.ring.get_unchecked_mut(idx)
         }
     }
@@ -118,10 +118,10 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
         if self.tail == self.head {
             return None;
         }
-        self.head = wrap_index(self.head.wrapping_sub(1), self.ring.len());
+        self.head = self.head.advance_back(1).wrapped_for_storage(self.ring.len());
 
         unsafe {
-            let elem = self.ring.get_unchecked_mut(self.head);
+            let elem = self.ring.get_unchecked_mut(self.head.to_index(self.ring.len()));
             Some(&mut *elem)
         }
     }

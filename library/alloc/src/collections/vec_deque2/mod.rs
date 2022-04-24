@@ -33,10 +33,10 @@ pub use self::drain::Drain;
 
 mod drain;*/
 
-/*#[stable(feature = "rust1", since = "1.0.0")]
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use self::iter_mut::IterMut;
 
-mod iter_mut;*/
+mod iter_mut;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::into_iter::IntoIter;
@@ -132,6 +132,7 @@ impl Sub<Self> for Counter {
 /// A `VecDeque2` with a known list of items can be initialized from an array:
 ///
 /// ```
+/// use alloc::collections::vec_deque2::VecDeque2;
 /// use std::collections::VecDeque2;
 ///
 /// let deq = VecDeque2::from([-1, 0, 1]);
@@ -635,6 +636,7 @@ impl<T> VecDeque2<T> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let deque: VecDeque2<u32> = VecDeque2::new();
@@ -651,6 +653,7 @@ impl<T> VecDeque2<T> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let deque: VecDeque2<u32> = VecDeque2::with_capacity(10);
@@ -669,6 +672,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let deque: VecDeque2<u32> = VecDeque2::new();
@@ -688,6 +692,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let deque: VecDeque2<u32> = VecDeque2::with_capacity(10);
@@ -707,6 +712,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -732,6 +738,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -767,6 +774,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -792,6 +800,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let buf: VecDeque2<i32> = VecDeque2::with_capacity(10);
@@ -817,6 +826,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf: VecDeque2<i32> = [1].into();
@@ -840,6 +850,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf: VecDeque2<i32> = [1].into();
@@ -882,6 +893,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::TryReserveError;
     /// use std::collections::VecDeque2;
     ///
@@ -919,6 +931,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::TryReserveError;
     /// use std::collections::VecDeque2;
     ///
@@ -1068,6 +1081,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -1135,6 +1149,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -1150,11 +1165,12 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         Iter { tail: self.tail, head: self.head, ring: unsafe { self.buffer_as_slice() } }
     }
 
-    /*/// Returns a front-to-back iterator that returns mutable references.
+    /// Returns a front-to-back iterator that returns mutable references.
     ///
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -1173,8 +1189,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         // `ring` we create is a dereferenceable slice for lifetime '_.
         let ring = ptr::slice_from_raw_parts_mut(self.ptr(), self.cap());
 
-        unsafe { IterMut::new(ring, self.wrapped_tail(), self.wrapped_head(), PhantomData) }
-    }*/
+        unsafe { IterMut::new(ring, self.tail, self.head, PhantomData) }
+    }
 
     /// Returns a pair of slices which contain, in order, the contents of the
     /// deque.
@@ -1187,6 +1203,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut deque = VecDeque2::new();
@@ -1227,6 +1244,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut deque = VecDeque2::new();
@@ -1262,6 +1280,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut deque = VecDeque2::new();
@@ -1280,6 +1299,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut deque = VecDeque2::new();
@@ -1312,6 +1332,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let deque: VecDeque2<_> = [1, 2, 3].into();
@@ -1467,6 +1488,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut deque = VecDeque2::new();
@@ -1486,6 +1508,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut deque: VecDeque2<u32> = VecDeque2::new();
@@ -1511,6 +1534,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut d = VecDeque2::new();
@@ -1531,6 +1555,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut d = VecDeque2::new();
@@ -1555,6 +1580,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut d = VecDeque2::new();
@@ -1575,6 +1601,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut d = VecDeque2::new();
@@ -1599,6 +1626,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut d = VecDeque2::new();
@@ -1626,6 +1654,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -1650,6 +1679,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut d = VecDeque2::new();
@@ -1681,6 +1711,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -1716,6 +1747,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -1751,6 +1783,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -2008,6 +2041,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -2408,6 +2442,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -2933,6 +2968,7 @@ impl<T: Clone, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut buf = VecDeque2::new();
@@ -3262,6 +3298,7 @@ impl<T, const N: usize> From<[T; N]> for VecDeque2<T> {
     /// Converts a `[T; N]` into a `VecDeque2<T>`.
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let deq1 = VecDeque2::from([1, 2, 3, 4]);
