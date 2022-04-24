@@ -374,7 +374,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }
 
-    /*/// Copies a potentially wrapping block of memory len long from src to dest.
+    /// Copies a potentially wrapping block of memory len long from src to dest.
     /// (abs(dst - src) + len) must be no larger than cap() (There must be at
     /// most one continuous overlapping region between src and dest).
     unsafe fn wrap_copy(&self, dst: usize, src: usize, len: usize) {
@@ -395,7 +395,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             return;
         }
 
-        let dst_after_src = self.wrap_sub(dst, src) < len;
+        let dst_after_src = (Counter(dst) - Counter(src)).to_index(self.cap()) < len;
 
         let src_pre_wrap_len = self.cap() - src;
         let dst_pre_wrap_len = self.cap() - dst;
@@ -508,7 +508,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                 }
             }
         }
-    }*/
+    }
 
     /// Copies all values from `src` to `dst`, wrapping around if needed.
     /// Assumes capacity is sufficient.
@@ -2636,7 +2636,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                 RingSlices::ring_slices(self.buffer_as_mut_slice(), head, tail).0,
             )
         }
-    }
+    }*/
 
     /// Rotates the double-ended queue `mid` places to the left.
     ///
@@ -2735,18 +2735,18 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     unsafe fn rotate_left_inner(&mut self, mid: usize) {
         debug_assert!(mid * 2 <= self.len());
         unsafe {
-            self.wrap_copy(self.head, self.tail, mid);
+            self.wrap_copy(self.wrapped_head(), self.wrapped_tail(), mid);
         }
-        self.head = self.wrap_add(self.head, mid);
-        self.tail = self.wrap_add(self.tail, mid);
+        self.set_head(self.head.advance(mid));
+        self.set_tail(self.tail.advance(mid));
     }
 
     unsafe fn rotate_right_inner(&mut self, k: usize) {
         debug_assert!(k * 2 <= self.len());
-        self.head = self.wrap_sub(self.head, k);
-        self.tail = self.wrap_sub(self.tail, k);
+        self.set_head(self.head.advance_back(k));
+        self.set_tail(self.tail.advance_back(k));
         unsafe {
-            self.wrap_copy(self.tail, self.head, k);
+            self.wrap_copy(self.wrapped_tail(), self.wrapped_head(), k);
         }
     }
 
@@ -2960,7 +2960,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         } else {
             front.partition_point(pred)
         }
-    }*/
+    }
 }
 
 impl<T: Clone, A: Allocator> VecDeque2<T, A> {
