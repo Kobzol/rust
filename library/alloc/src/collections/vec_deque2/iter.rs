@@ -83,7 +83,6 @@ impl<'a, T> Iterator for Iter<'a, T> {
         F: FnMut(Acc, Self::Item) -> Acc,
     {
         let (front, back) = RingSlices::ring_slices(self.ring, self.head, self.tail);
-        log(format!("Front: {}, back: {}", front.len(), back.len()));
         // Safety:
         // - `self.head` and `self.tail` in a ring buffer are always valid indices.
         // - `RingSlices::ring_slices` guarantees that the slices split according to `self.head` and `self.tail` are initialized.
@@ -93,13 +92,15 @@ impl<'a, T> Iterator for Iter<'a, T> {
         }
     }
 
-    fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R
+    /*fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R
     where
         Self: Sized,
         F: FnMut(B, Self::Item) -> R,
         R: Try<Output = B>,
     {
-        // TODO: probably wrong
+        let (mut iter, final_res);
+
+        // FIXME: is this correct?
         let (front, back) = RingSlices::ring_slices(self.ring, self.head, self.tail);
         let mut front_iter = unsafe { MaybeUninit::slice_assume_init_ref(front).iter() };
         let res = front_iter.try_fold(init, &mut f);
@@ -107,7 +108,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
         let mut back_iter = unsafe { MaybeUninit::slice_assume_init_ref(back).iter() };
         back_iter.try_fold(res?, &mut f)
-    }
+    }*/
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
         if n >= count(self.tail, self.head, self.ring.len()) {
@@ -164,13 +165,13 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
         }
     }
 
-    fn try_rfold<B, F, R>(&mut self, init: B, mut f: F) -> R
+    /*fn try_rfold<B, F, R>(&mut self, init: B, mut f: F) -> R
     where
         Self: Sized,
         F: FnMut(B, Self::Item) -> R,
         R: Try<Output = B>,
     {
-        // TODO: this is probably wrong
+        // FIXME: this is probably wrong
         let (front, back) = RingSlices::ring_slices(self.ring, self.head, self.tail);
         let mut front_iter = unsafe { MaybeUninit::slice_assume_init_ref(front).iter() };
         let res = front_iter.try_rfold(init, &mut f);
@@ -178,7 +179,7 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
 
         let mut back_iter = unsafe { MaybeUninit::slice_assume_init_ref(back).iter() };
         back_iter.try_rfold(res?, &mut f)
-    }
+    }*/
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]

@@ -754,7 +754,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }
 
-    /*/// Swaps elements at indices `i` and `j`.
+    /// Swaps elements at indices `i` and `j`.
     ///
     /// `i` and `j` may be equal.
     ///
@@ -781,10 +781,10 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     pub fn swap(&mut self, i: usize, j: usize) {
         assert!(i < self.len());
         assert!(j < self.len());
-        let ri = self.wrap_add(self.tail, i);
-        let rj = self.wrap_add(self.tail, j);
+        let ri = self.offset_index(self.tail, i);
+        let rj = self.offset_index(self.tail, j);
         unsafe { ptr::swap(self.ptr().add(ri), self.ptr().add(rj)) }
-    }*/
+    }
 
     /// Returns the number of elements the deque can hold without
     /// reallocating.
@@ -1059,7 +1059,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }*/
 
-    /*/// Shortens the deque, keeping the first `len` elements and dropping
+    /// Shortens the deque, keeping the first `len` elements and dropping
     /// the rest.
     ///
     /// If `len` is greater than the deque's current length, this has no
@@ -1108,12 +1108,12 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             if len > front.len() {
                 let begin = len - front.len();
                 let drop_back = back.get_unchecked_mut(begin..) as *mut _;
-                self.head = self.head.sub_by(num_dropped);
+                self.head = self.head.advance_back(num_dropped).wrapped_for_storage(self.cap());
                 ptr::drop_in_place(drop_back);
             } else {
                 let drop_back = back as *mut _;
                 let drop_front = front.get_unchecked_mut(len..) as *mut _;
-                self.head = self.head.sub_by(num_dropped);
+                self.head = self.head.advance_back(num_dropped).wrapped_for_storage(self.cap());
 
                 // Make sure the second half is dropped even when a destructor
                 // in the first one panics.
@@ -1121,7 +1121,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                 ptr::drop_in_place(drop_front);
             }
         }
-    }*/
+    }
 
     /// Returns a reference to the underlying allocator.
     #[unstable(feature = "allocator_api", issue = "32838")]
@@ -1462,7 +1462,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         unsafe { Drain::new(drain_head, head, iter, deque) }
     }*/
 
-    /*/// Clears the deque, removing all values.
+    /// Clears the deque, removing all values.
     ///
     /// # Examples
     ///
@@ -1478,9 +1478,9 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     #[inline]
     pub fn clear(&mut self) {
         self.truncate(0);
-    }*/
+    }
 
-    /*/// Returns `true` if the deque contains an element equal to the
+    /// Returns `true` if the deque contains an element equal to the
     /// given value.
     ///
     /// # Examples
@@ -1503,7 +1503,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     {
         let (a, b) = self.as_slices();
         a.contains(x) || b.contains(x)
-    }*/
+    }
 
     /// Provides a reference to the front element, or `None` if the deque is
     /// empty.
@@ -1998,7 +1998,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }*/
 
-    /*/// Removes and returns the element at `index` from the deque.
+    /// Removes and returns the element at `index` from the deque.
     /// Whichever end is closer to the removal point will be moved to make
     /// room, and all the affected elements will be moved to new positions.
     /// Returns `None` if `index` is out of bounds.
@@ -2043,7 +2043,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         //      R - Indicates element that is being removed
         //      M - Indicates element was moved
 
-        let idx = self.wrap_add(self.tail, index);
+        let idx = self.offset_index(self.tail, index);
 
         let elem = unsafe { Some(self.buffer_read(idx)) };
 
@@ -2067,7 +2067,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //               M M
 
                     self.copy(tail + 1, tail, index);
-                    self.tail.advance();
+                    self.set_tail(self.tail.advance(1));
                 }
             }
             (true, false, _) => {
@@ -2081,8 +2081,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [. . . o o o o o o . . . . . . .]
                     //                     M M
 
-                    self.copy(idx, idx + 1, head - idx - 1);
-                    self.head = self.head.sub_by(1);
+                    self.copy(idx, idx + 1, distance_to_head - 1);
+                    self.set_head(self.head.advance_back(1));
                 }
             }
             (false, true, true) => {
@@ -2097,7 +2097,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //                               M M
 
                     self.copy(tail + 1, tail, index);
-                    self.tail.advance();
+                    self.set_tail(self.tail.advance(1));
                 }
             }
             (false, false, false) => {
@@ -2111,8 +2111,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [o o o o o o . . . . . . . o o o]
                     //               M M
 
-                    self.copy(idx, idx + 1, head - idx - 1);
-                    self.head = self.head.sub_by(1);
+                    self.copy(idx, idx + 1, distance_to_head - 1);
+                    self.set_head(self.head.advance_back(1));
                 }
             }
             (false, false, true) => {
@@ -2147,7 +2147,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                         self.copy(0, 1, head - 1);
                     }
 
-                    self.head = self.head.sub_by(1);
+                    self.set_head(self.head.advance_back(1));
                 }
             }
             (false, true, false) => {
@@ -2170,13 +2170,13 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     // move elements from tail to end forward, excluding the last one
                     self.copy(tail + 1, tail, self.cap() - tail - 1);
 
-                    self.tail.advance();
+                    self.set_tail(self.tail.advance(1));
                 }
             }
         }
 
         elem
-    }*/
+    }
 
     /*/// Splits the deque into two at the given index.
     ///
@@ -2972,7 +2972,7 @@ fn is_contiguous(head: usize, tail: usize) -> bool {
     tail < head || tail == 0
 }
 
-/*#[stable(feature = "rust1", since = "1.0.0")]
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<T: PartialEq, A: Allocator> PartialEq for VecDeque2<T, A> {
     fn eq(&self, other: &Self) -> bool {
         if self.len() != other.len() {
@@ -3011,7 +3011,7 @@ impl<T: PartialEq, A: Allocator> PartialEq for VecDeque2<T, A> {
     }
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
+/*#[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Eq, A: Allocator> Eq for VecDeque2<T, A> {}
 
 __impl_slice_eq1! { [] VecDeque2<T, A>, Vec<U, A>, }

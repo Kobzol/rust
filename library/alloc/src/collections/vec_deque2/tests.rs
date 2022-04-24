@@ -407,88 +407,88 @@ fn vd2_test_grow_full_middle_move_t_2() {
     assert_eq!(to_str(&vd), "4,5,6,7,8,h,_,_,_,_,_,_,_,t1,2,3|_,_,_,_,_,_,_,_,_,_,_,_,_,T,_,_");
 }
 
-/*
-def test_grow_t_h_in_bounds():
-    vd = VecDeque.from_str("t1,2,3,h|_,_,_,_")
-    check_grow(vd, [1, 2, 3])
-    assert vd.to_str() == "t1,2,3,h,_,_,_,_|_,_,_,_,_,_,_,_"
-
-
-def test_grow_t_h_overflow():
-    vd = VecDeque.from_str("1,_,_,_|t,h,_,_")
-    check_grow(vd, [1])
-    assert vd.to_str() == "t1,h,_,_,_,_,_,_|_,_,_,_,_,_,_,_"
-
-
-def test_grow_h_t_nothing_to_copy():
-    vd = VecDeque.from_str("_,t1,2,3|h,_,_,_")
-    check_grow(vd, [1, 2, 3])
-    assert vd.to_str() == "_,t1,2,3,h,_,_,_|_,_,_,_,_,_,_,_"
-
-
-def test_grow_h_t_copy_after_t():
-    vd = VecDeque.from_str("3,_,t1,2|_,h,_,_")
-    check_grow(vd, [1, 2, 3])
-    assert vd.to_str() == "_,_,t1,2,3,h,_,_|_,_,_,_,_,_,_,_"
-
-
-def test_grow_h_t_copy_move_t():
-    vd = VecDeque.from_str("2,3,_,t1|_,_,h,_")
-    check_grow(vd, [1, 2, 3])
-    assert vd.to_str() == "2,3,h,_,_,_,_,1|_,_,_,_,_,_,_,t"
-
-
-def test_grow_full_beginning_1():
-    vd = VecDeque.from_str("t1,2,3,4|h,_,_,_")
-    check_grow(vd, [1, 2, 3, 4])
-    assert vd.to_str() == "t1,2,3,4,h,_,_,_|_,_,_,_,_,_,_,_"
-
-
-def test_grow_full_beginning_2():
-    vd = VecDeque.from_str("h1,2,3,4|t,_,_,_")
-    check_grow(vd, [1, 2, 3, 4])
-    assert vd.to_str() == "t1,2,3,4,h,_,_,_|_,_,_,_,_,_,_,_"
-
-
-def test_grow_full_end_1():
-    vd = VecDeque.from_str("1,2,3,t4|_,_,_,h")
-    check_grow(vd, [4, 1, 2, 3])
-    assert vd.to_str() == "1,2,3,h,_,_,_,4|_,_,_,_,_,_,_,t"
-
-
-def test_grow_full_end_2():
-    vd = VecDeque.from_str("2,3,4,h1|_,_,_,t")
-    check_grow(vd, [1, 2, 3, 4])
-    assert vd.to_str() == "2,3,4,h,_,_,_,1|_,_,_,_,_,_,_,t"
-
-
-def test_grow_full_middle_copy_after_t_1():
-    vd = VecDeque.from_str("4,h1,2,3|_,t,_,_")
-    check_grow(vd, [1, 2, 3, 4])
-    assert vd.to_str() == "_,t1,2,3,4,h,_,_|_,_,_,_,_,_,_,_"
-
-
-def test_grow_full_middle_copy_after_t_2():
-    vd = VecDeque.from_str("4,t1,2,3|_,h,_,_")
-    check_grow(vd, [1, 2, 3, 4])
-    assert vd.to_str() == "_,t1,2,3,4,h,_,_|_,_,_,_,_,_,_,_"
-
-
-def test_grow_full_middle_move_t_1():
-    vd = VecDeque.from_str("4,5,6,7,8,t1,2,3|_,_,_,_,_,h,_,_")
-    check_grow(vd, [1, 2, 3, 4, 5, 6, 7, 8])
-    assert vd.to_str() == "4,5,6,7,8,h,_,_,_,_,_,_,_,1,2,3|_,_,_,_,_,_,_,_,_,_,_,_,_,t,_,_"
-
-
-def test_grow_full_middle_move_t_2():
-    vd = VecDeque.from_str("4,5,6,7,8,h1,2,3|_,_,_,_,_,t,_,_")
-    check_grow(vd, [1, 2, 3, 4, 5, 6, 7, 8])
-    assert vd.to_str() == "4,5,6,7,8,h,_,_,_,_,_,_,_,1,2,3|_,_,_,_,_,_,_,_,_,_,_,_,_,t,_,_"
-
-*/
-
-/*
 #[test]
+fn vd2_test_remove_contiguous_closer_to_tail() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    for i in 0..8 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(to_str(&vd), "th0,1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
+    vd.remove(2);
+    assert_eq!(to_str(&vd), "h,t0,1,3,4,5,6,7|H,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn vd2_test_remove_contiguous_closer_to_head() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    for i in 0..8 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(to_str(&vd), "th0,1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
+    vd.remove(6);
+    assert_eq!(to_str(&vd), "t0,1,2,3,4,5,7,h|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn vd2_test_remove_discontiguous_closer_to_tail_in_tail() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    vd.push_front(1);
+    vd.push_front(0);
+    vd.push_back(2);
+    vd.push_back(3);
+    vd.push_back(4);
+
+    assert_eq!(to_str(&vd), "2,3,4,h,_,_,t0,1|_,_,_,_,_,_,T,_");
+    vd.remove(1);
+    assert_eq!(to_str(&vd), "2,3,4,h,_,_,_,t0|_,_,_,_,_,_,_,T");
+}
+
+#[test]
+fn vd2_test_remove_discontiguous_closer_to_head_in_head() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    vd.push_front(1);
+    vd.push_front(0);
+    vd.push_back(2);
+    vd.push_back(3);
+    vd.push_back(4);
+
+    assert_eq!(to_str(&vd), "2,3,4,h,_,_,t0,1|_,_,_,_,_,_,T,_");
+    vd.remove(3);
+    assert_eq!(to_str(&vd), "2,4,h,_,_,_,t0,1|_,_,_,_,_,_,T,_");
+}
+
+#[test]
+fn vd2_test_remove_discontiguous_closer_to_head_in_tail() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+    vd.push_back(4);
+
+    assert_eq!(to_str(&vd), "4,h,_,_,t0,1,2,3|_,_,_,_,T,_,_,_");
+    vd.remove(3);
+    assert_eq!(to_str(&vd), "h,_,_,_,t0,1,2,4|_,_,_,_,T,_,_,_");
+}
+
+#[test]
+fn vd2_test_remove_discontiguous_closer_to_tail_in_head() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(16);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+    for i in 3..10 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(to_str(&vd), "3,4,5,6,7,8,9,h,_,_,_,_,_,t0,1,2|_,_,_,_,_,_,_,_,_,_,_,_,_,T,_,_");
+    vd.remove(5);
+    assert_eq!(to_str(&vd), "2,3,4,6,7,8,9,h,_,_,_,_,_,_,t0,1|_,_,_,_,_,_,_,_,_,_,_,_,_,_,T,_");
+}
+
+/*#[test]
 fn vd2_test_swap() {
     let mut tester = VecDeque2::new();
     tester.push_back(1);
@@ -509,8 +509,17 @@ fn vd2_test_swap() {
     assert_eq!(tester, [3, 1, 2]);
     tester.swap(2, 2);
     assert_eq!(tester, [3, 1, 2]);
+}*/
+
+#[test]
+fn vd2_test_clear() {
+    let mut tester = VecDeque2::new();
+    tester.push_back(1);
+    tester.push_back(2);
+    tester.push_back(3);
+    tester.clear();
+    assert_eq!(tester.len(), 0);
 }
-*/
 
 /*#[test]
 fn vd2_test_contains() {
@@ -527,28 +536,42 @@ fn vd2_test_contains() {
     assert!(!tester.contains(&1));
     assert!(tester.contains(&2));
     assert!(tester.contains(&3));
-}
-*/
+}*/
 
 /*#[test]
-fn vd2_test_clear() {
-    let mut tester = VecDeque2::new();
-    tester.push_back(1);
-    tester.push_back(2);
-    tester.push_back(3);
-    tester.clear();
-    assert_eq!(tester.len(), 0);
-}
+fn vd2_test_remove() {
+    // This test checks that every single combination of tail position, length, and
+    // removal position is tested. Capacity 15 should be large enough to cover every case.
 
-#[test]
-fn vd2_test_iter() {
-    let mut tester = VecDeque2::new();
-    tester.push_back(1);
-    tester.push_back(2);
-    tester.push_back(3);
+    let mut tester = VecDeque2::with_capacity(15);
+    // can't guarantee we got 15, so have to get what we got.
+    // 15 would be great, but we will definitely get 2^k - 1, for k >= 4, or else
+    // this test isn't covering what it wants to
+    let cap = tester.capacity();
 
-    for (index, &item) in tester.iter().enumerate() {
-        assert_eq!(item, index + 1);
+    // len is the length *after* removal
+    let minlen = if cfg!(miri) { cap - 2 } else { 0 }; // Miri is too slow
+    for len in minlen..cap - 1 {
+        // 0, 1, 2, .., len - 1
+        let expected = (0..).take(len).collect::<VecDeque2<_>>();
+        for tail_pos in 0..cap {
+            for to_remove in 0..=len {
+                tester.tail = Counter(tail_pos);
+                tester.head = Counter(tail_pos);
+                for i in 0..len {
+                    if i == to_remove {
+                        tester.push_back(1234);
+                    }
+                    tester.push_back(i);
+                }
+                if to_remove == len {
+                    tester.push_back(1234);
+                }
+                tester.remove(to_remove);
+                assert!(tester.tail < tester.cap());
+                assert!(tester.head < tester.cap());
+                assert_eq!(tester, expected);
+            }
+        }
     }
-}
-*/
+}*/
