@@ -488,6 +488,112 @@ fn vd2_test_remove_discontiguous_closer_to_tail_in_head() {
     assert_eq!(to_str(&vd), "2,3,4,6,7,8,9,h,_,_,_,_,_,_,t0,1|_,_,_,_,_,_,_,_,_,_,_,_,_,_,T,_");
 }
 
+#[test]
+fn vd2_test_insert_tail_zero() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(4);
+    vd.push_back(0);
+    vd.push_back(1);
+
+    assert_eq!(to_str(&vd), "t0,1,h,_|_,_,_,_");
+    vd.insert(0, 9);
+    assert_eq!(to_str(&vd), "0,1,h,t9|_,_,_,T");
+}
+
+#[test]
+fn vd2_test_insert_contiguous_closer_to_tail() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    for i in 0..8 {
+        vd.push_back(i);
+    }
+    vd.pop_front();
+
+    assert_eq!(to_str(&vd), "h,t1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
+    vd.insert(2, 9);
+    assert_eq!(to_str(&vd), "th1,2,9,3,4,5,6,7|H,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn vd2_test_insert_contiguous_closer_to_head() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    for i in 0..8 {
+        vd.push_back(i);
+    }
+    vd.pop_front();
+
+    assert_eq!(to_str(&vd), "h,t1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
+    vd.insert(6, 9);
+    assert_eq!(to_str(&vd), "7,th1,2,3,4,5,6,9|_,H,_,_,_,_,_,_");
+}
+
+// #[test]
+// fn vd2_test_remove_contiguous_closer_to_head() {
+//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+//     for i in 0..8 {
+//         vd.push_back(i);
+//     }
+//
+//     assert_eq!(to_str(&vd), "th0,1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
+//     vd.remove(6);
+//     assert_eq!(to_str(&vd), "t0,1,2,3,4,5,7,h|_,_,_,_,_,_,_,_");
+// }
+//
+// #[test]
+// fn vd2_test_remove_discontiguous_closer_to_tail_in_tail() {
+//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+//     vd.push_front(1);
+//     vd.push_front(0);
+//     vd.push_back(2);
+//     vd.push_back(3);
+//     vd.push_back(4);
+//
+//     assert_eq!(to_str(&vd), "2,3,4,h,_,_,t0,1|_,_,_,_,_,_,T,_");
+//     vd.remove(1);
+//     assert_eq!(to_str(&vd), "2,3,4,h,_,_,_,t0|_,_,_,_,_,_,_,T");
+// }
+//
+// #[test]
+// fn vd2_test_remove_discontiguous_closer_to_head_in_head() {
+//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+//     vd.push_front(1);
+//     vd.push_front(0);
+//     vd.push_back(2);
+//     vd.push_back(3);
+//     vd.push_back(4);
+//
+//     assert_eq!(to_str(&vd), "2,3,4,h,_,_,t0,1|_,_,_,_,_,_,T,_");
+//     vd.remove(3);
+//     assert_eq!(to_str(&vd), "2,4,h,_,_,_,t0,1|_,_,_,_,_,_,T,_");
+// }
+//
+// #[test]
+// fn vd2_test_remove_discontiguous_closer_to_head_in_tail() {
+//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+//     vd.push_front(3);
+//     vd.push_front(2);
+//     vd.push_front(1);
+//     vd.push_front(0);
+//     vd.push_back(4);
+//
+//     assert_eq!(to_str(&vd), "4,h,_,_,t0,1,2,3|_,_,_,_,T,_,_,_");
+//     vd.remove(3);
+//     assert_eq!(to_str(&vd), "h,_,_,_,t0,1,2,4|_,_,_,_,T,_,_,_");
+// }
+//
+// #[test]
+// fn vd2_test_remove_discontiguous_closer_to_tail_in_head() {
+//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(16);
+//     vd.push_front(2);
+//     vd.push_front(1);
+//     vd.push_front(0);
+//     for i in 3..10 {
+//         vd.push_back(i);
+//     }
+//
+//     assert_eq!(to_str(&vd), "3,4,5,6,7,8,9,h,_,_,_,_,_,t0,1,2|_,_,_,_,_,_,_,_,_,_,_,_,_,T,_,_");
+//     vd.remove(5);
+//     assert_eq!(to_str(&vd), "2,3,4,6,7,8,9,h,_,_,_,_,_,_,t0,1|_,_,_,_,_,_,_,_,_,_,_,_,_,_,T,_");
+// }
+
 /*#[test]
 fn vd2_test_swap() {
     let mut tester = VecDeque2::new();

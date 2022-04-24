@@ -1807,7 +1807,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         self.pop_back()
     }
 
-    /*/// Inserts an element at `index` within the deque, shifting all elements
+    /// Inserts an element at `index` within the deque, shifting all elements
     /// with indices greater than or equal to `index` towards the back.
     ///
     /// Element at index 0 is the front of the queue.
@@ -1819,6 +1819,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// # Examples
     ///
     /// ```
+    /// use alloc::collections::vec_deque2::VecDeque2;
     /// use std::collections::VecDeque2;
     ///
     /// let mut vec_deque = VecDeque2::new();
@@ -1859,14 +1860,16 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         //      A - The element that should be after the insertion point
         //      M - Indicates element was moved
 
-        let idx = self.wrap_add(self.tail, index);
+        let idx = self.offset_index(self.tail, index);
 
         let distance_to_tail = index;
         let distance_to_head = self.len() - index;
 
         let contiguous = self.is_contiguous();
 
-        match (contiguous, distance_to_tail <= distance_to_head, idx >= self.tail) {
+        let tail = self.wrapped_tail();
+        let head = self.wrapped_head();
+        match (contiguous, distance_to_tail <= distance_to_head, idx >= tail) {
             (true, true, _) if index == 0 => {
                 // push_front
                 //
@@ -1878,7 +1881,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                 //      [A o o o o o o o . . . . . I]
                 //
 
-                self.tail = self.wrap_sub(self.tail, 1);
+                self.set_tail(self.tail.advance_back(1));
             }
             (true, true, _) => {
                 unsafe {
@@ -1901,13 +1904,13 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [o I A o o o o o . . . . . . . o]
                     //       M                             M
 
-                    let new_tail = self.wrap_sub(self.tail, 1);
+                    let new_tail = self.tail.advance_back(1);
 
-                    self.copy(new_tail, self.tail, 1);
+                    self.copy(new_tail.to_index(self.cap()), tail, 1);
                     // Already moved the tail, so we only copy `index - 1` elements.
-                    self.copy(self.tail, self.tail + 1, index - 1);
+                    self.copy(tail, tail + 1, index - 1);
 
-                    self.tail = new_tail;
+                    self.set_tail(new_tail);
                 }
             }
             (true, false, _) => {
@@ -1921,8 +1924,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [. . . o o o o I A o o . . . . .]
                     //                       M M M
 
-                    self.copy(idx + 1, idx, self.head - idx);
-                    self.head = self.wrap_add(self.head, 1);
+                    self.copy(idx + 1, idx, head - idx);
+                    self.set_head(self.head.advance(1));
                 }
             }
             (false, true, true) => {
@@ -1936,8 +1939,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [o o o o o o . . . . o o I A o o]
                     //                           M M
 
-                    self.copy(self.tail - 1, self.tail, index);
-                    self.tail -= 1;
+                    self.copy(tail - 1, tail, index);
+                    self.set_tail(self.tail.advance_back(1));
                 }
             }
             (false, false, true) => {
@@ -1952,7 +1955,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //       M M M                         M
 
                     // copy elements up to new head
-                    self.copy(1, 0, self.head);
+                    self.copy(1, 0, head);
 
                     // copy last element into empty spot at bottom of buffer
                     self.copy(0, self.cap() - 1, 1);
@@ -1960,7 +1963,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     // move elements from idx to end forward not including ^ element
                     self.copy(idx + 1, idx, self.cap() - 1 - idx);
 
-                    self.head += 1;
+                    self.set_head(self.head.advance(1));
                 }
             }
             (false, true, false) if idx == 0 => {
@@ -1976,12 +1979,12 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //                               M M M
 
                     // copy elements up to new tail
-                    self.copy(self.tail - 1, self.tail, self.cap() - self.tail);
+                    self.copy(tail - 1, tail, self.cap() - tail);
 
                     // copy last element into empty spot at bottom of buffer
                     self.copy(self.cap() - 1, 0, 1);
 
-                    self.tail -= 1;
+                    self.set_tail(self.tail.advance_back(1));
                 }
             }
             (false, true, false) => {
@@ -1996,7 +1999,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //       M M                     M M M M
 
                     // copy elements up to new tail
-                    self.copy(self.tail - 1, self.tail, self.cap() - self.tail);
+                    self.copy(tail - 1, tail, self.cap() - tail);
 
                     // copy last element into empty spot at bottom of buffer
                     self.copy(self.cap() - 1, 0, 1);
@@ -2004,7 +2007,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     // move elements from idx-1 to end forward not including ^ element
                     self.copy(0, 1, idx - 1);
 
-                    self.tail -= 1;
+                    self.set_tail(self.tail.advance_back(1));
                 }
             }
             (false, false, false) => {
@@ -2018,18 +2021,18 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     //      [o o o o I A o o . . . . . o o o]
                     //                 M M M
 
-                    self.copy(idx + 1, idx, self.head - idx);
-                    self.head += 1;
+                    self.copy(idx + 1, idx, head - idx);
+                    self.set_head(self.head.advance(1));
                 }
             }
         }
 
         // tail might've been changed so we need to recalculate
-        let new_idx = self.wrap_add(self.tail, index);
+        let new_idx = self.offset_index(self.tail, index);
         unsafe {
             self.buffer_write(new_idx, value);
         }
-    }*/
+    }
 
     /// Removes and returns the element at `index` from the deque.
     /// Whichever end is closer to the removal point will be moved to make
@@ -3005,7 +3008,7 @@ fn count(tail: Counter, head: Counter, capacity: usize) -> usize {
 
 #[inline]
 fn is_contiguous(head: usize, tail: usize) -> bool {
-    tail < head || tail == 0
+    tail < head || tail == 0// || head == 0 // TODO
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
