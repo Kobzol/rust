@@ -25,10 +25,10 @@ use crate::raw_vec::RawVec;
 use crate::string::String;
 use crate::vec::Vec;
 
-/*#[macro_use]
+#[macro_use]
 mod macros;
 
-#[stable(feature = "drain", since = "1.6.0")]
+/*#[stable(feature = "drain", since = "1.6.0")]
 pub use self::drain::Drain;
 
 mod drain;*/
@@ -1292,17 +1292,17 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         self.tail == self.head
     }
 
-    /*fn range_tail_head<R>(&self, range: R) -> (usize, usize)
+    fn range_tail_head<R>(&self, range: R) -> (Counter, Counter)
     where
         R: RangeBounds<usize>,
     {
         let Range { start, end } = slice::range(range, ..self.len());
-        let tail = self.wrap_add(self.tail, start);
-        let head = self.wrap_add(self.tail, end);
+        let tail = self.tail.wrapped(start);
+        let head = self.head.wrapped(end);
         (tail, head)
-    }*/
+    }
 
-    /*/// Creates an iterator that covers the specified range in the deque.
+    /// Creates an iterator that covers the specified range in the deque.
     ///
     /// # Panics
     ///
@@ -1337,7 +1337,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }
 
-    /// Creates an iterator that covers the specified mutable range in the deque.
+    /*/// Creates an iterator that covers the specified mutable range in the deque.
     ///
     /// # Panics
     ///
@@ -1704,7 +1704,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         is_contiguous(self.wrapped_head(), self.wrapped_tail())
     }
 
-    /*/// Removes an element from anywhere in the deque and returns it,
+    /// Removes an element from anywhere in the deque and returns it,
     /// replacing it with the first element.
     ///
     /// This does not preserve ordering, but is *O*(1).
@@ -1774,7 +1774,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         self.pop_back()
     }
 
-    /// Inserts an element at `index` within the deque, shifting all elements
+    /*/// Inserts an element at `index` within the deque, shifting all elements
     /// with indices greater than or equal to `index` towards the back.
     ///
     /// Element at index 0 is the front of the queue.
@@ -3255,7 +3255,7 @@ impl<T, A: Allocator> From<VecDeque2<T, A>> for Vec<T, A> {
             Vec::from_raw_parts_in(buf, len, cap, alloc)
         }
     }
-}
+}*/
 
 #[stable(feature = "std_collections_from_array", since = "1.56.0")]
 impl<T, const N: usize> From<[T; N]> for VecDeque2<T> {
@@ -3277,8 +3277,8 @@ impl<T, const N: usize> From<[T; N]> for VecDeque2<T> {
                 ptr::copy_nonoverlapping(arr.as_ptr(), deq.ptr(), N);
             }
         }
-        deq.tail = 0;
-        deq.head = N;
+        deq.tail = Counter(0);
+        deq.head = Counter(N);
         deq
     }
-}*/
+}
