@@ -22,6 +22,7 @@ use crate::alloc::{Allocator, Global};
 use crate::collections::TryReserveError;
 use crate::collections::TryReserveErrorKind;
 use crate::raw_vec::RawVec;
+use crate::string::String;
 use crate::vec::Vec;
 
 /*#[macro_use]
@@ -58,12 +59,27 @@ mod ring_slices;
 #[cfg(test)]
 mod tests;
 
+extern "C" {
+    fn dprintf(fd: i32, s: *const u8, ...);
+}
+macro_rules! dbg_printf {
+    ($s:expr) => {
+        unsafe { dprintf(2, $s as *const u8); }
+    }
+}
+
+#[inline]
+fn log(mut string: String) {
+    string.push('\n');
+    dbg_printf!(string.as_bytes().as_ptr());
+}
+
 const MINIMUM_CAPACITY: usize = 1;
 
 const MAXIMUM_ZST_CAPACITY: usize = 1 << (usize::BITS - 1); // Largest possible power of two
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-struct Counter(usize);
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct Counter(usize);
 
 impl Counter {
     // Returns the wrapped value of the counter.
@@ -80,23 +96,19 @@ impl Counter {
         Self(wrap_index(self.0, capacity))
     }
 
+    // Returns the wrapped value successible for storing.
     #[inline]
-    fn advance(&mut self) {
-        self.advance_by(1);
+    fn wrapped_for_storage(&self, capacity: usize) -> Self {
+        Self(wrap_index(self.0, capacity * 2))
     }
 
     #[inline]
-    fn advance_by(&mut self, offset: usize) {
-        self.0 = self.0.wrapping_add(offset);
-    }
-
-    #[inline]
-    fn add(&self, offset: usize) -> Self {
+    fn advance(&self, offset: usize) -> Self {
         Self(self.0.wrapping_add(offset))
     }
 
     #[inline]
-    fn sub_by(&self, offset: usize) -> Self {
+    fn advance_back(&self, offset: usize) -> Self {
         Self(self.0.wrapping_sub(offset))
     }
 }
@@ -231,13 +243,6 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }
 
-    /// Doubled capacity.
-    /// The indices (head and tail) are always stored modulo this value.
-    #[inline]
-    fn cap_doubled(&self) -> usize {
-        self.cap().wrapping_mul(2)
-    }
-
     /// Returns head wrapped to the current capacity.
     #[inline]
     fn wrapped_head(&self) -> usize {
@@ -305,19 +310,19 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// `index` + `offset`.
     #[inline]
     fn offset_index(&self, index: Counter, offset: usize) -> usize {
-        index.add(offset).to_index(self.cap())
+        index.advance(offset).to_index(self.cap())
     }
 
     // Sets the value of head, making sure that it is stored modulo capacity * 2.
     #[inline]
     fn set_head(&mut self, value: Counter) {
-        self.head = value.wrapped(self.cap_doubled());
+        self.head = value.wrapped_for_storage(self.cap());
     }
 
     // Sets the value of tail, making sure that it is stored modulo capacity * 2.
     #[inline]
     fn set_tail(&mut self, value: Counter) {
-        self.tail = value.wrapped(self.cap_doubled());
+        self.tail = value.wrapped_for_storage(self.cap());
     }
 
     /// Copies a contiguous block of memory len long from src to dst
@@ -529,47 +534,97 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     unsafe fn handle_capacity_increase(&mut self, old_capacity: usize) {
         let new_capacity = self.cap();
 
-        // Move the shortest contiguous section of the ring buffer
-        //    T             H
-        //   [o o o o o o o . ]
-        //    T             H
-        // A [o o o o o o o . . . . . . . . . ]
-        //
-        //        H T
-        //   [o o . o o o o o ]
-        //          T             H
-        // B [. . . o o o o o o o . . . . . . ]
-        //
-        //              H T
-        //   [o o o o o . o o ]
-        //              H                 T
-        // C [o o o o o . . . . . . . . . o o ]
+        // How did the counters look like before we reallocated?
+        let wrapped_tail = self.tail.wrapped(old_capacity);
+        let wrapped_head = self.head.wrapped(old_capacity);
 
-        let tail = self.wrapped_tail();
-        let head = self.wrapped_head();
-        if tail <= head {
-            // A
-            // Nop
-        } else if head < old_capacity - tail {
-            // B
-            unsafe {
-                self.copy_nonoverlapping(old_capacity, 0, head);
-            }
-            // We need to set the head explicitly to avoid checking if it was within the capacity
-            // or if it was within capacity * 2.
-            self.set_head(Counter(old_capacity).add(head));
-            debug_assert!(self.wrapped_head() > tail);
+        // Legend:
+        // t = wrapped tail
+        // T = actual tail
+        // h = wrapped head
+        // H = actual head
+        //
+        // actual capacity   aux capacity
+        // [ . . . . . . . | _ _ _ _ _ _ _ ]
+
+        if wrapped_tail < wrapped_head || self.is_empty() {
+            // Either the queue was empty or the wrapped tail was before wrapped head.
+            // In this case, we don't need to move any data, we just trim the
+            // counters to the new capacity.
+            // This can only happen if both tail and head are within the original capacity,
+            // or if both of them were in the aux capacity.
+            //
+            // Both within:
+            //  t     h
+            // [o o o .|_ _ _ _]
+            //  t     h
+            // [o o o . . . . .|_ _ _ _ _ _ _ _]
+            //
+            // Both in aux:
+            //  t h     T H
+            // [o . . .|_ _ _ _]
+            //  t h
+            // [o . . . . . . .|_ _ _ _ _ _ _ _]
+
+            self.set_tail(wrapped_tail);
+            self.set_head(wrapped_head);
         } else {
-            // C
-            let new_tail = new_capacity - (old_capacity - tail);
-            unsafe {
-                self.copy_nonoverlapping(new_tail, tail, old_capacity - tail);
+            // Either the queue was full, or the wrapped head was before the wrapepd tail.
+            // In this case we either copy data from the beginning after the tail,
+            // or we copy data from the tail to the end, depending on which part of the data is
+            // smaller.
+            let after_tail = old_capacity - wrapped_tail.to_index(old_capacity);
+            let at_start = wrapped_head.to_index(old_capacity);
+
+            if at_start < after_tail {
+                // The data at the start of the buffer is shorter, so we copy it after the tail.
+                //
+                // Non-full case:
+                //    h t      H
+                // [o . o o |_ _ _ _]
+                //      t     h
+                // [. . o o o . . .|_ _ _ _ _ _ _ _]
+                //
+                // Full-case:
+                //    t
+                //    h        T
+                // [o o o o |_ _ _ _]
+                //    t       h
+                // [. o o o o . . .|_ _ _ _ _ _ _ _]
+                unsafe {
+                    self.copy_nonoverlapping(old_capacity, 0, at_start);
+                }
+                // Reset tail to the wrapped location
+                self.set_tail(wrapped_tail);
+                // Set head directly after the copied data
+                self.set_head(Counter(old_capacity + at_start));
+            } else {
+                // The data after tail is shorter, so we copy it to the end of the array.
+                //
+                // Non-full case:
+                //      h t      H
+                // [o o . o |_ _ _ _]
+                //      h         t               T
+                // [o o . . . . . o|_ _ _ _ _ _ _ _]
+                //
+                // Full case:
+                //        t
+                //        h        H
+                // [o o o o |_ _ _ _]
+                //        h       t               T
+                // [o o o . . . . o|_ _ _ _ _ _ _ _]
+                let new_tail = new_capacity - after_tail;
+                unsafe {
+                    self.copy_nonoverlapping(new_tail, wrapped_tail.to_index(old_capacity), after_tail);
+                }
+                // Reset head to the wrapped location
+                self.set_head(Counter(at_start));
+                // Set tail at the start of the copied data.
+                // We move the tail from the end of the new aux capacity.
+                self.set_tail(Counter((new_capacity * 2) - after_tail));
             }
-            // We need to set the tail explicitly to avoid checking if it was within the capacity
-            // or if it was within capacity * 2.
-            self.set_tail(Counter(new_tail));
-            debug_assert!(head < self.wrapped_tail());
         }
+
         debug_assert!(self.cap().is_power_of_two());
     }
 }
@@ -794,7 +849,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn reserve(&mut self, additional: usize) {
         let old_cap = self.cap();
-        let used_cap = self.len() + 1;
+        let used_cap = self.len();
         let new_cap = used_cap
             .checked_add(additional)
             .and_then(|needed_cap| needed_cap.checked_next_power_of_two())
@@ -1092,7 +1147,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn iter(&self) -> Iter<'_, T> {
-        Iter { tail: self.wrapped_tail(), head: self.wrapped_head(), ring: unsafe { self.buffer_as_slice() } }
+        Iter { tail: self.tail, head: self.head, ring: unsafe { self.buffer_as_slice() } }
     }
 
     /*/// Returns a front-to-back iterator that returns mutable references.
@@ -1156,7 +1211,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         // wrapped tail are initialized.
         unsafe {
             let buf = self.buffer_as_slice();
-            let (front, back) = RingSlices::ring_slices(buf, self.wrapped_head(), self.wrapped_tail());
+            let (front, back) = RingSlices::ring_slices(buf, self.head, self.tail);
             (MaybeUninit::slice_assume_init_ref(front), MaybeUninit::slice_assume_init_ref(back))
         }
     }
@@ -1194,8 +1249,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         // - `RingSlices::ring_slices` guarantees that the slices split according to wrapped head
         // and wrapped tail are initialized.
         unsafe {
-            let head = self.wrapped_head();
-            let tail = self.wrapped_tail();
+            let head = self.head;
+            let tail = self.tail;
             let buf = self.buffer_as_mut_slice();
             let (front, back) = RingSlices::ring_slices(buf, head, tail);
             (MaybeUninit::slice_assume_init_mut(front), MaybeUninit::slice_assume_init_mut(back))
@@ -1217,7 +1272,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn len(&self) -> usize {
         // We need to wrap by doubled capacity to distinguish empty and full cases.
-        (self.head - self.tail).to_index(self.cap_doubled())
+        count(self.tail, self.head, self.cap())
     }
 
     /// Returns `true` if the deque is empty.
@@ -1554,13 +1609,13 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// assert_eq!(d.pop_front(), Some(2));
     /// assert_eq!(d.pop_front(), None);
     /// ```
-    /*#[stable(feature = "rust1", since = "1.0.0")]
+    #[stable(feature = "rust1", since = "1.0.0")]
     pub fn pop_front(&mut self) -> Option<T> {
         if self.is_empty() {
             None
         } else {
             let tail = self.wrapped_tail();
-            self.tail.advance();
+            self.set_tail(self.tail.advance(1));
             unsafe { Some(self.buffer_read(tail)) }
         }
     }
@@ -1584,7 +1639,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         if self.is_empty() {
             None
         } else {
-            self.head = self.head.sub_by(1);
+            self.set_head(self.head.advance_back(1));
             let head = self.wrapped_head();
             unsafe { Some(self.buffer_read(head)) }
         }
@@ -1608,15 +1663,18 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             self.grow();
         }
 
-        // log::info!("tail before: {:?}", self.tail);
-        self.tail = self.tail.sub_by(1);
-        // eprintln!("tail after: {:?}", self.tail);
+        self.set_tail(self.tail.advance_back(1));
         let tail = self.wrapped_tail();
-        // eprintln!("tail wrapped: {:?}", tail);
         unsafe {
             self.buffer_write(tail, value);
         }
-    }*/
+    }
+
+    fn debug(&self, msg: &str) {
+        log(format!("{msg}: Cap: {}, len: {}, empty: {}, full: {}, head: {:?}, whead: {}, tail: {:?}, wtail: {}",
+                    self.cap(), self.len(), self.is_empty(), self.is_full(), self.head, self.wrapped_head(),
+        self.tail, self.wrapped_tail()));
+    }
 
     /// Appends an element to the back of the deque.
     ///
@@ -1637,15 +1695,13 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
 
         let head = self.head;
-        self.set_head(self.head.add(1));
+        self.set_head(self.head.advance(1));
         unsafe { self.buffer_write(head.to_index(self.cap()), value) }
     }
 
     #[inline]
     fn is_contiguous(&self) -> bool {
-        // FIXME: Should we consider `head == 0` to mean
-        // that `self` is contiguous?
-        self.wrapped_tail() <= self.wrapped_head()
+        is_contiguous(self.wrapped_head(), self.wrapped_tail())
     }
 
     /*/// Removes an element from anywhere in the deque and returns it,
@@ -2331,6 +2387,9 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         // Extend or possibly remove this assertion when valid use-cases for growing the
         // buffer without it being full emerge
         debug_assert!(self.is_full());
+
+        let old_len = self.len();
+
         let old_cap = self.cap();
         let additional = old_cap.max(MINIMUM_CAPACITY);
         self.buf.reserve_exact(old_cap, additional);
@@ -2339,6 +2398,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             self.handle_capacity_increase(old_cap);
         }
         debug_assert!(!self.is_full());
+        debug_assert_eq!(old_len, self.len());
     }
 
     /*/// Modifies the deque in-place so that `len()` is equal to `new_len`,
@@ -2903,9 +2963,13 @@ fn wrap_index(index: usize, size: usize) -> usize {
 
 /// Calculate the number of elements left to be read in the buffer
 #[inline]
-fn count(tail: usize, head: usize, size: usize) -> usize {
-    // size is always a power of 2
-    (head.wrapping_sub(tail)) & (size - 1)
+fn count(tail: Counter, head: Counter, capacity: usize) -> usize {
+    (head - tail).to_index(capacity * 2)
+}
+
+#[inline]
+fn is_contiguous(head: usize, tail: usize) -> bool {
+    tail < head || tail == 0
 }
 
 /*#[stable(feature = "rust1", since = "1.0.0")]
