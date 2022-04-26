@@ -195,7 +195,7 @@ impl<T: Clone, A: Allocator + Clone> Clone for VecDeque2<T, A> {
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T, A: Allocator> Drop for VecDeque2<T, A> {
     fn drop(&mut self) {
-        /*/// Runs the destructor for all items in the slice when it gets dropped (normally or
+        /// Runs the destructor for all items in the slice when it gets dropped (normally or
         /// during unwinding).
         struct Dropper<'a, T>(&'a mut [T]);
 
@@ -213,7 +213,7 @@ unsafe impl<#[may_dangle] T, A: Allocator> Drop for VecDeque2<T, A> {
             // use drop for [T]
             ptr::drop_in_place(front);
         }
-        // RawVec handles deallocation*/
+        // RawVec handles deallocation
     }
 }
 
@@ -299,13 +299,6 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     fn is_full(&self) -> bool {
         self.cap() == self.len()
     }
-
-    /// Returns the index in the underlying buffer for a given logical element
-    /// index.
-    /*#[inline]
-    fn wrap_index(&self, idx: usize) -> usize {
-        wrap_index(idx, self.cap())
-    }*/
 
     /// Returns the index in the underlying buffer for a given logical element
     /// `index` + `offset`.
@@ -3142,7 +3135,7 @@ impl<'a, T, A: Allocator> IntoIterator for &'a VecDeque2<T, A> {
     }
 }
 
-/*#[stable(feature = "rust1", since = "1.0.0")]
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T, A: Allocator> IntoIterator for &'a mut VecDeque2<T, A> {
     type Item = &'a mut T;
     type IntoIter = IterMut<'a, T>;
@@ -3150,7 +3143,7 @@ impl<'a, T, A: Allocator> IntoIterator for &'a mut VecDeque2<T, A> {
     fn into_iter(self) -> IterMut<'a, T> {
         self.iter_mut()
     }
-}*/
+}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T, A: Allocator> Extend<T> for VecDeque2<T, A> {
@@ -3213,7 +3206,6 @@ impl<T: fmt::Debug, A: Allocator> fmt::Debug for VecDeque2<T, A> {
     }
 }
 
-/*
 #[stable(feature = "vecdeque_vec_conversions", since = "1.10.0")]
 impl<T, A: Allocator> From<Vec<T, A>> for VecDeque2<T, A> {
     /// Turn a [`Vec<T>`] into a [`VecDeque2<T>`].
@@ -3234,8 +3226,7 @@ impl<T, A: Allocator> From<Vec<T, A>> for VecDeque2<T, A> {
             // We need to resize if the capacity is not a power of two, too small or
             // doesn't have at least one free space. We do this while it's still in
             // the `Vec` so the items will drop on panic.
-            let min_cap = cmp::max(MINIMUM_CAPACITY, len) + 1;
-            let cap = cmp::max(min_cap, other.capacity()).next_power_of_two();
+            let cap = other.capacity().next_power_of_two();
             if other.capacity() != cap {
                 other.reserve_exact(cap - len);
             }
@@ -3244,7 +3235,7 @@ impl<T, A: Allocator> From<Vec<T, A>> for VecDeque2<T, A> {
         unsafe {
             let (other_buf, len, capacity, alloc) = other.into_raw_parts_with_alloc();
             let buf = RawVec::from_raw_parts_in(other_buf, capacity, alloc);
-            VecDeque2 { tail: 0, head: len, buf }
+            VecDeque2 { tail: Counter(0), head: Counter(len), buf }
         }
     }
 }
@@ -3290,13 +3281,13 @@ impl<T, A: Allocator> From<VecDeque2<T, A>> for Vec<T, A> {
             let cap = other.cap();
             let alloc = ptr::read(other.allocator());
 
-            if other.tail != 0 {
-                ptr::copy(buf.add(other.tail), buf, len);
+            if other.wrapped_tail() != 0 {
+                ptr::copy(buf.add(other.wrapped_tail()), buf, len);
             }
             Vec::from_raw_parts_in(buf, len, cap, alloc)
         }
     }
-}*/
+}
 
 #[stable(feature = "std_collections_from_array", since = "1.56.0")]
 impl<T, const N: usize> From<[T; N]> for VecDeque2<T> {

@@ -22,21 +22,6 @@ fn vd2_test_empty_2() {
 }
 
 #[test]
-fn vd2_test_get() {
-    let mut tester: VecDeque2<u64> = VecDeque2::new();
-    tester.push_back(1);
-    tester.push_back(2);
-    tester.push_back(3);
-
-    assert_eq!(tester.len(), 3);
-
-    assert_eq!(tester.get(0), Some(&1));
-    assert_eq!(tester.get(1), Some(&2));
-    assert_eq!(tester.get(2), Some(&3));
-    assert_eq!(tester.get(3), None);
-}
-
-#[test]
 fn vd2_test_pop_back() {
     let mut tester: VecDeque2<u64> = VecDeque2::new();
     assert_eq!(tester.len(), 0);
@@ -570,98 +555,6 @@ fn vd2_test_make_contiguous_c() {
     assert_eq!(to_str(&vd), "t0,1,2,3,4,5,6,h|_,_,_,_,_,_,_,_");
 }
 
-// #[test]
-// fn vd2_test_remove_contiguous_closer_to_head() {
-//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
-//     for i in 0..8 {
-//         vd.push_back(i);
-//     }
-//
-//     assert_eq!(to_str(&vd), "th0,1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
-//     vd.remove(6);
-//     assert_eq!(to_str(&vd), "t0,1,2,3,4,5,7,h|_,_,_,_,_,_,_,_");
-// }
-//
-// #[test]
-// fn vd2_test_remove_discontiguous_closer_to_tail_in_tail() {
-//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
-//     vd.push_front(1);
-//     vd.push_front(0);
-//     vd.push_back(2);
-//     vd.push_back(3);
-//     vd.push_back(4);
-//
-//     assert_eq!(to_str(&vd), "2,3,4,h,_,_,t0,1|_,_,_,_,_,_,T,_");
-//     vd.remove(1);
-//     assert_eq!(to_str(&vd), "2,3,4,h,_,_,_,t0|_,_,_,_,_,_,_,T");
-// }
-//
-// #[test]
-// fn vd2_test_remove_discontiguous_closer_to_head_in_head() {
-//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
-//     vd.push_front(1);
-//     vd.push_front(0);
-//     vd.push_back(2);
-//     vd.push_back(3);
-//     vd.push_back(4);
-//
-//     assert_eq!(to_str(&vd), "2,3,4,h,_,_,t0,1|_,_,_,_,_,_,T,_");
-//     vd.remove(3);
-//     assert_eq!(to_str(&vd), "2,4,h,_,_,_,t0,1|_,_,_,_,_,_,T,_");
-// }
-//
-// #[test]
-// fn vd2_test_remove_discontiguous_closer_to_head_in_tail() {
-//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
-//     vd.push_front(3);
-//     vd.push_front(2);
-//     vd.push_front(1);
-//     vd.push_front(0);
-//     vd.push_back(4);
-//
-//     assert_eq!(to_str(&vd), "4,h,_,_,t0,1,2,3|_,_,_,_,T,_,_,_");
-//     vd.remove(3);
-//     assert_eq!(to_str(&vd), "h,_,_,_,t0,1,2,4|_,_,_,_,T,_,_,_");
-// }
-//
-// #[test]
-// fn vd2_test_remove_discontiguous_closer_to_tail_in_head() {
-//     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(16);
-//     vd.push_front(2);
-//     vd.push_front(1);
-//     vd.push_front(0);
-//     for i in 3..10 {
-//         vd.push_back(i);
-//     }
-//
-//     assert_eq!(to_str(&vd), "3,4,5,6,7,8,9,h,_,_,_,_,_,t0,1,2|_,_,_,_,_,_,_,_,_,_,_,_,_,T,_,_");
-//     vd.remove(5);
-//     assert_eq!(to_str(&vd), "2,3,4,6,7,8,9,h,_,_,_,_,_,_,t0,1|_,_,_,_,_,_,_,_,_,_,_,_,_,_,T,_");
-// }
-
-/*#[test]
-fn vd2_test_swap() {
-    let mut tester = VecDeque2::new();
-    tester.push_back(1);
-    tester.push_back(2);
-    tester.push_back(3);
-
-    assert_eq!(tester, [1, 2, 3]);
-
-    tester.swap(0, 0);
-    assert_eq!(tester, [1, 2, 3]);
-    tester.swap(0, 1);
-    assert_eq!(tester, [2, 1, 3]);
-    tester.swap(2, 1);
-    assert_eq!(tester, [2, 3, 1]);
-    tester.swap(1, 2);
-    assert_eq!(tester, [2, 1, 3]);
-    tester.swap(0, 2);
-    assert_eq!(tester, [3, 1, 2]);
-    tester.swap(2, 2);
-    assert_eq!(tester, [3, 1, 2]);
-}*/
-
 #[test]
 fn vd2_test_clear() {
     let mut tester = VecDeque2::new();
@@ -672,29 +565,12 @@ fn vd2_test_clear() {
     assert_eq!(tester.len(), 0);
 }
 
-/*#[test]
-fn vd2_test_contains() {
-    let mut tester = VecDeque2::new();
-    tester.push_back(1);
-    tester.push_back(2);
-    tester.push_back(3);
-
-    assert!(tester.contains(&1));
-    assert!(tester.contains(&3));
-    assert!(!tester.contains(&0));
-    assert!(!tester.contains(&4));
-    tester.remove(0);
-    assert!(!tester.contains(&1));
-    assert!(tester.contains(&2));
-    assert!(tester.contains(&3));
-}*/
-
-/*#[test]
+#[test]
 fn vd2_test_remove() {
     // This test checks that every single combination of tail position, length, and
     // removal position is tested. Capacity 15 should be large enough to cover every case.
 
-    let mut tester = VecDeque2::with_capacity(15);
+    let mut tester = VecDeque2::with_capacity(16);
     // can't guarantee we got 15, so have to get what we got.
     // 15 would be great, but we will definitely get 2^k - 1, for k >= 4, or else
     // this test isn't covering what it wants to
@@ -719,18 +595,17 @@ fn vd2_test_remove() {
                     tester.push_back(1234);
                 }
                 tester.remove(to_remove);
-                assert!(tester.tail < tester.cap());
-                assert!(tester.head < tester.cap());
+                assert!(tester.tail.0 < tester.cap() * 2);
+                assert!(tester.head.0 < tester.cap() * 2);
                 assert_eq!(tester, expected);
             }
         }
     }
-}*/
+}
 
-/*
 #[test]
-fn test_get() {
-    let mut tester = VecDeque::new();
+fn vd2_test_get() {
+    let mut tester = VecDeque2::new();
     tester.push_back(1);
     tester.push_back(2);
     tester.push_back(3);
@@ -751,8 +626,8 @@ fn test_get() {
 }
 
 #[test]
-fn test_get_mut() {
-    let mut tester = VecDeque::new();
+fn vd2_test_get_mut() {
+    let mut tester = VecDeque2::new();
     tester.push_back(1);
     tester.push_back(2);
     tester.push_back(3);
@@ -782,8 +657,8 @@ fn test_get_mut() {
 }
 
 #[test]
-fn test_swap() {
-    let mut tester = VecDeque::new();
+fn vd2_test_swap() {
+    let mut tester = VecDeque2::new();
     tester.push_back(1);
     tester.push_back(2);
     tester.push_back(3);
@@ -806,8 +681,8 @@ fn test_swap() {
 
 #[test]
 #[should_panic = "assertion failed: j < self.len()"]
-fn test_swap_panic() {
-    let mut tester = VecDeque::new();
+fn vd2_test_swap_panic() {
+    let mut tester = VecDeque2::new();
     tester.push_back(1);
     tester.push_back(2);
     tester.push_back(3);
@@ -815,8 +690,8 @@ fn test_swap_panic() {
 }
 
 #[test]
-fn test_reserve_exact() {
-    let mut tester: VecDeque<i32> = VecDeque::with_capacity(1);
+fn vd2_test_reserve_exact() {
+    let mut tester: VecDeque2<i32> = VecDeque2::with_capacity(1);
     assert!(tester.capacity() == 1);
     tester.reserve_exact(50);
     assert!(tester.capacity() >= 51);
@@ -828,14 +703,14 @@ fn test_reserve_exact() {
 
 #[test]
 #[should_panic = "capacity overflow"]
-fn test_reserve_exact_panic() {
-    let mut tester: VecDeque<i32> = VecDeque::new();
+fn vd2_test_reserve_exact_panic() {
+    let mut tester: VecDeque2<i32> = VecDeque2::new();
     tester.reserve_exact(usize::MAX);
 }
 
 #[test]
-fn test_try_reserve_exact() {
-    let mut tester: VecDeque<i32> = VecDeque::with_capacity(1);
+fn vd2_test_try_reserve_exact() {
+    let mut tester: VecDeque2<i32> = VecDeque2::with_capacity(1);
     assert!(tester.capacity() == 1);
     assert_eq!(tester.try_reserve_exact(100), Ok(()));
     assert!(tester.capacity() >= 100);
@@ -849,8 +724,8 @@ fn test_try_reserve_exact() {
 }
 
 #[test]
-fn test_try_reserve() {
-    let mut tester: VecDeque<i32> = VecDeque::with_capacity(1);
+fn vd2_test_try_reserve() {
+    let mut tester: VecDeque2<i32> = VecDeque2::with_capacity(1);
     assert!(tester.capacity() == 1);
     assert_eq!(tester.try_reserve(100), Ok(()));
     assert!(tester.capacity() >= 100);
@@ -864,8 +739,8 @@ fn test_try_reserve() {
 }
 
 #[test]
-fn test_contains() {
-    let mut tester = VecDeque::new();
+fn vd2_test_contains() {
+    let mut tester = VecDeque2::new();
     tester.push_back(1);
     tester.push_back(2);
     tester.push_back(3);
@@ -881,8 +756,8 @@ fn test_contains() {
 }
 
 #[test]
-fn test_rotate_left_right() {
-    let mut tester: VecDeque<_> = (1..=10).collect();
+fn vd2_test_rotate_left_right() {
+    let mut tester: VecDeque2<_> = (1..=10).collect();
 
     assert_eq!(tester.len(), 10);
 
@@ -910,24 +785,24 @@ fn test_rotate_left_right() {
 
 #[test]
 #[should_panic = "assertion failed: mid <= self.len()"]
-fn test_rotate_left_panic() {
-    let mut tester: VecDeque<_> = (1..=10).collect();
+fn vd2_test_rotate_left_panic() {
+    let mut tester: VecDeque2<_> = (1..=10).collect();
     tester.rotate_left(tester.len() + 1);
 }
 
 #[test]
 #[should_panic = "assertion failed: k <= self.len()"]
-fn test_rotate_right_panic() {
-    let mut tester: VecDeque<_> = (1..=10).collect();
+fn vd2_test_rotate_right_panic() {
+    let mut tester: VecDeque2<_> = (1..=10).collect();
     tester.rotate_right(tester.len() + 1);
 }
 
 #[test]
-fn test_binary_search() {
+fn vd2_test_binary_search() {
     // If the givin VecDeque is not sorted, the returned result is unspecified and meaningless,
     // as this method performs a binary search.
 
-    let tester: VecDeque<_> = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55].into();
+    let tester: VecDeque2<_> = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55].into();
 
     assert_eq!(tester.binary_search(&0), Ok(0));
     assert_eq!(tester.binary_search(&5), Ok(5));
@@ -936,42 +811,7 @@ fn test_binary_search() {
     assert_eq!(tester.binary_search(&-1), Err(0));
     assert!(matches!(tester.binary_search(&1), Ok(1..=2)));
 
-    let tester: VecDeque<_> = [1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3].into();
-
-
-
-
-
-
-
-
-
-
-
-              Mark-Simulacrum marked this conversation as resolved.
-
-
-
-
-
-Show resolved
-
-
-Hide resolved
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    let tester: VecDeque2<_> = [1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3].into();
     assert_eq!(tester.binary_search(&1), Ok(0));
     assert!(matches!(tester.binary_search(&2), Ok(1..=4)));
     assert!(matches!(tester.binary_search(&3), Ok(5..=13)));
@@ -982,11 +822,11 @@ Hide resolved
 }
 
 #[test]
-fn test_binary_search_by() {
+fn vd2_test_binary_search_by() {
     // If the givin VecDeque is not sorted, the returned result is unspecified and meaningless,
     // as this method performs a binary search.
 
-    let tester: VecDeque<_> = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55].into();
+    let tester: VecDeque2<_> = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55].into();
 
     assert_eq!(tester.binary_search_by(|x| x.cmp(&0)), Ok(0));
     assert_eq!(tester.binary_search_by(|x| x.cmp(&5)), Ok(5));
@@ -997,11 +837,11 @@ fn test_binary_search_by() {
 }
 
 #[test]
-fn test_binary_search_key() {
+fn vd2_test_binary_search_key() {
     // If the givin VecDeque is not sorted, the returned result is unspecified and meaningless,
     // as this method performs a binary search.
 
-    let tester: VecDeque<_> = [
+    let tester: VecDeque2<_> = [
         (-1, 0),
         (2, 10),
         (6, 5),
@@ -1029,7 +869,7 @@ fn test_binary_search_key() {
     assert_eq!(tester.binary_search_by_key(&55, |&(a, _b)| a), Err(13));
     assert_eq!(tester.binary_search_by_key(&100, |&(a, _b)| a), Err(13));
 
-    let tester: VecDeque<_> = [
+    let tester: VecDeque2<_> = [
         (0, 0),
         (2, 1),
         (6, 1),
@@ -1056,4 +896,3 @@ fn test_binary_search_key() {
     assert_eq!(tester.binary_search_by_key(&56, |&(_a, b)| b), Err(13));
     assert_eq!(tester.binary_search_by_key(&100, |&(_a, b)| b), Err(13));
 }
-*/
