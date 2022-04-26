@@ -525,6 +525,51 @@ fn vd2_test_insert_contiguous_closer_to_head() {
     assert_eq!(to_str(&vd), "7,th1,2,3,4,5,6,9|_,H,_,_,_,_,_,_");
 }
 
+#[test]
+fn vd2_test_make_contiguous_a() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(16);
+    vd.push_back(3);
+    vd.push_back(4);
+    vd.push_back(5);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+
+    assert_eq!(to_str(&vd), "3,4,5,h,_,_,_,_,_,_,_,_,_,t0,1,2|_,_,_,_,_,_,_,_,_,_,_,_,_,T,_,_");
+    vd.make_contiguous();
+    assert_eq!(to_str(&vd), "t0,1,2,3,4,5,h,_,_,_,_,_,_,_,_,_|_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn vd2_test_make_contiguous_b() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    vd.push_back(4);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+
+    assert_eq!(to_str(&vd), "4,h,_,_,t0,1,2,3|_,_,_,_,T,_,_,_");
+    vd.make_contiguous();
+    assert_eq!(to_str(&vd), "_,t0,1,2,3,4,h,_|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn vd2_test_make_contiguous_c() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    vd.push_back(4);
+    vd.push_back(5);
+    vd.push_back(6);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+
+    assert_eq!(to_str(&vd), "4,5,6,h,t0,1,2,3|_,_,_,_,T,_,_,_");
+    vd.make_contiguous();
+    assert_eq!(to_str(&vd), "t0,1,2,3,4,5,6,h|_,_,_,_,_,_,_,_");
+}
+
 // #[test]
 // fn vd2_test_remove_contiguous_closer_to_head() {
 //     let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);

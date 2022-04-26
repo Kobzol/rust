@@ -2475,7 +2475,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }
 
-    /*/// Rearranges the internal storage of this deque so it is one contiguous
+    /// Rearranges the internal storage of this deque so it is one contiguous
     /// slice, which is then returned.
     ///
     /// This method does not allocate and does not change the order of the
@@ -2549,8 +2549,10 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         let cap = self.cap();
         let len = self.len();
 
-        let free = self.tail - self.head;
-        let tail_len = cap - self.tail;
+        let wrapped_tail = self.wrapped_tail();
+        let wrapped_head = self.wrapped_head();
+        let free = wrapped_tail - wrapped_head;
+        let tail_len = cap - wrapped_tail;
 
         if free >= tail_len {
             // there is enough free space to copy the tail in one go,
@@ -2560,15 +2562,15 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             // from: DEFGH....ABC
             // to:   ABCDEFGH....
             unsafe {
-                ptr::copy(buf, buf.add(tail_len), self.head);
+                ptr::copy(buf, buf.add(tail_len), wrapped_head);
                 // ...DEFGH.ABC
-                ptr::copy_nonoverlapping(buf.add(self.tail), buf, tail_len);
+                ptr::copy_nonoverlapping(buf.add(wrapped_tail), buf, tail_len);
                 // ABCDEFGH....
 
-                self.tail = 0;
-                self.head = len;
+                self.set_tail(Counter(0));
+                self.set_head(Counter(len));
             }
-        } else if free > self.head {
+        } else if free > wrapped_head {
             // FIXME: We currently do not consider ....ABCDEFGH
             // to be contiguous because `head` would be `0` in this
             // case. While we probably want to change this it
@@ -2582,13 +2584,13 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             // from: FGH....ABCDE
             // to:   ...ABCDEFGH.
             unsafe {
-                ptr::copy(buf.add(self.tail), buf.add(self.head), tail_len);
+                ptr::copy(buf.add(wrapped_tail), buf.add(wrapped_head), tail_len);
                 // FGHABCDE....
-                ptr::copy_nonoverlapping(buf, buf.add(self.head + tail_len), self.head);
+                ptr::copy_nonoverlapping(buf, buf.add(wrapped_head + tail_len), wrapped_head);
                 // ...ABCDEFGH.
 
-                self.tail = self.head;
-                self.head = self.wrap_add(self.tail, len);
+                self.set_tail(Counter(wrapped_head));
+                self.set_head(Counter(wrapped_head).advance(len));
             }
         } else {
             // free is smaller than both head and tail,
@@ -2597,7 +2599,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             // from: EFGHI...ABCD or HIJK.ABCDEFG
             // to:   ABCDEFGHI... or ABCDEFGHIJK.
             let mut left_edge: usize = 0;
-            let mut right_edge: usize = self.tail;
+            let mut right_edge: usize = wrapped_tail;
             unsafe {
                 // The general problem looks like this
                 // GHIJKLM...ABCDEF - before any swaps
@@ -2621,8 +2623,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                     right_edge += right_offset + 1;
                 }
 
-                self.tail = 0;
-                self.head = len;
+                self.set_tail(Counter(0));
+                self.set_head(Counter(len));
             }
         }
 
@@ -2636,7 +2638,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
                 RingSlices::ring_slices(self.buffer_as_mut_slice(), head, tail).0,
             )
         }
-    }*/
+    }
 
     /// Rotates the double-ended queue `mid` places to the left.
     ///
