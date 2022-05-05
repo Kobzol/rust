@@ -1,8 +1,98 @@
 use super::*;
 use crate::string::ToString;
 
+fn check_vec<T: std::fmt::Debug + std::cmp::Eq + Copy>(deque: &VecDeque2<T>, expected: Vec<T>) {
+    assert_eq!(deque.len(), expected.len());
+    let mut it1 = deque.iter();
+    let mut it2 = expected.iter();
+    loop {
+        let a = it1.next();
+        let b = it2.next();
+        assert_eq!(a, b);
+        if b.is_none() {
+            break;
+        }
+    }
+
+    assert_eq!(deque.iter().copied().collect::<Vec<_>>(), expected);
+}
+
+// Try to double the capacity of the queue and check that it has not interfered with its values
+// and length.
+fn check_grow<T: std::fmt::Debug + std::cmp::Eq + Copy>(
+    deque: &mut VecDeque2<T>,
+    expected: Vec<T>
+) {
+    check_vec(&deque, expected.clone());
+    deque.reserve_exact(deque.capacity());
+    check_vec(&deque, expected);
+}
+
+fn to_str<T: std::fmt::Display>(deque: &VecDeque2<T>) -> std::string::String {
+    let capacity = deque.capacity();
+    let mut indices = vec!["_".to_string(); capacity];
+    indices[deque.head.to_index(capacity)].insert(0, 'h');
+    indices[deque.tail.to_index(capacity)].insert(0, 't');
+
+    let wrapped_tail = deque.tail.to_index(capacity);
+    for index in 0..deque.len() {
+        let target_index = (wrapped_tail + index) % capacity;
+        let value_ref = unsafe { deque.ptr().add(target_index).as_ref().unwrap() };
+        let string = indices.get_mut(target_index).unwrap();
+        string.pop();
+        string.push_str(&value_ref.to_string());
+    }
+
+    for string in indices.iter_mut() {
+        if string.len() > 1 && string.ends_with('_') {
+            string.pop();
+        }
+    }
+
+    let mut output = indices.join(",");
+    output += "|";
+    for index in 0..capacity {
+        let mut has_counter = false;
+        if deque.tail.0 == capacity + index {
+            output.push('T');
+            has_counter = true;
+        }
+        if deque.head.0 == capacity + index {
+            output.push('H');
+            has_counter = true;
+        }
+        if !has_counter {
+            output.push('_');
+        }
+        if index != capacity - 1 {
+            output.push(',');
+        }
+    }
+
+    output
+}
+
 #[test]
-fn vd2_test_empty_1() {
+fn vd2_test_empty_drop() {
+    let _tester: VecDeque2<u64> = VecDeque2::new();
+}
+
+#[test]
+fn vd2_test_empty_iter_zero_capacity() {
+    let tester: VecDeque2<u64> = VecDeque2::new();
+    assert!(tester.iter().next() == None);
+    check_vec(&tester, vec!());
+}
+
+#[test]
+fn vd2_test_empty_iter_nonzero_capacity() {
+    let tester: VecDeque2<u64> = VecDeque2::with_capacity(16);
+    assert!(tester.iter().next() == None);
+    check_vec(&tester, vec!());
+}
+
+#[test]
+fn vd2_test_is_empty_1() {
     let mut tester: VecDeque2<u64> = VecDeque2::new();
     assert_eq!(tester.len(), 0);
     assert!(tester.is_empty());
@@ -12,7 +102,7 @@ fn vd2_test_empty_1() {
 }
 
 #[test]
-fn vd2_test_empty_2() {
+fn vd2_test_is_empty_2() {
     let mut tester: VecDeque2<u64> = VecDeque2::new();
     assert_eq!(tester.len(), 0);
     assert!(tester.is_empty());
@@ -99,22 +189,6 @@ fn vd2_test_as_slices_3() {
     assert_eq!(b, [1, 2, 3]);
 }
 
-fn check_vec<T: std::fmt::Debug + std::cmp::Eq + Copy>(deque: &VecDeque2<T>, expected: Vec<T>) {
-    assert_eq!(deque.len(), expected.len());
-    let mut it1 = deque.iter();
-    let mut it2 = expected.iter();
-    loop {
-        let a = it1.next();
-        let b = it2.next();
-        assert_eq!(a, b);
-        if b.is_none() {
-            break;
-        }
-    }
-
-    assert_eq!(deque.iter().copied().collect::<Vec<_>>(), expected);
-}
-
 #[test]
 fn vd2_test_iter() {
     let mut tester = VecDeque2::with_capacity(4);
@@ -134,61 +208,6 @@ fn vd2_test_iter_full() {
     tester.push_back(3);
 
     check_vec(&tester, vec![0, 1, 2, 3]);
-}
-
-// Try to double the capacity of the queue and check that it has not interfered with its values
-// and length.
-fn check_grow<T: std::fmt::Debug + std::cmp::Eq + Copy>(
-    deque: &mut VecDeque2<T>,
-    expected: Vec<T>
-) {
-    check_vec(&deque, expected.clone());
-    deque.reserve_exact(deque.capacity());
-    check_vec(&deque, expected);
-}
-
-fn to_str<T: std::fmt::Display>(deque: &VecDeque2<T>) -> std::string::String {
-    let capacity = deque.capacity();
-    let mut indices = vec!["_".to_string(); capacity];
-    indices[deque.head.to_index(capacity)].insert(0, 'h');
-    indices[deque.tail.to_index(capacity)].insert(0, 't');
-
-    let wrapped_tail = deque.tail.to_index(capacity);
-    for index in 0..deque.len() {
-        let target_index = (wrapped_tail + index) % capacity;
-        let value_ref = unsafe { deque.ptr().add(target_index).as_ref().unwrap() };
-        let string = indices.get_mut(target_index).unwrap();
-        string.pop();
-        string.push_str(&value_ref.to_string());
-    }
-
-    for string in indices.iter_mut() {
-        if string.len() > 1 && string.ends_with('_') {
-            string.pop();
-        }
-    }
-
-    let mut output = indices.join(",");
-    output += "|";
-    for index in 0..capacity {
-        let mut has_counter = false;
-        if deque.tail.0 == capacity + index {
-            output.push('T');
-            has_counter = true;
-        }
-        if deque.head.0 == capacity + index {
-            output.push('H');
-            has_counter = true;
-        }
-        if !has_counter {
-            output.push('_');
-        }
-        if index != capacity - 1 {
-            output.push(',');
-        }
-    }
-
-    output
 }
 
 // Tests that check if reallocation of the VecDeque2 was done properly.
@@ -618,7 +637,7 @@ fn vd2_test_shrink_c() {
 
 // stdlib tests
 #[test]
-fn vd2_test_remove() {
+fn vd2_test_removex() {
     // This test checks that every single combination of tail position, length, and
     // removal position is tested. Capacity 15 should be large enough to cover every case.
 
@@ -635,6 +654,7 @@ fn vd2_test_remove() {
         let expected = (0..).take(len).collect::<VecDeque2<_>>();
         for tail_pos in 0..cap {
             for to_remove in 0..=len {
+                // Make the queue initially empty
                 tester.tail = Counter(tail_pos);
                 tester.head = Counter(tail_pos);
                 for i in 0..len {
@@ -803,7 +823,7 @@ fn vd2_test_try_reserve() {
 
 #[test]
 fn vd2_test_contains() {
-    let mut tester = VecDeque2::new();
+    let mut tester: VecDeque2<u64> = VecDeque2::new();
     tester.push_back(1);
     tester.push_back(2);
     tester.push_back(3);

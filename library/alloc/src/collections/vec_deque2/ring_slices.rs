@@ -8,7 +8,7 @@ pub(crate) trait RingSlices: Sized {
     fn length(&self) -> usize;
 
     fn ring_slices(buf: Self, head: Counter, tail: Counter) -> (Self, Self) {
-        let contiguous = is_contiguous(head.to_index(buf.length()), tail.to_index(buf.length()));
+        let contiguous = is_contiguous(head, tail, buf.length());
         let wrapped_tail = tail.to_index(buf.length());
         if contiguous {
             let (empty, buf) = buf.split_at(0);

@@ -21,6 +21,7 @@ use core::slice;
 use crate::alloc::{Allocator, Global};
 use crate::collections::TryReserveError;
 use crate::collections::TryReserveErrorKind;
+use crate::ffi::CString;
 use crate::raw_vec::RawVec;
 use crate::string::String;
 use crate::vec::Vec;
@@ -71,6 +72,7 @@ macro_rules! dbg_printf {
 #[inline]
 fn log(mut string: String) {
     string.push('\n');
+    let string = CString::new(string).unwrap();
     dbg_printf!(string.as_bytes().as_ptr());
 }
 
@@ -1723,7 +1725,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
 
     #[inline]
     fn is_contiguous(&self) -> bool {
-        is_contiguous(self.wrapped_head(), self.wrapped_tail())
+        is_contiguous(self.head, self.tail, self.cap())
     }
 
     /// Removes an element from anywhere in the deque and returns it,
@@ -2988,9 +2990,9 @@ impl<T: Clone, A: Allocator> VecDeque2<T, A> {
 /// Returns the index in the underlying buffer for a given logical element index.
 #[inline]
 fn wrap_index(index: usize, size: usize) -> usize {
-    // size is always a power of 2
-    debug_assert!(size.is_power_of_two());
-    index & (size - 1)
+    // size is always a power of 2 (or zero)
+    debug_assert!(size.is_power_of_two() || size == 0);
+    index & (size.saturating_sub(1))
 }
 
 /// Calculate the number of elements left to be read in the buffer
@@ -3000,26 +3002,33 @@ fn count(tail: Counter, head: Counter, capacity: usize) -> usize {
 }
 
 #[inline]
-fn is_contiguous(head: usize, tail: usize) -> bool {
-    tail < head || tail == 0// || head == 0 // TODO
+fn is_contiguous(head: Counter, tail: Counter, capacity: usize) -> bool {
+    tail == head || tail.to_index(capacity) < head.to_index(capacity) // TODO: head == 0
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: PartialEq, A: Allocator> PartialEq for VecDeque2<T, A> {
+impl<T: PartialEq + core::fmt::Debug, A: Allocator> PartialEq for VecDeque2<T, A> {
     fn eq(&self, other: &Self) -> bool {
         if self.len() != other.len() {
             return false;
         }
         let (sa, sb) = self.as_slices();
         let (oa, ob) = other.as_slices();
+
         if sa.len() == oa.len() {
             sa == oa && sb == ob
-        } else if sa.len() < oa.len() {
+        } else {
             // Always divisible in three sections, for example:
             // self:  [a b c|d e f]
             // other: [0 1 2 3|4 5]
             // front = 3, mid = 1,
             // [a b c] == [0 1 2] && [d] == [3] && [e f] == [4 5]
+            let ((sa, sb), (oa, ob)) = if sa.len() < oa.len() {
+                ((sa, sb), (oa, ob))
+            } else {
+                ((oa, ob), (sa, sb))
+            };
+
             let front = sa.len();
             let mid = oa.len() - front;
 
@@ -3029,22 +3038,12 @@ impl<T: PartialEq, A: Allocator> PartialEq for VecDeque2<T, A> {
             debug_assert_eq!(sb_mid.len(), oa_mid.len());
             debug_assert_eq!(sb_back.len(), ob.len());
             sa == oa_front && sb_mid == oa_mid && sb_back == ob
-        } else {
-            let front = oa.len();
-            let mid = sa.len() - front;
-
-            let (sa_front, sa_mid) = sa.split_at(front);
-            let (ob_mid, ob_back) = ob.split_at(mid);
-            debug_assert_eq!(sa_front.len(), oa.len());
-            debug_assert_eq!(sa_mid.len(), ob_mid.len());
-            debug_assert_eq!(sb.len(), ob_back.len());
-            sa_front == oa && sa_mid == ob_mid && sb == ob_back
         }
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Eq, A: Allocator> Eq for VecDeque2<T, A> {}
+impl<T: Eq + core::fmt::Debug, A: Allocator> Eq for VecDeque2<T, A> {}
 
 __impl_slice_eq1! { [] VecDeque2<T, A>, Vec<U, A>, }
 __impl_slice_eq1! { [] VecDeque2<T, A>, &[U], }
@@ -3054,14 +3053,14 @@ __impl_slice_eq1! { [const N: usize] VecDeque2<T, A>, &[U; N], }
 __impl_slice_eq1! { [const N: usize] VecDeque2<T, A>, &mut [U; N], }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: PartialOrd, A: Allocator> PartialOrd for VecDeque2<T, A> {
+impl<T: PartialOrd + core::fmt::Debug, A: Allocator> PartialOrd for VecDeque2<T, A> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.iter().partial_cmp(other.iter())
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Ord, A: Allocator> Ord for VecDeque2<T, A> {
+impl<T: Ord + core::fmt::Debug, A: Allocator> Ord for VecDeque2<T, A> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         self.iter().cmp(other.iter())
@@ -3193,7 +3192,6 @@ impl<'a, T: 'a + Copy, A: Allocator> Extend<&'a T> for VecDeque2<T, A> {
         self.reserve(additional);
     }
 }
-
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: fmt::Debug, A: Allocator> fmt::Debug for VecDeque2<T, A> {
