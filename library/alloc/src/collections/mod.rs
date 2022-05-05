@@ -54,6 +54,11 @@ pub use linked_list::LinkedList;
 #[doc(no_inline)]
 pub use vec_deque::VecDeque;
 
+#[cfg(not(no_global_oom_handling))]
+#[stable(feature = "rust1", since = "1.0.0")]
+#[doc(no_inline)]
+pub use vec_deque2::VecDeque2;
+
 use crate::alloc::{Layout, LayoutError};
 use core::fmt::Display;
 

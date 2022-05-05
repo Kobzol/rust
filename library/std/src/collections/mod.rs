@@ -413,7 +413,7 @@ pub use alloc_crate::collections::{linked_list, vec_deque};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc_crate::collections::{BTreeMap, BTreeSet, BinaryHeap};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use alloc_crate::collections::{LinkedList, VecDeque};
+pub use alloc_crate::collections::{LinkedList, VecDeque, VecDeque2};
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::hash_map::HashMap;

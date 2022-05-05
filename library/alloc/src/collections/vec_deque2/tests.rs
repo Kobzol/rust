@@ -556,15 +556,67 @@ fn vd2_test_make_contiguous_c() {
 }
 
 #[test]
-fn vd2_test_clear() {
-    let mut tester = VecDeque2::new();
-    tester.push_back(1);
-    tester.push_back(2);
-    tester.push_back(3);
-    tester.clear();
-    assert_eq!(tester.len(), 0);
+fn vd2_test_shrink_a() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(8);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+    vd.pop_back();
+
+    assert_eq!(to_str(&vd), "_,_,_,_,t0,1,2,h|_,_,_,_,T,_,_,H");
+    vd.shrink_to(3);
+    assert_eq!(vd.capacity(), 4);
+    assert_eq!(to_str(&vd), "t0,1,2,h|_,_,_,_");
 }
 
+#[test]
+fn vd2_test_shrink_b1() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(16);
+    for i in 0..10 {
+        vd.push_back(i);
+    }
+    vd.pop_front();
+    vd.pop_front();
+    vd.pop_front();
+
+    assert_eq!(to_str(&vd), "_,_,_,t3,4,5,6,7,8,9,h,_,_,_,_,_|_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_");
+    vd.shrink_to(8);
+    assert_eq!(vd.capacity(), 8);
+    assert_eq!(to_str(&vd), "8,9,h,t3,4,5,6,7|_,_,H,_,_,_,_,_");
+}
+
+#[test]
+fn vd2_test_shrink_b2() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(16);
+    for i in 0..10 {
+        vd.push_back(i);
+    }
+    vd.pop_front();
+    vd.pop_front();
+
+    assert_eq!(to_str(&vd), "_,_,t2,3,4,5,6,7,8,9,h,_,_,_,_,_|_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_");
+    vd.shrink_to(8);
+    assert_eq!(vd.capacity(), 8);
+    assert_eq!(to_str(&vd), "8,9,th2,3,4,5,6,7|_,_,H,_,_,_,_,_");
+}
+
+#[test]
+fn vd2_test_shrink_c() {
+    let mut vd: VecDeque2<u64> = VecDeque2::with_capacity(16);
+    vd.push_front(1);
+    vd.push_front(2);
+    for i in 3..8 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(to_str(&vd), "3,4,5,6,7,h,_,_,_,_,_,_,_,_,t2,1|_,_,_,_,_,_,_,_,_,_,_,_,_,_,T,_");
+    vd.shrink_to(8);
+    assert_eq!(vd.capacity(), 8);
+    assert_eq!(to_str(&vd), "3,4,5,6,7,h,t2,1|_,_,_,_,_,_,T,_");
+}
+
+// stdlib tests
 #[test]
 fn vd2_test_remove() {
     // This test checks that every single combination of tail position, length, and
@@ -601,6 +653,17 @@ fn vd2_test_remove() {
             }
         }
     }
+}
+
+// PR tests
+#[test]
+fn vd2_test_clear() {
+    let mut tester = VecDeque2::new();
+    tester.push_back(1);
+    tester.push_back(2);
+    tester.push_back(3);
+    tester.clear();
+    assert_eq!(tester.len(), 0);
 }
 
 #[test]

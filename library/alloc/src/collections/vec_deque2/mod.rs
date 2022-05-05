@@ -961,7 +961,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         Ok(())
     }
 
-    /*/// Shrinks the capacity of the deque as much as possible.
+    /// Shrinks the capacity of the deque as much as possible.
     ///
     /// It will drop down as close as possible to the length but the allocator may still inform the
     /// deque that there is space for a few more elements.
@@ -1004,12 +1004,12 @@ impl<T, A: Allocator> VecDeque2<T, A> {
     /// ```
     #[stable(feature = "shrink_to", since = "1.56.0")]
     pub fn shrink_to(&mut self, min_capacity: usize) {
-        let min_capacity = cmp::min(min_capacity, self.capacity());
-        // We don't have to worry about an overflow as neither `self.len()` nor `self.capacity()`
-        // can ever be `usize::MAX`. +1 as the ringbuffer always leaves one space empty.
-        let target_cap = cmp::max(cmp::max(min_capacity, self.len()) + 1, MINIMUM_CAPACITY + 1)
-            .next_power_of_two();
+        let min_capacity = cmp::max(min_capacity, self.len());
+        let target_cap = min_capacity.next_power_of_two();
+        let old_len = self.len();
 
+        let wrapped_head = self.wrapped_head();
+        let wrapped_tail = self.wrapped_tail();
         if target_cap < self.cap() {
             // There are three cases of interest:
             //   All elements are out of desired bounds
@@ -1019,51 +1019,49 @@ impl<T, A: Allocator> VecDeque2<T, A> {
             // At all other times, element positions are unaffected.
             //
             // Indicates that elements at the head should be moved.
-            let head_outside = self.head == 0 || self.head >= target_cap;
+            let head_outside = wrapped_head == 0 || wrapped_head >= target_cap;
             // Move elements from out of desired bounds (positions after target_cap)
-            if self.tail >= target_cap && head_outside {
+            if wrapped_tail >= target_cap && head_outside {
                 //                    T             H
                 //   [. . . . . . . . o o o o o o o . ]
                 //    T             H
                 //   [o o o o o o o . ]
                 unsafe {
-                    self.copy_nonoverlapping(0, self.tail, self.len());
+                    self.copy_nonoverlapping(0, wrapped_tail, self.len());
                 }
-                self.head = self.len();
-                self.tail = 0;
-            } else if self.tail != 0 && self.tail < target_cap && head_outside {
+                self.set_head(Counter(self.len()));
+                self.set_tail(Counter(0));
+            } else if wrapped_tail != 0 && wrapped_tail < target_cap && head_outside {
                 //          T             H
                 //   [. . . o o o o o o o . . . . . . ]
                 //        H T
                 //   [o o . o o o o o ]
-                let len = self.wrap_sub(self.head, target_cap);
+                let len = Counter(wrapped_head - target_cap).to_index(self.cap());
                 unsafe {
                     self.copy_nonoverlapping(0, target_cap, len);
                 }
-                self.head = len;
-                debug_assert!(self.head < self.tail);
-            } else if self.tail >= target_cap {
+                // We need to keep the head in the aux space
+                self.set_head(Counter(wrapped_head));
+                self.set_tail(self.tail.wrapped(target_cap));
+            } else if wrapped_tail >= target_cap {
                 //              H                 T
                 //   [o o o o o . . . . . . . . . o o ]
                 //              H T
                 //   [o o o o o . o o ]
-                debug_assert!(self.wrap_sub(self.head, 1) < target_cap);
-                let len = self.cap() - self.tail;
+                let len = self.cap() - wrapped_tail;
                 let new_tail = target_cap - len;
                 unsafe {
-                    self.copy_nonoverlapping(new_tail, self.tail, len);
+                    self.copy_nonoverlapping(new_tail, wrapped_tail, len);
                 }
-                self.tail = new_tail;
-                debug_assert!(self.head < self.tail);
+                self.tail = Counter(wrapped_tail);
             }
 
             self.buf.shrink_to_fit(target_cap);
 
-            debug_assert!(self.head < self.cap());
-            debug_assert!(self.tail < self.cap());
-            debug_assert!(self.cap().count_ones() == 1);
+            debug_assert!(self.cap().is_power_of_two());
+            debug_assert!(self.len() == old_len);
         }
-    }*/
+    }
 
     /// Shortens the deque, keeping the first `len` elements and dropping
     /// the rest.
