@@ -635,46 +635,6 @@ fn vd2_test_shrink_c() {
     assert_eq!(to_str(&vd), "3,4,5,6,7,h,t2,1|_,_,_,_,_,_,T,_");
 }
 
-// stdlib tests
-#[test]
-fn vd2_test_removex() {
-    // This test checks that every single combination of tail position, length, and
-    // removal position is tested. Capacity 15 should be large enough to cover every case.
-
-    let mut tester = VecDeque2::with_capacity(16);
-    // can't guarantee we got 15, so have to get what we got.
-    // 15 would be great, but we will definitely get 2^k - 1, for k >= 4, or else
-    // this test isn't covering what it wants to
-    let cap = tester.capacity();
-
-    // len is the length *after* removal
-    let minlen = if cfg!(miri) { cap - 2 } else { 0 }; // Miri is too slow
-    for len in minlen..cap - 1 {
-        // 0, 1, 2, .., len - 1
-        let expected = (0..).take(len).collect::<VecDeque2<_>>();
-        for tail_pos in 0..cap {
-            for to_remove in 0..=len {
-                // Make the queue initially empty
-                tester.tail = Counter(tail_pos);
-                tester.head = Counter(tail_pos);
-                for i in 0..len {
-                    if i == to_remove {
-                        tester.push_back(1234);
-                    }
-                    tester.push_back(i);
-                }
-                if to_remove == len {
-                    tester.push_back(1234);
-                }
-                tester.remove(to_remove);
-                assert!(tester.tail.0 < tester.cap() * 2);
-                assert!(tester.head.0 < tester.cap() * 2);
-                assert_eq!(tester, expected);
-            }
-        }
-    }
-}
-
 // PR tests
 #[test]
 fn vd2_test_clear() {
@@ -978,4 +938,79 @@ fn vd2_test_binary_search_key() {
     assert_eq!(tester.binary_search_by_key(&4, |&(_a, b)| b), Err(7));
     assert_eq!(tester.binary_search_by_key(&56, |&(_a, b)| b), Err(13));
     assert_eq!(tester.binary_search_by_key(&100, |&(_a, b)| b), Err(13));
+}
+
+// stdlib tests
+#[test]
+fn vd2_test_removex() {
+    // This test checks that every single combination of tail position, length, and
+    // removal position is tested. Capacity 15 should be large enough to cover every case.
+
+    let mut tester = VecDeque2::with_capacity(16);
+    // can't guarantee we got 15, so have to get what we got.
+    // 15 would be great, but we will definitely get 2^k - 1, for k >= 4, or else
+    // this test isn't covering what it wants to
+    let cap = tester.capacity();
+
+    // len is the length *after* removal
+    let minlen = if cfg!(miri) { cap - 2 } else { 0 }; // Miri is too slow
+    for len in minlen..cap - 1 {
+        // 0, 1, 2, .., len - 1
+        let expected = (0..).take(len).collect::<VecDeque2<_>>();
+        for tail_pos in 0..cap {
+            for to_remove in 0..=len {
+                // Make the queue initially empty
+                tester.tail = Counter(tail_pos);
+                tester.head = Counter(tail_pos);
+                for i in 0..len {
+                    if i == to_remove {
+                        tester.push_back(1234);
+                    }
+                    tester.push_back(i);
+                }
+                if to_remove == len {
+                    tester.push_back(1234);
+                }
+                tester.remove(to_remove);
+                assert!(tester.tail.0 < tester.cap() * 2);
+                assert!(tester.head.0 < tester.cap() * 2);
+                assert_eq!(tester, expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn vd2_test_drain() {
+    let mut tester: VecDeque2<usize> = VecDeque2::with_capacity(7);
+
+    let cap = tester.capacity();
+    for len in 0..=cap {
+        for tail in 0..=cap {
+            for drain_start in 0..=len {
+                for drain_end in drain_start..=len {
+                    tester.tail = Counter(tail);
+                    tester.head = Counter(tail);
+                    for i in 0..len {
+                        tester.push_back(i);
+                    }
+
+                    // Check that we drain the correct values
+                    let drained: VecDeque2<_> = tester.drain(drain_start..drain_end).collect();
+                    let drained_expected: VecDeque2<_> = (drain_start..drain_end).collect();
+                    assert_eq!(drained, drained_expected);
+
+                    // We shouldn't have changed the capacity or made the
+                    // head or tail out of bounds
+                    assert_eq!(tester.capacity(), cap);
+                    assert!(tester.tail.0 < tester.cap() * 2);
+                    assert!(tester.head.0 < tester.cap() * 2);
+
+                    // We should see the correct values in the VecDeque
+                    let expected: VecDeque2<_> = (0..drain_start).chain(drain_end..len).collect();
+                    assert_eq!(expected, tester);
+                }
+            }
+        }
+    }
 }

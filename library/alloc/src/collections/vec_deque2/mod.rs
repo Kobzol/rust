@@ -29,10 +29,10 @@ use crate::vec::Vec;
 #[macro_use]
 mod macros;
 
-/*#[stable(feature = "drain", since = "1.6.0")]
+#[stable(feature = "drain", since = "1.6.0")]
 pub use self::drain::Drain;
 
-mod drain;*/
+mod drain;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::iter_mut::IterMut;
@@ -1310,8 +1310,8 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         R: RangeBounds<usize>,
     {
         let Range { start, end } = slice::range(range, ..self.len());
-        let tail = self.tail.wrapped(start);
-        let head = self.head.wrapped(end);
+        let tail = self.tail.advance(start).wrapped(self.capacity());
+        let head = self.tail.advance(end).wrapped(self.capacity());
         (tail, head)
     }
 
@@ -1351,7 +1351,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         }
     }
 
-    /*/// Creates an iterator that covers the specified mutable range in the deque.
+    /// Creates an iterator that covers the specified mutable range in the deque.
     ///
     /// # Panics
     ///
@@ -1388,9 +1388,9 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         let ring = ptr::slice_from_raw_parts_mut(self.ptr(), self.cap());
 
         unsafe { IterMut::new(ring, tail, head, PhantomData) }
-    }*/
+    }
 
-    /*/// Removes the specified range from the deque in bulk, returning all
+    /// Removes the specified range from the deque in bulk, returning all
     /// removed elements as an iterator. If the iterator is dropped before
     /// being fully consumed, it drops the remaining removed elements.
     ///
@@ -1474,7 +1474,7 @@ impl<T, A: Allocator> VecDeque2<T, A> {
         };
 
         unsafe { Drain::new(drain_head, head, iter, deque) }
-    }*/
+    }
 
     /// Clears the deque, removing all values.
     ///

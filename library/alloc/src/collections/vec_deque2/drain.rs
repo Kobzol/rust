@@ -4,7 +4,7 @@ use core::{fmt, mem};
 
 use crate::alloc::{Allocator, Global};
 
-use super::{count, Iter, VecDeque2};
+use super::{count, Iter, VecDeque2, Counter};
 
 /// A draining iterator over the elements of a `VecDeque2`.
 ///
@@ -18,16 +18,16 @@ pub struct Drain<
     T: 'a,
     #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global,
 > {
-    after_tail: usize,
-    after_head: usize,
+    after_tail: Counter,
+    after_head: Counter,
     iter: Iter<'a, T>,
     deque: NonNull<VecDeque2<T, A>>,
 }
 
 impl<'a, T, A: Allocator> Drain<'a, T, A> {
     pub(super) unsafe fn new(
-        after_tail: usize,
-        after_head: usize,
+        after_tail: Counter,
+        after_head: Counter,
         iter: Iter<'a, T>,
         deque: NonNull<VecDeque2<T, A>>,
     ) -> Self {
@@ -80,8 +80,8 @@ impl<T, A: Allocator> Drop for Drain<'_, T, A> {
 
                 match (tail_len, head_len) {
                     (0, 0) => {
-                        source_deque.head = 0;
-                        source_deque.tail = 0;
+                        source_deque.head = Counter(0);
+                        source_deque.tail = Counter(0);
                     }
                     (0, _) => {
                         source_deque.tail = drain_head;
@@ -91,11 +91,11 @@ impl<T, A: Allocator> Drop for Drain<'_, T, A> {
                     }
                     _ => unsafe {
                         if tail_len <= head_len {
-                            source_deque.tail = source_deque.wrap_sub(drain_head, tail_len);
-                            source_deque.wrap_copy(source_deque.tail, orig_tail, tail_len);
+                            source_deque.tail = drain_head.advance_back(tail_len).wrapped_for_storage(source_deque.capacity());
+                            source_deque.wrap_copy(source_deque.tail.to_index(source_deque.capacity()), orig_tail.to_index(source_deque.capacity()), tail_len);
                         } else {
-                            source_deque.head = source_deque.wrap_add(drain_tail, head_len);
-                            source_deque.wrap_copy(drain_tail, drain_head, head_len);
+                            source_deque.head = drain_tail.advance(head_len).wrapped_for_storage(source_deque.capacity());
+                            source_deque.wrap_copy(drain_tail.to_index(source_deque.capacity()), drain_head.to_index(source_deque.capacity()), head_len);
                         }
                     },
                 }
