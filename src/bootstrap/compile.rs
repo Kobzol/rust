@@ -106,6 +106,28 @@ impl Step for Std {
         let mut cargo = builder.cargo(compiler, Mode::Std, SourceType::InTree, target, "build");
         std_cargo(builder, target, compiler.stage, &mut cargo);
 
+        let std_path = Some("/tmp/libstd-pgo.profdata".to_string());
+        let is_collecting = if let Some(path) = &std_path {
+            if compiler.stage == 1 {
+                cargo.rustflag(&format!("-Cprofile-generate={}", path));
+                // Apparently necessary to avoid overflowing the counters during
+                // a Cargo build profile
+                cargo.rustflag("-Cllvm-args=-vp-counters-per-site=4");
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if is_collecting {
+            // Ensure paths to Rust sources are relative, not absolute.
+            cargo.rustflag(&format!(
+                "-Cllvm-args=-static-func-strip-dirname-prefix={}",
+                builder.config.src.components().count()
+            ));
+        }
+
         builder.info(&format!(
             "Building stage{} std artifacts ({} -> {})",
             compiler.stage, &compiler.host, target

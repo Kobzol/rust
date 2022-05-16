@@ -766,13 +766,24 @@ impl<'a> CrateLoader<'a> {
             return;
         }
 
+        let crate_name = self.local_crate_name.as_str();
+        if crate_name != "std" {
+            return;
+        }
+        match crate_name {
+            "core" | "rustc_std_workspace_core" | "libc" | "profiler_builtins" => return,
+            _ => {}
+        };
+
         info!("loading profiler");
 
         let name = Symbol::intern(&self.sess.opts.debugging_opts.profiler_runtime);
         if name == sym::profiler_builtins && self.sess.contains_name(&krate.attrs, sym::no_core) {
+            return;
             self.sess.err(
-                "`profiler_builtins` crate (required by compiler options) \
-                        is not compatible with crate attribute `#![no_core]`",
+                //"`profiler_builtins` crate (required by compiler options) \
+                //        is not compatible with crate attribute `#![no_core]`",
+                crate_name
             );
         }
 
