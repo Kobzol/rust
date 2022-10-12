@@ -1,6 +1,7 @@
 use core::iter::TrustedLen;
 
 use super::*;
+use crate::string::ToString;
 
 #[bench]
 #[cfg_attr(miri, ignore)] // isolated Miri does not support benchmarks
@@ -1107,4 +1108,627 @@ fn issue_80303() {
     assert_ne!(vda.as_slices(), vdb.as_slices());
     assert_eq!(vda, vdb);
     assert_eq!(hash_code(vda), hash_code(vdb));
+}
+
+fn check_vec<T: std::fmt::Debug + std::cmp::Eq + Copy>(deque: &VecDeque<T>, expected: Vec<T>) {
+    assert_eq!(deque.len(), expected.len());
+    let mut it1 = deque.iter();
+    let mut it2 = expected.iter();
+    loop {
+        let a = it1.next();
+        let b = it2.next();
+        assert_eq!(a, b);
+        if b.is_none() {
+            break;
+        }
+    }
+
+    assert_eq!(deque.iter().copied().collect::<Vec<_>>(), expected);
+}
+
+// Try to double the capacity of the queue and check that it has not interfered with its values
+// and length.
+fn check_grow<T: std::fmt::Debug + std::cmp::Eq + Copy>(
+    deque: &mut VecDeque<T>,
+    expected: Vec<T>
+) {
+    check_vec(&deque, expected.clone());
+    deque.reserve_exact(deque.capacity());
+    check_vec(&deque, expected);
+}
+
+fn vec_deque_to_str<T: std::fmt::Display>(deque: &VecDeque<T>) -> std::string::String {
+    let capacity = deque.buf.capacity();
+    let mut indices = vec!["_".to_string(); capacity];
+    indices[deque.head].insert(0, 'h');
+    indices[deque.tail].insert(0, 't');
+
+    for index in 0..deque.len() {
+        let target_index = (deque.tail + index) % capacity;
+        let value_ref = unsafe { deque.ptr().add(target_index).as_ref().unwrap() };
+        let string = indices.get_mut(target_index).unwrap();
+        string.pop();
+        string.push_str(&value_ref.to_string());
+    }
+
+    for string in indices.iter_mut() {
+        if string.len() > 1 && string.ends_with('_') {
+            string.pop();
+        }
+    }
+
+    indices.join(",")
+}
+
+#[test]
+fn test_empty_drop() {
+    let _tester: VecDeque<u64> = VecDeque::new();
+}
+
+#[test]
+fn test_empty_iter_zero_capacity() {
+    let tester: VecDeque<u64> = VecDeque::new();
+    assert!(tester.iter().next() == None);
+    check_vec(&tester, vec!());
+}
+
+#[test]
+fn test_empty_iter_nonzero_capacity() {
+    let tester: VecDeque<u64> = VecDeque::with_capacity(16);
+    assert!(tester.iter().next() == None);
+    check_vec(&tester, vec!());
+}
+
+#[test]
+fn test_is_empty_1() {
+    let mut tester: VecDeque<u64> = VecDeque::new();
+    assert_eq!(tester.len(), 0);
+    assert!(tester.is_empty());
+    tester.push_back(1);
+    assert_eq!(tester.len(), 1);
+    assert!(!tester.is_empty());
+}
+
+#[test]
+fn test_is_empty_2() {
+    let mut tester: VecDeque<u64> = VecDeque::new();
+    assert_eq!(tester.len(), 0);
+    assert!(tester.is_empty());
+    tester.push_front(1);
+    assert_eq!(tester.len(), 1);
+    assert!(!tester.is_empty());
+}
+
+#[test]
+fn test_pop_back() {
+    let mut tester: VecDeque<u64> = VecDeque::new();
+    assert_eq!(tester.len(), 0);
+    tester.push_back(1);
+    tester.push_back(2);
+    tester.pop_back();
+    tester.push_back(3);
+    tester.pop_back();
+
+    assert_eq!(tester.len(), 1);
+
+    assert_eq!(tester.get(0), Some(&1));
+
+    tester.pop_back();
+    assert_eq!(tester.len(), 0);
+}
+
+#[test]
+fn test_pop_front() {
+    let mut tester: VecDeque<u64> = VecDeque::new();
+    assert_eq!(tester.capacity(), 0);
+    tester.push_front(6);
+    assert_eq!(tester.capacity(), 1);
+    tester.push_back(1);
+    assert_eq!(tester.capacity(), 2);
+    tester.push_back(3);
+    assert_eq!(tester.capacity(), 4);
+    tester.push_back(5);
+
+    assert_eq!(tester.capacity(), 4);
+    assert_eq!(tester.len(), 4);
+
+    assert_eq!(tester.pop_front(), Some(6));
+    assert_eq!(tester.pop_front(), Some(1));
+    assert_eq!(tester.pop_front(), Some(3));
+    assert_eq!(tester.pop_front(), Some(5));
+    assert_eq!(tester.pop_front(), None);
+}
+
+#[test]
+fn test_as_slices_1() {
+    let mut tester = VecDeque::with_capacity(4);
+    tester.push_back(0);
+    tester.push_back(1);
+    tester.push_back(2);
+
+    let (a, b) = tester.as_slices();
+    assert_eq!(a, [0, 1, 2]);
+    assert_eq!(b, []);
+}
+
+#[test]
+fn test_as_slices_2() {
+    let mut tester = VecDeque::with_capacity(4);
+    tester.push_front(0);
+    tester.push_back(1);
+    tester.push_back(2);
+
+    let (a, b) = tester.as_slices();
+    assert_eq!(a, [0]);
+    assert_eq!(b, [1, 2]);
+}
+
+#[test]
+fn test_as_slices_3() {
+    let mut tester: VecDeque<u64> = VecDeque::with_capacity(4);
+    tester.push_front(0);
+    tester.push_back(1);
+    tester.push_back(2);
+    tester.push_back(3);
+
+    assert_eq!(vec_deque_to_str(&tester), "1,2,3,th0|_,_,_,T");
+    let (a, b) = tester.as_slices();
+    assert_eq!(a, [0]);
+    assert_eq!(b, [1, 2, 3]);
+}
+
+#[test]
+fn test_iter() {
+    let mut tester = VecDeque::with_capacity(4);
+    tester.push_back(0);
+    tester.push_back(1);
+    tester.push_back(2);
+
+    assert_eq!(tester.iter().copied().collect::<Vec<_>>(), vec![0, 1, 2]);
+}
+
+#[test]
+fn test_iter_full() {
+    let mut tester = VecDeque::with_capacity(4);
+    tester.push_back(0);
+    tester.push_back(1);
+    tester.push_back(2);
+    tester.push_back(3);
+
+    check_vec(&tester, vec![0, 1, 2, 3]);
+}
+
+// Tests that check if reallocation of the VecDeque was done properly.
+#[test]
+fn test_grow_t_h_in_bounds() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_back(1);
+    vd.push_back(2);
+    vd.push_back(3);
+
+    assert_eq!(vec_deque_to_str(&vd), "t1,2,3,h|_,_,_,_");
+    check_grow(&mut vd, vec![1, 2, 3]);
+    assert_eq!(vec_deque_to_str(&vd), "t1,2,3,h,_,_,_,_|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_grow_t_h_overflow() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_back(5);
+    vd.push_back(5);
+    vd.push_back(5);
+    vd.pop_front();
+    vd.pop_front();
+    vd.pop_front();
+    vd.push_back(5);
+    vd.pop_front();
+    vd.push_back(1);
+
+    assert_eq!(vec_deque_to_str(&vd), "t1,h,_,_|T,H,_,_");
+    check_grow(&mut vd, vec![1]);
+    assert_eq!(vec_deque_to_str(&vd), "t1,h,_,_,_,_,_,_|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_grow_h_t_nothing_to_copy() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_back(5);
+    vd.push_back(1);
+    vd.push_back(2);
+    vd.push_back(3);
+    vd.pop_front();
+
+    assert_eq!(vec_deque_to_str(&vd), "h,t1,2,3|H,_,_,_");
+    check_grow(&mut vd, vec![1, 2, 3]);
+    assert_eq!(vec_deque_to_str(&vd), "_,t1,2,3,h,_,_,_|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_grow_h_t_copy_after_t() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_back(5);
+    vd.push_back(5);
+    vd.pop_front();
+    vd.pop_front();
+    vd.push_back(1);
+    vd.push_back(2);
+    vd.push_back(3);
+
+    assert_eq!(vec_deque_to_str(&vd), "3,h,t1,2|_,H,_,_");
+    check_grow(&mut vd, vec![1, 2, 3]);
+    assert_eq!(vec_deque_to_str(&vd), "_,_,t1,2,3,h,_,_|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_grow_h_t_copy_move_t() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_back(5);
+    vd.push_back(5);
+    vd.push_back(5);
+    vd.pop_front();
+    vd.pop_front();
+    vd.pop_front();
+    vd.push_back(1);
+    vd.push_back(2);
+    vd.push_back(3);
+
+    assert_eq!(vec_deque_to_str(&vd), "2,3,h,t1|_,_,H,_");
+    check_grow(&mut vd, vec![1, 2, 3]);
+    assert_eq!(vec_deque_to_str(&vd), "2,3,h,_,_,_,_,t1|_,_,_,_,_,_,_,T");
+}
+
+#[test]
+fn test_grow_full_beginning_1() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    for i in 1..=7 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(vec_deque_to_str(&vd), "t1,2,3,4,5,6,7,h");
+    check_grow(&mut vd, vec![1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(vec_deque_to_str(&vd), "t1,2,3,4,5,6,7,h,_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_grow_full_beginning_2() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_front(4);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+
+    assert_eq!(vec_deque_to_str(&vd), "th1,2,3,4|T,_,_,_");
+    check_grow(&mut vd, vec![1, 2, 3, 4]);
+    assert_eq!(vec_deque_to_str(&vd), "t1,2,3,4,h,_,_,_|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_grow_full_end_1() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_back(5);
+    vd.push_back(5);
+    vd.push_back(5);
+    vd.pop_front();
+    vd.pop_front();
+    vd.pop_front();
+    vd.push_back(1);
+    vd.push_back(2);
+    vd.push_back(3);
+    vd.push_back(4);
+
+    assert_eq!(vec_deque_to_str(&vd), "2,3,4,th1|_,_,_,H");
+    check_grow(&mut vd, vec![1, 2, 3, 4]);
+    assert_eq!(vec_deque_to_str(&vd), "2,3,4,h,_,_,_,t1|_,_,_,_,_,_,_,T");
+}
+
+#[test]
+fn test_grow_full_end_2() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_front(1);
+    vd.push_back(2);
+    vd.push_back(3);
+    vd.push_back(4);
+
+    assert_eq!(vec_deque_to_str(&vd), "2,3,4,th1|_,_,_,T");
+    check_grow(&mut vd, vec![1, 2, 3, 4]);
+    assert_eq!(vec_deque_to_str(&vd), "2,3,4,h,_,_,_,t1|_,_,_,_,_,_,_,T");
+}
+
+#[test]
+fn test_grow_full_middle_copy_after_t_1() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_back(4);
+
+    assert_eq!(vec_deque_to_str(&vd), "4,th1,2,3|_,T,_,_");
+    check_grow(&mut vd, vec![1, 2, 3, 4]);
+    assert_eq!(vec_deque_to_str(&vd), "_,t1,2,3,4,h,_,_|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_grow_full_middle_copy_after_t_2() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_back(5);
+    vd.pop_front();
+    vd.push_back(1);
+    vd.push_back(2);
+    vd.push_back(3);
+    vd.push_back(4);
+
+    assert_eq!(vec_deque_to_str(&vd), "4,th1,2,3|_,H,_,_");
+    check_grow(&mut vd, vec![1, 2, 3, 4]);
+    assert_eq!(vec_deque_to_str(&vd), "_,t1,2,3,4,h,_,_|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_grow_full_middle_move_t_1() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    for _ in 0..5 {
+        vd.push_back(5);
+    }
+    for _ in 0..5 {
+        vd.pop_front();
+    }
+
+    for i in 1..=8 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(vec_deque_to_str(&vd), "4,5,6,7,8,th1,2,3|_,_,_,_,_,H,_,_");
+    check_grow(&mut vd, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(vec_deque_to_str(&vd), "4,5,6,7,8,h,_,_,_,_,_,_,_,t1,2,3|_,_,_,_,_,_,_,_,_,_,_,_,_,T,_,_");
+}
+
+#[test]
+fn test_grow_full_middle_move_t_2() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_back(4);
+    vd.push_back(5);
+    vd.push_back(6);
+    vd.push_back(7);
+    vd.push_back(8);
+
+    assert_eq!(vec_deque_to_str(&vd), "4,5,6,7,8,th1,2,3|_,_,_,_,_,T,_,_");
+    check_grow(&mut vd, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(vec_deque_to_str(&vd), "4,5,6,7,8,h,_,_,_,_,_,_,_,t1,2,3|_,_,_,_,_,_,_,_,_,_,_,_,_,T,_,_");
+}
+
+#[test]
+fn test_remove_contiguous_closer_to_tail() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    for i in 0..8 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(vec_deque_to_str(&vd), "th0,1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
+    vd.remove(2);
+    assert_eq!(vec_deque_to_str(&vd), "h,t0,1,3,4,5,6,7|H,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_remove_contiguous_closer_to_head() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    for i in 0..8 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(vec_deque_to_str(&vd), "th0,1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
+    vd.remove(6);
+    assert_eq!(vec_deque_to_str(&vd), "t0,1,2,3,4,5,7,h|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_remove_discontiguous_closer_to_tail_in_tail() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    vd.push_front(1);
+    vd.push_front(0);
+    vd.push_back(2);
+    vd.push_back(3);
+    vd.push_back(4);
+
+    assert_eq!(vec_deque_to_str(&vd), "2,3,4,h,_,_,t0,1|_,_,_,_,_,_,T,_");
+    vd.remove(1);
+    assert_eq!(vec_deque_to_str(&vd), "2,3,4,h,_,_,_,t0|_,_,_,_,_,_,_,T");
+}
+
+#[test]
+fn test_remove_discontiguous_closer_to_head_in_head() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    vd.push_front(1);
+    vd.push_front(0);
+    vd.push_back(2);
+    vd.push_back(3);
+    vd.push_back(4);
+
+    assert_eq!(vec_deque_to_str(&vd), "2,3,4,h,_,_,t0,1|_,_,_,_,_,_,T,_");
+    vd.remove(3);
+    assert_eq!(vec_deque_to_str(&vd), "2,4,h,_,_,_,t0,1|_,_,_,_,_,_,T,_");
+}
+
+#[test]
+fn test_remove_discontiguous_closer_to_head_in_tail() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+    vd.push_back(4);
+
+    assert_eq!(vec_deque_to_str(&vd), "4,h,_,_,t0,1,2,3|_,_,_,_,T,_,_,_");
+    vd.remove(3);
+    assert_eq!(vec_deque_to_str(&vd), "h,_,_,_,t0,1,2,4|_,_,_,_,T,_,_,_");
+}
+
+#[test]
+fn test_remove_discontiguous_closer_to_tail_in_head() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(16);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+    for i in 3..10 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(vec_deque_to_str(&vd), "3,4,5,6,7,8,9,h,_,_,_,_,_,t0,1,2|_,_,_,_,_,_,_,_,_,_,_,_,_,T,_,_");
+    vd.remove(5);
+    assert_eq!(vec_deque_to_str(&vd), "2,3,4,6,7,8,9,h,_,_,_,_,_,_,t0,1|_,_,_,_,_,_,_,_,_,_,_,_,_,_,T,_");
+}
+
+#[test]
+fn test_insert_tail_zero() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(4);
+    vd.push_back(0);
+    vd.push_back(1);
+
+    assert_eq!(vec_deque_to_str(&vd), "t0,1,h,_|_,_,_,_");
+    vd.insert(0, 9);
+    assert_eq!(vec_deque_to_str(&vd), "0,1,h,t9|_,_,_,T");
+}
+
+#[test]
+fn test_insert_contiguous_closer_to_tail() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    for i in 0..8 {
+        vd.push_back(i);
+    }
+    vd.pop_front();
+
+    assert_eq!(vec_deque_to_str(&vd), "h,t1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
+    vd.insert(2, 9);
+    assert_eq!(vec_deque_to_str(&vd), "th1,2,9,3,4,5,6,7|H,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_insert_contiguous_closer_to_head() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    for i in 0..8 {
+        vd.push_back(i);
+    }
+    vd.pop_front();
+
+    assert_eq!(vec_deque_to_str(&vd), "h,t1,2,3,4,5,6,7|H,_,_,_,_,_,_,_");
+    vd.insert(6, 9);
+    assert_eq!(vec_deque_to_str(&vd), "7,th1,2,3,4,5,6,9|_,H,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_make_contiguous_a() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(16);
+    vd.push_back(3);
+    vd.push_back(4);
+    vd.push_back(5);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+
+    assert_eq!(vec_deque_to_str(&vd), "3,4,5,h,_,_,_,_,_,_,_,_,_,t0,1,2|_,_,_,_,_,_,_,_,_,_,_,_,_,T,_,_");
+    vd.make_contiguous();
+    assert_eq!(vec_deque_to_str(&vd), "t0,1,2,3,4,5,h,_,_,_,_,_,_,_,_,_|_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_make_contiguous_b() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    vd.push_back(4);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+
+    assert_eq!(vec_deque_to_str(&vd), "4,h,_,_,t0,1,2,3|_,_,_,_,T,_,_,_");
+    vd.make_contiguous();
+    assert_eq!(vec_deque_to_str(&vd), "_,t0,1,2,3,4,h,_|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_make_contiguous_c() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    vd.push_back(4);
+    vd.push_back(5);
+    vd.push_back(6);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+
+    assert_eq!(vec_deque_to_str(&vd), "4,5,6,h,t0,1,2,3|_,_,_,_,T,_,_,_");
+    vd.make_contiguous();
+    assert_eq!(vec_deque_to_str(&vd), "t0,1,2,3,4,5,6,h|_,_,_,_,_,_,_,_");
+}
+
+#[test]
+fn test_shrink_a() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(8);
+    vd.push_front(3);
+    vd.push_front(2);
+    vd.push_front(1);
+    vd.push_front(0);
+    vd.pop_back();
+
+    assert_eq!(vec_deque_to_str(&vd), "_,_,_,_,t0,1,2,h|_,_,_,_,T,_,_,H");
+    vd.shrink_to(3);
+    assert_eq!(vd.capacity(), 4);
+    assert_eq!(vec_deque_to_str(&vd), "t0,1,2,h|_,_,_,_");
+}
+
+#[test]
+fn test_shrink_b1() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(16);
+    for i in 0..10 {
+        vd.push_back(i);
+    }
+    vd.pop_front();
+    vd.pop_front();
+    vd.pop_front();
+
+    assert_eq!(vec_deque_to_str(&vd), "_,_,_,t3,4,5,6,7,8,9,h,_,_,_,_,_|_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_");
+    vd.shrink_to(8);
+    assert_eq!(vd.capacity(), 8);
+    assert_eq!(vec_deque_to_str(&vd), "8,9,h,t3,4,5,6,7|_,_,H,_,_,_,_,_");
+}
+
+#[test]
+fn test_shrink_b2() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(16);
+    for i in 0..10 {
+        vd.push_back(i);
+    }
+    vd.pop_front();
+    vd.pop_front();
+
+    assert_eq!(vec_deque_to_str(&vd), "_,_,t2,3,4,5,6,7,8,9,h,_,_,_,_,_|_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_");
+    vd.shrink_to(8);
+    assert_eq!(vd.capacity(), 8);
+    assert_eq!(vec_deque_to_str(&vd), "8,9,th2,3,4,5,6,7|_,_,H,_,_,_,_,_");
+}
+
+#[test]
+fn test_shrink_c() {
+    let mut vd: VecDeque<u64> = VecDeque::with_capacity(16);
+    vd.push_front(1);
+    vd.push_front(2);
+    for i in 3..8 {
+        vd.push_back(i);
+    }
+
+    assert_eq!(vec_deque_to_str(&vd), "3,4,5,6,7,h,_,_,_,_,_,_,_,_,t2,1|_,_,_,_,_,_,_,_,_,_,_,_,_,_,T,_");
+    vd.shrink_to(8);
+    assert_eq!(vd.capacity(), 8);
+    assert_eq!(vec_deque_to_str(&vd), "3,4,5,6,7,h,t2,1|_,_,_,_,_,_,T,_");
+}
+
+// PR tests
+#[test]
+fn test_clear() {
+    let mut tester = VecDeque::new();
+    tester.push_back(1);
+    tester.push_back(2);
+    tester.push_back(3);
+    tester.clear();
+    assert_eq!(tester.len(), 0);
 }
