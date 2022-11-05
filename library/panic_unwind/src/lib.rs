@@ -13,23 +13,17 @@
 
 #![no_std]
 #![unstable(feature = "panic_unwind", issue = "32837")]
-#![doc(
-    html_root_url = "https://doc.rust-lang.org/nightly/",
-    issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/"
-)]
+#![doc(issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
 #![feature(core_intrinsics)]
 #![feature(lang_items)]
-#![feature(libc)]
-#![feature(nll)]
 #![feature(panic_unwind)]
 #![feature(staged_api)]
 #![feature(std_internals)]
-#![feature(unwind_attributes)]
 #![feature(abi_thiscall)]
 #![feature(rustc_attrs)]
-#![feature(raw)]
 #![panic_runtime]
 #![feature(panic_runtime)]
+#![feature(c_unwind)]
 // `real_imp` is unused with Miri, so silence warnings.
 #![cfg_attr(miri, allow(dead_code))]
 
@@ -44,28 +38,30 @@ cfg_if::cfg_if! {
     } else if #[cfg(target_os = "hermit")] {
         #[path = "hermit.rs"]
         mod real_imp;
+    } else if #[cfg(target_os = "l4re")] {
+        // L4Re is unix family but does not yet support unwinding.
+        #[path = "dummy.rs"]
+        mod real_imp;
     } else if #[cfg(target_env = "msvc")] {
         #[path = "seh.rs"]
         mod real_imp;
     } else if #[cfg(any(
         all(target_family = "windows", target_env = "gnu"),
-        target_os = "cloudabi",
         target_os = "psp",
-        target_family = "unix",
+        target_os = "solid_asp3",
+        all(target_family = "unix", not(target_os = "espidf")),
         all(target_vendor = "fortanix", target_env = "sgx"),
     ))] {
-        // Rust runtime's startup objects depend on these symbols, so make them public.
-        #[cfg(all(target_os="windows", target_arch = "x86", target_env="gnu"))]
-        pub use real_imp::eh_frame_registry::*;
         #[path = "gcc.rs"]
         mod real_imp;
     } else {
         // Targets that don't support unwinding.
-        // - arch=wasm32
+        // - family=wasm
         // - os=none ("bare metal" targets)
         // - os=uefi
+        // - os=espidf
         // - nvptx64-nvidia-cuda
-        // - avr-unknown-unknown
+        // - arch=avr
         #[path = "dummy.rs"]
         mod real_imp;
     }
@@ -88,9 +84,10 @@ extern "C" {
     /// Handler in libstd called when a panic object is dropped outside of
     /// `catch_unwind`.
     fn __rust_drop_panic() -> !;
-}
 
-mod dwarf;
+    /// Handler in libstd called when a foreign exception is caught.
+    fn __rust_foreign_exception() -> !;
+}
 
 #[rustc_std_internal_symbol]
 #[allow(improper_ctypes_definitions)]
@@ -101,10 +98,8 @@ pub unsafe extern "C" fn __rust_panic_cleanup(payload: *mut u8) -> *mut (dyn Any
 // Entry point for raising an exception, just delegates to the platform-specific
 // implementation.
 #[rustc_std_internal_symbol]
-#[unwind(allowed)]
-pub unsafe extern "C" fn __rust_start_panic(payload: usize) -> u32 {
-    let payload = payload as *mut &mut dyn BoxMeUp;
-    let payload = (*payload).take_box();
+pub unsafe fn __rust_start_panic(payload: *mut &mut dyn BoxMeUp) -> u32 {
+    let payload = Box::from_raw((*payload).take_box());
 
-    imp::panic(Box::from_raw(payload))
+    imp::panic(payload)
 }

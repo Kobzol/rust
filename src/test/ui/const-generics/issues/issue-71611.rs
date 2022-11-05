@@ -1,5 +1,6 @@
-#![feature(const_generics)]
-#![allow(incomplete_features)]
+// revisions: full min
+#![cfg_attr(full, feature(adt_const_params))]
+#![cfg_attr(full, allow(incomplete_features))]
 
 fn func<A, const F: fn(inner: A)>(outer: A) {
     //~^ ERROR: using function pointers as const generic parameters is forbidden

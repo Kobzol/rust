@@ -17,33 +17,38 @@ mod cross_crate {
             override1: 2,
             override2: 3,
             //~^ ERROR use of deprecated field
+            override3: 4,
         };
 
         let _ = x.inherit;
         let _ = x.override1;
         let _ = x.override2;
         //~^ ERROR use of deprecated field
+        let _ = x.override3;
 
         let Stable {
             inherit: _,
             override1: _,
-            override2: _
+            override2: _,
             //~^ ERROR use of deprecated field
+            override3: _,
         } = x;
         // all fine
         let Stable { .. } = x;
 
-        let x = Stable2(1, 2, 3);
+        let x = Stable2(1, 2, 3, 4);
 
         let _ = x.0;
         let _ = x.1;
         let _ = x.2;
         //~^ ERROR use of deprecated field
+        let _ = x.3;
 
         let Stable2(_,
                    _,
+                   _,
+                   //~^ ERROR use of deprecated field
                    _)
-            //~^ ERROR use of deprecated field
             = x;
         // all fine
         let Stable2(..) = x;
@@ -124,7 +129,7 @@ mod cross_crate {
             { .. } = x;
 
         let x = Deprecated2(1, 2, 3);
-        //~^ ERROR use of deprecated struct
+        //~^ ERROR use of deprecated tuple struct
 
         let _ = x.0;
         //~^ ERROR use of deprecated field
@@ -134,7 +139,7 @@ mod cross_crate {
         //~^ ERROR use of deprecated field
 
         let Deprecated2
-        //~^ ERROR use of deprecated struct
+        //~^ ERROR use of deprecated tuple struct
             (_,
              //~^ ERROR use of deprecated field
              _,
@@ -143,7 +148,7 @@ mod cross_crate {
              //~^ ERROR use of deprecated field
             = x;
         let Deprecated2
-        //~^ ERROR use of deprecated struct
+        //~^ ERROR use of deprecated tuple struct
             // the patterns are all fine:
             (..) = x;
     }
@@ -155,7 +160,7 @@ mod this_crate {
         inherit: u8,
         #[unstable(feature = "unstable_test_feature", issue = "none")]
         override1: u8,
-        #[rustc_deprecated(since = "1.0.0", reason = "text")]
+        #[deprecated(since = "1.0.0", note = "text")]
         #[unstable(feature = "unstable_test_feature", issue = "none")]
         override2: u8,
     }
@@ -164,14 +169,14 @@ mod this_crate {
     struct Stable2(u8,
                    #[stable(feature = "rust1", since = "1.0.0")] u8,
                    #[unstable(feature = "unstable_test_feature", issue = "none")]
-                   #[rustc_deprecated(since = "1.0.0", reason = "text")] u8);
+                   #[deprecated(since = "1.0.0", note = "text")] u8);
 
     #[unstable(feature = "unstable_test_feature", issue = "none")]
     struct Unstable {
         inherit: u8,
         #[stable(feature = "rust1", since = "1.0.0")]
         override1: u8,
-        #[rustc_deprecated(since = "1.0.0", reason = "text")]
+        #[deprecated(since = "1.0.0", note = "text")]
         #[unstable(feature = "unstable_test_feature", issue = "none")]
         override2: u8,
     }
@@ -180,10 +185,10 @@ mod this_crate {
     struct Unstable2(u8,
                      #[stable(feature = "rust1", since = "1.0.0")] u8,
                      #[unstable(feature = "unstable_test_feature", issue = "none")]
-                     #[rustc_deprecated(since = "1.0.0", reason = "text")] u8);
+                     #[deprecated(since = "1.0.0", note = "text")] u8);
 
     #[unstable(feature = "unstable_test_feature", issue = "none")]
-    #[rustc_deprecated(since = "1.0.0", reason = "text")]
+    #[deprecated(since = "1.0.0", note = "text")]
     struct Deprecated {
         inherit: u8,
         #[stable(feature = "rust1", since = "1.0.0")]
@@ -193,7 +198,7 @@ mod this_crate {
     }
 
     #[unstable(feature = "unstable_test_feature", issue = "none")]
-    #[rustc_deprecated(since = "1.0.0", reason = "text")]
+    #[deprecated(since = "1.0.0", note = "text")]
     struct Deprecated2(u8,
                        #[stable(feature = "rust1", since = "1.0.0")] u8,
                        #[unstable(feature = "unstable_test_feature", issue = "none")] u8);

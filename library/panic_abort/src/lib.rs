@@ -5,21 +5,21 @@
 
 #![no_std]
 #![unstable(feature = "panic_abort", issue = "32837")]
-#![doc(
-    html_root_url = "https://doc.rust-lang.org/nightly/",
-    issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/"
-)]
+#![doc(issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
 #![panic_runtime]
 #![allow(unused_features)]
 #![feature(core_intrinsics)]
-#![feature(libc)]
-#![feature(nll)]
 #![feature(panic_runtime)]
+#![feature(std_internals)]
 #![feature(staged_api)]
 #![feature(rustc_attrs)]
-#![feature(llvm_asm)]
+#![feature(c_unwind)]
+
+#[cfg(target_os = "android")]
+mod android;
 
 use core::any::Any;
+use core::panic::BoxMeUp;
 
 #[rustc_std_internal_symbol]
 #[allow(improper_ctypes_definitions)]
@@ -29,11 +29,15 @@ pub unsafe extern "C" fn __rust_panic_cleanup(_: *mut u8) -> *mut (dyn Any + Sen
 
 // "Leak" the payload and shim to the relevant abort on the platform in question.
 #[rustc_std_internal_symbol]
-pub unsafe extern "C" fn __rust_start_panic(_payload: usize) -> u32 {
+pub unsafe fn __rust_start_panic(_payload: *mut &mut dyn BoxMeUp) -> u32 {
+    // Android has the ability to attach a message as part of the abort.
+    #[cfg(target_os = "android")]
+    android::android_set_abort_message(_payload);
+
     abort();
 
     cfg_if::cfg_if! {
-        if #[cfg(any(unix, target_os = "cloudabi"))] {
+        if #[cfg(any(unix, target_os = "solid_asp3"))] {
             unsafe fn abort() -> ! {
                 libc::abort();
             }
@@ -47,7 +51,7 @@ pub unsafe extern "C" fn __rust_start_panic(_payload: usize) -> u32 {
                 }
                 __rust_abort();
             }
-        } else if #[cfg(all(windows, any(target_arch = "x86", target_arch = "x86_64")))] {
+        } else if #[cfg(all(windows, not(miri)))] {
             // On Windows, use the processor-specific __fastfail mechanism. In Windows 8
             // and later, this will terminate the process immediately without running any
             // in-process exception handlers. In earlier versions of Windows, this
@@ -59,7 +63,19 @@ pub unsafe extern "C" fn __rust_start_panic(_payload: usize) -> u32 {
             //
             // Note: this is the same implementation as in libstd's `abort_internal`
             unsafe fn abort() -> ! {
-                llvm_asm!("int $$0x29" :: "{ecx}"(7) ::: volatile); // 7 is FAST_FAIL_FATAL_APP_EXIT
+                #[allow(unused)]
+                const FAST_FAIL_FATAL_APP_EXIT: usize = 7;
+                cfg_if::cfg_if! {
+                    if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
+                        core::arch::asm!("int $$0x29", in("ecx") FAST_FAIL_FATAL_APP_EXIT);
+                    } else if #[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))] {
+                        core::arch::asm!(".inst 0xDEFB", in("r0") FAST_FAIL_FATAL_APP_EXIT);
+                    } else if #[cfg(target_arch = "aarch64")] {
+                        core::arch::asm!("brk 0xF003", in("x0") FAST_FAIL_FATAL_APP_EXIT);
+                    } else {
+                        core::intrinsics::abort();
+                    }
+                }
                 core::intrinsics::unreachable();
             }
         } else {
@@ -97,32 +113,18 @@ pub unsafe extern "C" fn __rust_start_panic(_payload: usize) -> u32 {
 // binaries, but it should never be called as we don't link in an unwinding
 // runtime at all.
 pub mod personalities {
-    #[rustc_std_internal_symbol]
-    #[cfg(not(any(
-        all(target_arch = "wasm32", not(target_os = "emscripten"),),
-        all(target_os = "windows", target_env = "gnu", target_arch = "x86_64",),
-    )))]
-    pub extern "C" fn rust_eh_personality() {}
+    // In the past this module used to contain stubs for the personality
+    // functions of various platforms, but these where removed when personality
+    // functions were moved to std.
 
-    // On x86_64-pc-windows-gnu we use our own personality function that needs
-    // to return `ExceptionContinueSearch` as we're passing on all our frames.
+    // This corresponds to the `eh_catch_typeinfo` lang item
+    // that's only used on Emscripten currently.
+    //
+    // Since panics don't generate exceptions and foreign exceptions are
+    // currently UB with -C panic=abort (although this may be subject to
+    // change), any catch_unwind calls will never use this typeinfo.
     #[rustc_std_internal_symbol]
-    #[cfg(all(target_os = "windows", target_env = "gnu", target_arch = "x86_64"))]
-    pub extern "C" fn rust_eh_personality(
-        _record: usize,
-        _frame: usize,
-        _context: usize,
-        _dispatcher: usize,
-    ) -> u32 {
-        1 // `ExceptionContinueSearch`
-    }
-
-    // These two are called by our startup objects on i686-pc-windows-gnu, but
-    // they don't need to do anything so the bodies are nops.
-    #[rustc_std_internal_symbol]
-    #[cfg(all(target_os = "windows", target_env = "gnu", target_arch = "x86"))]
-    pub extern "C" fn rust_eh_register_frames() {}
-    #[rustc_std_internal_symbol]
-    #[cfg(all(target_os = "windows", target_env = "gnu", target_arch = "x86"))]
-    pub extern "C" fn rust_eh_unregister_frames() {}
+    #[allow(non_upper_case_globals)]
+    #[cfg(target_os = "emscripten")]
+    static rust_eh_catch_typeinfo: [usize; 2] = [0; 2];
 }

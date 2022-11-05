@@ -1,7 +1,4 @@
 // run-pass
-#![feature(const_generics)]
-#![allow(incomplete_features)]
-
 struct R;
 
 impl R {

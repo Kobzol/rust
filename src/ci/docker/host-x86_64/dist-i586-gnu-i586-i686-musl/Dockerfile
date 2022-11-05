@@ -3,6 +3,7 @@ FROM ubuntu:16.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
   g++-multilib \
   make \
+  ninja-build \
   file \
   curl \
   ca-certificates \
@@ -29,10 +30,14 @@ RUN CC=gcc CFLAGS="-m32 -Wa,-mrelax-relocations=no" \
 COPY scripts/sccache.sh /scripts/
 RUN sh /scripts/sccache.sh
 
+COPY scripts/cmake.sh /scripts/
+RUN /scripts/cmake.sh
+
 ENV RUST_CONFIGURE_ARGS \
       --musl-root-i586=/musl-i586 \
       --musl-root-i686=/musl-i686 \
-      --disable-docs
+      --disable-docs \
+      --set llvm.allow-old-toolchain
 
 # Newer binutils broke things on some vms/distros (i.e., linking against
 # unknown relocs disabled by the following flag), so we need to go out of our
@@ -46,5 +51,5 @@ ENV CFLAGS_i586_unknown_linux_musl=-Wa,-mrelax-relocations=no
 ENV TARGETS=i586-unknown-linux-gnu,i686-unknown-linux-musl
 
 ENV SCRIPT \
-      python3 ../x.py --stage 2 test --target $TARGETS && \
-      python3 ../x.py dist --target $TARGETS,i586-unknown-linux-musl
+      python3 ../x.py --stage 2 test --host='' --target $TARGETS && \
+      python3 ../x.py dist --host='' --target $TARGETS,i586-unknown-linux-musl

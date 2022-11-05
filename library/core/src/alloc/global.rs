@@ -20,24 +20,69 @@ use crate::ptr;
 ///
 /// # Example
 ///
-/// ```no_run
-/// use std::alloc::{GlobalAlloc, Layout, alloc};
+/// ```
+/// use std::alloc::{GlobalAlloc, Layout};
+/// use std::cell::UnsafeCell;
 /// use std::ptr::null_mut;
+/// use std::sync::atomic::{
+///     AtomicUsize,
+///     Ordering::{Acquire, SeqCst},
+/// };
 ///
-/// struct MyAllocator;
-///
-/// unsafe impl GlobalAlloc for MyAllocator {
-///     unsafe fn alloc(&self, _layout: Layout) -> *mut u8 { null_mut() }
-///     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+/// const ARENA_SIZE: usize = 128 * 1024;
+/// const MAX_SUPPORTED_ALIGN: usize = 4096;
+/// #[repr(C, align(4096))] // 4096 == MAX_SUPPORTED_ALIGN
+/// struct SimpleAllocator {
+///     arena: UnsafeCell<[u8; ARENA_SIZE]>,
+///     remaining: AtomicUsize, // we allocate from the top, counting down
 /// }
 ///
 /// #[global_allocator]
-/// static A: MyAllocator = MyAllocator;
+/// static ALLOCATOR: SimpleAllocator = SimpleAllocator {
+///     arena: UnsafeCell::new([0x55; ARENA_SIZE]),
+///     remaining: AtomicUsize::new(ARENA_SIZE),
+/// };
+///
+/// unsafe impl Sync for SimpleAllocator {}
+///
+/// unsafe impl GlobalAlloc for SimpleAllocator {
+///     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+///         let size = layout.size();
+///         let align = layout.align();
+///
+///         // `Layout` contract forbids making a `Layout` with align=0, or align not power of 2.
+///         // So we can safely use a mask to ensure alignment without worrying about UB.
+///         let align_mask_to_round_down = !(align - 1);
+///
+///         if align > MAX_SUPPORTED_ALIGN {
+///             return null_mut();
+///         }
+///
+///         let mut allocated = 0;
+///         if self
+///             .remaining
+///             .fetch_update(SeqCst, SeqCst, |mut remaining| {
+///                 if size > remaining {
+///                     return None;
+///                 }
+///                 remaining -= size;
+///                 remaining &= align_mask_to_round_down;
+///                 allocated = remaining;
+///                 Some(remaining)
+///             })
+///             .is_err()
+///         {
+///             return null_mut();
+///         };
+///         self.arena.get().cast::<u8>().add(allocated)
+///     }
+///     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+/// }
 ///
 /// fn main() {
-///     unsafe {
-///         assert!(alloc(Layout::new::<u32>()).is_null())
-///     }
+///     let _s = format!("allocating a string!");
+///     let currently = ALLOCATOR.remaining.load(Acquire);
+///     println!("allocated so far: {}", ARENA_SIZE - currently);
 /// }
 /// ```
 ///
@@ -53,6 +98,27 @@ use crate::ptr;
 /// * `Layout` queries and calculations in general must be correct. Callers of
 ///   this trait are allowed to rely on the contracts defined on each method,
 ///   and implementors must ensure such contracts remain true.
+///
+/// * You must not rely on allocations actually happening, even if there are explicit
+///   heap allocations in the source. The optimizer may detect unused allocations that it can either
+///   eliminate entirely or move to the stack and thus never invoke the allocator. The
+///   optimizer may further assume that allocation is infallible, so code that used to fail due
+///   to allocator failures may now suddenly work because the optimizer worked around the
+///   need for an allocation. More concretely, the following code example is unsound, irrespective
+///   of whether your custom allocator allows counting how many allocations have happened.
+///
+///   ```rust,ignore (unsound and has placeholders)
+///   drop(Box::new(42));
+///   let number_of_heap_allocs = /* call private allocator API */;
+///   unsafe { std::intrinsics::assume(number_of_heap_allocs > 0); }
+///   ```
+///
+///   Note that the optimizations mentioned above are not the only
+///   optimization that can be applied. You may generally not rely on heap allocations
+///   happening if they can be removed without changing program behavior.
+///   Whether allocations happen or not is not part of the program behavior, even if it
+///   could be detected via an allocator that tracks allocations by printing or otherwise
+///   having side effects.
 #[stable(feature = "global_alloc", since = "1.28.0")]
 pub unsafe trait GlobalAlloc {
     /// Allocate memory as described by the given `layout`.
@@ -101,7 +167,7 @@ pub unsafe trait GlobalAlloc {
     ///   this allocator,
     ///
     /// * `layout` must be the same layout that was used
-    ///   to allocate that block of memory,
+    ///   to allocate that block of memory.
     #[stable(feature = "global_alloc", since = "1.28.0")]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout);
 
@@ -142,11 +208,12 @@ pub unsafe trait GlobalAlloc {
     ///
     /// If this returns a non-null pointer, then ownership of the memory block
     /// referenced by `ptr` has been transferred to this allocator.
-    /// The memory may or may not have been deallocated,
-    /// and should be considered unusable (unless of course it was
-    /// transferred back to the caller again via the return value of
-    /// this method). The new memory block is allocated with `layout`, but
-    /// with the `size` updated to `new_size`.
+    /// The memory may or may not have been deallocated, and should be
+    /// considered unusable. The new memory block is allocated with `layout`,
+    /// but with the `size` updated to `new_size`. This new layout should be
+    /// used when deallocating the new memory block with `dealloc`. The range
+    /// `0..min(layout.size(), new_size)` of the new memory block is
+    /// guaranteed to have the same values as the original block.
     ///
     /// If this method returns null, then ownership of the memory
     /// block has not been transferred to this allocator, and the

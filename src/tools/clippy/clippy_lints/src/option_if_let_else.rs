@@ -1,40 +1,37 @@
-use crate::utils;
-use crate::utils::sugg::Sugg;
-use crate::utils::{match_type, paths, span_lint_and_sugg};
+use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_utils::sugg::Sugg;
+use clippy_utils::{
+    can_move_expr_to_closure, eager_or_lazy, higher, in_constant, is_else_clause, is_lang_ctor, peel_blocks,
+    peel_hir_expr_while, CaptureKind,
+};
 use if_chain::if_chain;
-
 use rustc_errors::Applicability;
-use rustc_hir::intravisit::{NestedVisitorMap, Visitor};
-use rustc_hir::{Arm, BindingAnnotation, Block, Expr, ExprKind, MatchSource, Mutability, PatKind, UnOp};
+use rustc_hir::LangItem::{OptionNone, OptionSome, ResultErr, ResultOk};
+use rustc_hir::{
+    def::Res, Arm, BindingAnnotation, Expr, ExprKind, MatchSource, Mutability, Pat, PatKind, Path, QPath, UnOp,
+};
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::hir::map::Map;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:**
-    /// Lints usage of  `if let Some(v) = ... { y } else { x }` which is more
-    /// idiomatically done with `Option::map_or` (if the else bit is a simple
-    /// expression) or `Option::map_or_else` (if the else bit is a longer
-    /// block).
+    /// ### What it does
+    /// Lints usage of `if let Some(v) = ... { y } else { x }` and
+    /// `match .. { Some(v) => y, None/_ => x }` which are more
+    /// idiomatically done with `Option::map_or` (if the else bit is a pure
+    /// expression) or `Option::map_or_else` (if the else bit is an impure
+    /// expression).
     ///
-    /// **Why is this bad?**
-    /// Using the dedicated functions of the Option type is clearer and
-    /// more concise than an if let expression.
+    /// ### Why is this bad?
+    /// Using the dedicated functions of the `Option` type is clearer and
+    /// more concise than an `if let` expression.
     ///
-    /// **Known problems:**
-    /// This lint uses whether the block is just an expression or if it has
-    /// more statements to decide whether to use `Option::map_or` or
-    /// `Option::map_or_else`. If you have a single expression which calls
-    /// an expensive function, then it would be more efficient to use
-    /// `Option::map_or_else`, but this lint would suggest `Option::map_or`.
-    ///
-    /// Also, this lint uses a deliberately conservative metric for checking
+    /// ### Known problems
+    /// This lint uses a deliberately conservative metric for checking
     /// if the inside of either body contains breaks or continues which will
     /// cause it to not suggest a fix if either block contains a loop with
     /// continues or breaks contained within the loop.
     ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// # let optional: Option<u32> = Some(0);
     /// # fn do_complicated_function() -> u32 { 5 };
@@ -42,6 +39,10 @@ declare_clippy_lint! {
     ///     foo
     /// } else {
     ///     5
+    /// };
+    /// let _ = match optional {
+    ///     Some(val) => val + 1,
+    ///     None => 5
     /// };
     /// let _ = if let Some(foo) = optional {
     ///     foo
@@ -57,135 +58,47 @@ declare_clippy_lint! {
     /// # let optional: Option<u32> = Some(0);
     /// # fn do_complicated_function() -> u32 { 5 };
     /// let _ = optional.map_or(5, |foo| foo);
+    /// let _ = optional.map_or(5, |val| val + 1);
     /// let _ = optional.map_or_else(||{
     ///     let y = do_complicated_function();
     ///     y*y
     /// }, |foo| foo);
     /// ```
+    // FIXME: Before moving this lint out of nursery, the lint name needs to be updated. It now also
+    // covers matches and `Result`.
+    #[clippy::version = "1.47.0"]
     pub OPTION_IF_LET_ELSE,
-    pedantic,
+    nursery,
     "reimplementation of Option::map_or"
 }
 
 declare_lint_pass!(OptionIfLetElse => [OPTION_IF_LET_ELSE]);
 
-/// Returns true iff the given expression is the result of calling `Result::ok`
-fn is_result_ok(cx: &LateContext<'_>, expr: &'_ Expr<'_>) -> bool {
-    if let ExprKind::MethodCall(ref path, _, &[ref receiver], _) = &expr.kind {
-        path.ident.name.to_ident_string() == "ok"
-            && match_type(cx, &cx.typeck_results().expr_ty(&receiver), &paths::RESULT)
-    } else {
-        false
-    }
-}
-
-/// A struct containing information about occurrences of the
-/// `if let Some(..) = .. else` construct that this lint detects.
-struct OptionIfLetElseOccurence {
+/// A struct containing information about occurrences of construct that this lint detects
+///
+/// Such as:
+///
+/// ```ignore
+/// if let Some(..) = {..} else {..}
+/// ```
+/// or
+/// ```ignore
+/// match x {
+///     Some(..) => {..},
+///     None/_ => {..}
+/// }
+/// ```
+struct OptionOccurence {
     option: String,
     method_sugg: String,
     some_expr: String,
     none_expr: String,
-    wrap_braces: bool,
-}
-
-struct ReturnBreakContinueMacroVisitor {
-    seen_return_break_continue: bool,
-}
-impl ReturnBreakContinueMacroVisitor {
-    fn new() -> ReturnBreakContinueMacroVisitor {
-        ReturnBreakContinueMacroVisitor {
-            seen_return_break_continue: false,
-        }
-    }
-}
-impl<'tcx> Visitor<'tcx> for ReturnBreakContinueMacroVisitor {
-    type Map = Map<'tcx>;
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
-    }
-
-    fn visit_expr(&mut self, ex: &'tcx Expr<'tcx>) {
-        if self.seen_return_break_continue {
-            // No need to look farther if we've already seen one of them
-            return;
-        }
-        match &ex.kind {
-            ExprKind::Ret(..) | ExprKind::Break(..) | ExprKind::Continue(..) => {
-                self.seen_return_break_continue = true;
-            },
-            // Something special could be done here to handle while or for loop
-            // desugaring, as this will detect a break if there's a while loop
-            // or a for loop inside the expression.
-            _ => {
-                if utils::in_macro(ex.span) {
-                    self.seen_return_break_continue = true;
-                } else {
-                    rustc_hir::intravisit::walk_expr(self, ex);
-                }
-            },
-        }
-    }
-}
-
-fn contains_return_break_continue_macro(expression: &Expr<'_>) -> bool {
-    let mut recursive_visitor = ReturnBreakContinueMacroVisitor::new();
-    recursive_visitor.visit_expr(expression);
-    recursive_visitor.seen_return_break_continue
-}
-
-/// Extracts the body of a given arm. If the arm contains only an expression,
-/// then it returns the expression. Otherwise, it returns the entire block
-fn extract_body_from_arm<'a>(arm: &'a Arm<'a>) -> Option<&'a Expr<'a>> {
-    if let ExprKind::Block(
-        Block {
-            stmts: statements,
-            expr: Some(expr),
-            ..
-        },
-        _,
-    ) = &arm.body.kind
-    {
-        if let [] = statements {
-            Some(&expr)
-        } else {
-            Some(&arm.body)
-        }
-    } else {
-        None
-    }
-}
-
-/// If this is the else body of an if/else expression, then we need to wrap
-/// it in curcly braces. Otherwise, we don't.
-fn should_wrap_in_braces(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
-    utils::get_enclosing_block(cx, expr.hir_id).map_or(false, |parent| {
-        if let Some(Expr {
-            kind:
-                ExprKind::Match(
-                    _,
-                    arms,
-                    MatchSource::IfDesugar {
-                        contains_else_clause: true,
-                    }
-                    | MatchSource::IfLetDesugar {
-                        contains_else_clause: true,
-                    },
-                ),
-            ..
-        }) = parent.expr
-        {
-            expr.hir_id == arms[1].body.hir_id
-        } else {
-            false
-        }
-    })
 }
 
 fn format_option_in_sugg(cx: &LateContext<'_>, cond_expr: &Expr<'_>, as_ref: bool, as_mut: bool) -> String {
     format!(
         "{}{}",
-        Sugg::hir(cx, cond_expr, "..").maybe_par(),
+        Sugg::hir_with_macro_callsite(cx, cond_expr, "..").maybe_par(),
         if as_mut {
             ".as_mut()"
         } else if as_ref {
@@ -196,70 +109,150 @@ fn format_option_in_sugg(cx: &LateContext<'_>, cond_expr: &Expr<'_>, as_ref: boo
     )
 }
 
-/// If this expression is the option if let/else construct we're detecting, then
-/// this function returns an `OptionIfLetElseOccurence` struct with details if
-/// this construct is found, or None if this construct is not found.
-fn detect_option_if_let_else(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<OptionIfLetElseOccurence> {
+fn try_get_option_occurence<'tcx>(
+    cx: &LateContext<'tcx>,
+    pat: &Pat<'tcx>,
+    expr: &Expr<'_>,
+    if_then: &'tcx Expr<'_>,
+    if_else: &'tcx Expr<'_>,
+) -> Option<OptionOccurence> {
+    let cond_expr = match expr.kind {
+        ExprKind::Unary(UnOp::Deref, inner_expr) | ExprKind::AddrOf(_, _, inner_expr) => inner_expr,
+        _ => expr,
+    };
+    let inner_pat = try_get_inner_pat(cx, pat)?;
     if_chain! {
-        if !utils::in_macro(expr.span); // Don't lint macros, because it behaves weirdly
-        if let ExprKind::Match(cond_expr, arms, MatchSource::IfLetDesugar{contains_else_clause: true}) = &expr.kind;
-        if arms.len() == 2;
-        if !is_result_ok(cx, cond_expr); // Don't lint on Result::ok because a different lint does it already
-        if let PatKind::TupleStruct(struct_qpath, &[inner_pat], _) = &arms[0].pat.kind;
-        if utils::match_qpath(struct_qpath, &paths::OPTION_SOME);
-        if let PatKind::Binding(bind_annotation, _, id, _) = &inner_pat.kind;
-        if !contains_return_break_continue_macro(arms[0].body);
-        if !contains_return_break_continue_macro(arms[1].body);
+        if let PatKind::Binding(bind_annotation, _, id, None) = inner_pat.kind;
+        if let Some(some_captures) = can_move_expr_to_closure(cx, if_then);
+        if let Some(none_captures) = can_move_expr_to_closure(cx, if_else);
+        if some_captures
+            .iter()
+            .filter_map(|(id, &c)| none_captures.get(id).map(|&c2| (c, c2)))
+            .all(|(x, y)| x.is_imm_ref() && y.is_imm_ref());
         then {
-            let capture_mut = if bind_annotation == &BindingAnnotation::Mutable { "mut " } else { "" };
-            let some_body = extract_body_from_arm(&arms[0])?;
-            let none_body = extract_body_from_arm(&arms[1])?;
-            let method_sugg = match &none_body.kind {
-                ExprKind::Block(..) => "map_or_else",
-                _ => "map_or",
-            };
+            let capture_mut = if bind_annotation == BindingAnnotation::MUT { "mut " } else { "" };
+            let some_body = peel_blocks(if_then);
+            let none_body = peel_blocks(if_else);
+            let method_sugg = if eager_or_lazy::switch_to_eager_eval(cx, none_body) { "map_or" } else { "map_or_else" };
             let capture_name = id.name.to_ident_string();
-            let wrap_braces = should_wrap_in_braces(cx, expr);
-            let (as_ref, as_mut) = match &cond_expr.kind {
+            let (as_ref, as_mut) = match &expr.kind {
                 ExprKind::AddrOf(_, Mutability::Not, _) => (true, false),
                 ExprKind::AddrOf(_, Mutability::Mut, _) => (false, true),
-                _ => (bind_annotation == &BindingAnnotation::Ref, bind_annotation == &BindingAnnotation::RefMut),
+                _ => (bind_annotation == BindingAnnotation::REF, bind_annotation == BindingAnnotation::REF_MUT),
             };
-            let cond_expr = match &cond_expr.kind {
-                // Pointer dereferencing happens automatically, so we can omit it in the suggestion
-                ExprKind::Unary(UnOp::UnDeref, expr) | ExprKind::AddrOf(_, _, expr) => expr,
-                _ => cond_expr,
-            };
-            Some(OptionIfLetElseOccurence {
+
+            // Check if captures the closure will need conflict with borrows made in the scrutinee.
+            // TODO: check all the references made in the scrutinee expression. This will require interacting
+            // with the borrow checker. Currently only `<local>[.<field>]*` is checked for.
+            if as_ref || as_mut {
+                let e = peel_hir_expr_while(cond_expr, |e| match e.kind {
+                    ExprKind::Field(e, _) | ExprKind::AddrOf(_, _, e) => Some(e),
+                    _ => None,
+                });
+                if let ExprKind::Path(QPath::Resolved(None, Path { res: Res::Local(local_id), .. })) = e.kind {
+                    match some_captures.get(local_id)
+                        .or_else(|| (method_sugg == "map_or_else").then_some(()).and_then(|_| none_captures.get(local_id)))
+                    {
+                        Some(CaptureKind::Value | CaptureKind::Ref(Mutability::Mut)) => return None,
+                        Some(CaptureKind::Ref(Mutability::Not)) if as_mut => return None,
+                        Some(CaptureKind::Ref(Mutability::Not)) | None => (),
+                    }
+                }
+            }
+
+            return Some(OptionOccurence {
                 option: format_option_in_sugg(cx, cond_expr, as_ref, as_mut),
                 method_sugg: method_sugg.to_string(),
-                some_expr: format!("|{}{}| {}", capture_mut, capture_name, Sugg::hir(cx, some_body, "..")),
-                none_expr: format!("{}{}", if method_sugg == "map_or" { "" } else { "|| " }, Sugg::hir(cx, none_body, "..")),
-                wrap_braces,
-            })
+                some_expr: format!("|{}{}| {}", capture_mut, capture_name, Sugg::hir_with_macro_callsite(cx, some_body, "..")),
+                none_expr: format!("{}{}", if method_sugg == "map_or" { "" } else { "|| " }, Sugg::hir_with_macro_callsite(cx, none_body, "..")),
+            });
+        }
+    }
+
+    None
+}
+
+fn try_get_inner_pat<'tcx>(cx: &LateContext<'tcx>, pat: &Pat<'tcx>) -> Option<&'tcx Pat<'tcx>> {
+    if let PatKind::TupleStruct(ref qpath, [inner_pat], ..) = pat.kind {
+        if is_lang_ctor(cx, qpath, OptionSome) || is_lang_ctor(cx, qpath, ResultOk) {
+            return Some(inner_pat);
+        }
+    }
+    None
+}
+
+/// If this expression is the option if let/else construct we're detecting, then
+/// this function returns an `OptionOccurence` struct with details if
+/// this construct is found, or None if this construct is not found.
+fn detect_option_if_let_else<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'tcx>) -> Option<OptionOccurence> {
+    if let Some(higher::IfLet {
+        let_pat,
+        let_expr,
+        if_then,
+        if_else: Some(if_else),
+    }) = higher::IfLet::hir(cx, expr)
+    {
+        if !is_else_clause(cx.tcx, expr) {
+            return try_get_option_occurence(cx, let_pat, let_expr, if_then, if_else);
+        }
+    }
+    None
+}
+
+fn detect_option_match<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'tcx>) -> Option<OptionOccurence> {
+    if let ExprKind::Match(ex, arms, MatchSource::Normal) = expr.kind {
+        if let Some((let_pat, if_then, if_else)) = try_convert_match(cx, arms) {
+            return try_get_option_occurence(cx, let_pat, ex, if_then, if_else);
+        }
+    }
+    None
+}
+
+fn try_convert_match<'tcx>(
+    cx: &LateContext<'tcx>,
+    arms: &[Arm<'tcx>],
+) -> Option<(&'tcx Pat<'tcx>, &'tcx Expr<'tcx>, &'tcx Expr<'tcx>)> {
+    if arms.len() == 2 {
+        return if is_none_or_err_arm(cx, &arms[1]) {
+            Some((arms[0].pat, arms[0].body, arms[1].body))
+        } else if is_none_or_err_arm(cx, &arms[0]) {
+            Some((arms[1].pat, arms[1].body, arms[0].body))
         } else {
             None
-        }
+        };
+    }
+    None
+}
+
+fn is_none_or_err_arm(cx: &LateContext<'_>, arm: &Arm<'_>) -> bool {
+    match arm.pat.kind {
+        PatKind::Path(ref qpath) => is_lang_ctor(cx, qpath, OptionNone),
+        PatKind::TupleStruct(ref qpath, [first_pat], _) => {
+            is_lang_ctor(cx, qpath, ResultErr) && matches!(first_pat.kind, PatKind::Wild)
+        },
+        PatKind::Wild => true,
+        _ => false,
     }
 }
 
-impl<'a> LateLintPass<'a> for OptionIfLetElse {
-    fn check_expr(&mut self, cx: &LateContext<'a>, expr: &Expr<'_>) {
-        if let Some(detection) = detect_option_if_let_else(cx, expr) {
+impl<'tcx> LateLintPass<'tcx> for OptionIfLetElse {
+    fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &Expr<'tcx>) {
+        // Don't lint macros and constants
+        if expr.span.from_expansion() || in_constant(cx, expr.hir_id) {
+            return;
+        }
+
+        let detection = detect_option_if_let_else(cx, expr).or_else(|| detect_option_match(cx, expr));
+        if let Some(det) = detection {
             span_lint_and_sugg(
                 cx,
                 OPTION_IF_LET_ELSE,
                 expr.span,
-                format!("use Option::{} instead of an if let/else", detection.method_sugg).as_str(),
+                format!("use Option::{} instead of an if let/else", det.method_sugg).as_str(),
                 "try",
                 format!(
-                    "{}{}.{}({}, {}){}",
-                    if detection.wrap_braces { "{ " } else { "" },
-                    detection.option,
-                    detection.method_sugg,
-                    detection.none_expr,
-                    detection.some_expr,
-                    if detection.wrap_braces { " }" } else { "" },
+                    "{}.{}({}, {})",
+                    det.option, det.method_sugg, det.none_expr, det.some_expr
                 ),
                 Applicability::MaybeIncorrect,
             );

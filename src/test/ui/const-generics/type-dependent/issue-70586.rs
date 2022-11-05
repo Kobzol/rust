@@ -1,7 +1,4 @@
 // check-pass
-#![feature(const_generics)]
-#![allow(incomplete_features)]
-
 use std::marker::PhantomData;
 
 // This namespace is necessary for the ICE to trigger

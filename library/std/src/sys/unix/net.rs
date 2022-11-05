@@ -3,13 +3,22 @@ use crate::ffi::CStr;
 use crate::io::{self, IoSlice, IoSliceMut};
 use crate::mem;
 use crate::net::{Shutdown, SocketAddr};
+use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 use crate::str;
 use crate::sys::fd::FileDesc;
 use crate::sys_common::net::{getsockopt, setsockopt, sockaddr_to_addr};
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 use crate::time::{Duration, Instant};
 
-use libc::{c_int, c_void, size_t, sockaddr, socklen_t, EAI_SYSTEM, MSG_PEEK};
+use libc::{c_int, c_void, size_t, sockaddr, socklen_t, MSG_PEEK};
+
+cfg_if::cfg_if! {
+    if #[cfg(target_vendor = "apple")] {
+        use libc::SO_LINGER_SEC as SO_LINGER;
+    } else {
+        use libc::SO_LINGER;
+    }
+}
 
 pub use crate::sys::{cvt, cvt_r};
 
@@ -30,16 +39,22 @@ pub fn cvt_gai(err: c_int) -> io::Result<()> {
     // We may need to trigger a glibc workaround. See on_resolver_failure() for details.
     on_resolver_failure();
 
-    if err == EAI_SYSTEM {
+    #[cfg(not(target_os = "espidf"))]
+    if err == libc::EAI_SYSTEM {
         return Err(io::Error::last_os_error());
     }
 
+    #[cfg(not(target_os = "espidf"))]
     let detail = unsafe {
         str::from_utf8(CStr::from_ptr(libc::gai_strerror(err)).to_bytes()).unwrap().to_owned()
     };
+
+    #[cfg(target_os = "espidf")]
+    let detail = "";
+
     Err(io::Error::new(
-        io::ErrorKind::Other,
-        &format!("failed to lookup address information: {}", detail)[..],
+        io::ErrorKind::Uncategorized,
+        &format!("failed to lookup address information: {detail}")[..],
     ))
 }
 
@@ -55,14 +70,23 @@ impl Socket {
     pub fn new_raw(fam: c_int, ty: c_int) -> io::Result<Socket> {
         unsafe {
             cfg_if::cfg_if! {
-                if #[cfg(target_os = "linux")] {
-                    // On Linux we pass the SOCK_CLOEXEC flag to atomically create
-                    // the socket and set it as CLOEXEC, added in 2.6.27.
+                if #[cfg(any(
+                    target_os = "android",
+                    target_os = "dragonfly",
+                    target_os = "freebsd",
+                    target_os = "illumos",
+                    target_os = "linux",
+                    target_os = "netbsd",
+                    target_os = "openbsd",
+                ))] {
+                    // On platforms that support it we pass the SOCK_CLOEXEC
+                    // flag to atomically create the socket and set it as
+                    // CLOEXEC. On Linux this was added in 2.6.27.
                     let fd = cvt(libc::socket(fam, ty | libc::SOCK_CLOEXEC, 0))?;
-                    Ok(Socket(FileDesc::new(fd)))
+                    Ok(Socket(FileDesc::from_raw_fd(fd)))
                 } else {
                     let fd = cvt(libc::socket(fam, ty, 0))?;
-                    let fd = FileDesc::new(fd);
+                    let fd = FileDesc::from_raw_fd(fd);
                     fd.set_cloexec()?;
                     let socket = Socket(fd);
 
@@ -77,19 +101,28 @@ impl Socket {
         }
     }
 
+    #[cfg(not(target_os = "vxworks"))]
     pub fn new_pair(fam: c_int, ty: c_int) -> io::Result<(Socket, Socket)> {
         unsafe {
             let mut fds = [0, 0];
 
             cfg_if::cfg_if! {
-                if #[cfg(target_os = "linux")] {
+                if #[cfg(any(
+                    target_os = "android",
+                    target_os = "dragonfly",
+                    target_os = "freebsd",
+                    target_os = "illumos",
+                    target_os = "linux",
+                    target_os = "netbsd",
+                    target_os = "openbsd",
+                ))] {
                     // Like above, set cloexec atomically
                     cvt(libc::socketpair(fam, ty | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()))?;
-                    Ok((Socket(FileDesc::new(fds[0])), Socket(FileDesc::new(fds[1]))))
+                    Ok((Socket(FileDesc::from_raw_fd(fds[0])), Socket(FileDesc::from_raw_fd(fds[1]))))
                 } else {
                     cvt(libc::socketpair(fam, ty, 0, fds.as_mut_ptr()))?;
-                    let a = FileDesc::new(fds[0]);
-                    let b = FileDesc::new(fds[1]);
+                    let a = FileDesc::from_raw_fd(fds[0]);
+                    let b = FileDesc::from_raw_fd(fds[1]);
                     a.set_cloexec()?;
                     b.set_cloexec()?;
                     Ok((Socket(a), Socket(b)))
@@ -98,11 +131,16 @@ impl Socket {
         }
     }
 
+    #[cfg(target_os = "vxworks")]
+    pub fn new_pair(_fam: c_int, _ty: c_int) -> io::Result<(Socket, Socket)> {
+        unimplemented!()
+    }
+
     pub fn connect_timeout(&self, addr: &SocketAddr, timeout: Duration) -> io::Result<()> {
         self.set_nonblocking(true)?;
         let r = unsafe {
-            let (addrp, len) = addr.into_inner();
-            cvt(libc::connect(self.0.raw(), addrp, len))
+            let (addr, len) = addr.into_inner();
+            cvt(libc::connect(self.as_raw_fd(), addr.as_ptr(), len))
         };
         self.set_nonblocking(false)?;
 
@@ -113,10 +151,10 @@ impl Socket {
             Err(e) => return Err(e),
         }
 
-        let mut pollfd = libc::pollfd { fd: self.0.raw(), events: libc::POLLOUT, revents: 0 };
+        let mut pollfd = libc::pollfd { fd: self.as_raw_fd(), events: libc::POLLOUT, revents: 0 };
 
         if timeout.as_secs() == 0 && timeout.subsec_nanos() == 0 {
-            return Err(io::Error::new(
+            return Err(io::const_io_error!(
                 io::ErrorKind::InvalidInput,
                 "cannot set a 0 duration timeout",
             ));
@@ -127,7 +165,7 @@ impl Socket {
         loop {
             let elapsed = start.elapsed();
             if elapsed >= timeout {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "connection timed out"));
+                return Err(io::const_io_error!(io::ErrorKind::TimedOut, "connection timed out"));
             }
 
             let timeout = timeout - elapsed;
@@ -154,7 +192,10 @@ impl Socket {
                     // for POLLHUP rather than read readiness
                     if pollfd.revents & libc::POLLHUP != 0 {
                         let e = self.take_error()?.unwrap_or_else(|| {
-                            io::Error::new(io::ErrorKind::Other, "no error set after POLLHUP")
+                            io::const_io_error!(
+                                io::ErrorKind::Uncategorized,
+                                "no error set after POLLHUP",
+                            )
                         });
                         return Err(e);
                     }
@@ -168,18 +209,29 @@ impl Socket {
     pub fn accept(&self, storage: *mut sockaddr, len: *mut socklen_t) -> io::Result<Socket> {
         // Unfortunately the only known way right now to accept a socket and
         // atomically set the CLOEXEC flag is to use the `accept4` syscall on
-        // Linux. This was added in 2.6.28, glibc 2.10 and musl 0.9.5.
+        // platforms that support it. On Linux, this was added in 2.6.28,
+        // glibc 2.10 and musl 0.9.5.
         cfg_if::cfg_if! {
-            if #[cfg(target_os = "linux")] {
-                let fd = cvt_r(|| unsafe {
-                    libc::accept4(self.0.raw(), storage, len, libc::SOCK_CLOEXEC)
-                })?;
-                Ok(Socket(FileDesc::new(fd)))
+            if #[cfg(any(
+                target_os = "android",
+                target_os = "dragonfly",
+                target_os = "freebsd",
+                target_os = "illumos",
+                target_os = "linux",
+                target_os = "netbsd",
+                target_os = "openbsd",
+            ))] {
+                unsafe {
+                    let fd = cvt_r(|| libc::accept4(self.as_raw_fd(), storage, len, libc::SOCK_CLOEXEC))?;
+                    Ok(Socket(FileDesc::from_raw_fd(fd)))
+                }
             } else {
-                let fd = cvt_r(|| unsafe { libc::accept(self.0.raw(), storage, len) })?;
-                let fd = FileDesc::new(fd);
-                fd.set_cloexec()?;
-                Ok(Socket(fd))
+                unsafe {
+                    let fd = cvt_r(|| libc::accept(self.as_raw_fd(), storage, len))?;
+                    let fd = FileDesc::from_raw_fd(fd);
+                    fd.set_cloexec()?;
+                    Ok(Socket(fd))
+                }
             }
         }
     }
@@ -190,7 +242,7 @@ impl Socket {
 
     fn recv_with_flags(&self, buf: &mut [u8], flags: c_int) -> io::Result<usize> {
         let ret = cvt(unsafe {
-            libc::recv(self.0.raw(), buf.as_mut_ptr() as *mut c_void, buf.len(), flags)
+            libc::recv(self.as_raw_fd(), buf.as_mut_ptr() as *mut c_void, buf.len(), flags)
         })?;
         Ok(ret as usize)
     }
@@ -222,7 +274,7 @@ impl Socket {
 
         let n = cvt(unsafe {
             libc::recvfrom(
-                self.0.raw(),
+                self.as_raw_fd(),
                 buf.as_mut_ptr() as *mut c_void,
                 buf.len(),
                 flags,
@@ -235,6 +287,12 @@ impl Socket {
 
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         self.recv_from_with_flags(buf, 0)
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    pub fn recv_msg(&self, msg: &mut libc::msghdr) -> io::Result<usize> {
+        let n = cvt(unsafe { libc::recvmsg(self.as_raw_fd(), msg, libc::MSG_CMSG_CLOEXEC) })?;
+        Ok(n as usize)
     }
 
     pub fn peek_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
@@ -254,11 +312,17 @@ impl Socket {
         self.0.is_write_vectored()
     }
 
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    pub fn send_msg(&self, msg: &mut libc::msghdr) -> io::Result<usize> {
+        let n = cvt(unsafe { libc::sendmsg(self.as_raw_fd(), msg, 0) })?;
+        Ok(n as usize)
+    }
+
     pub fn set_timeout(&self, dur: Option<Duration>, kind: libc::c_int) -> io::Result<()> {
         let timeout = match dur {
             Some(dur) => {
                 if dur.as_secs() == 0 && dur.subsec_nanos() == 0 {
-                    return Err(io::Error::new(
+                    return Err(io::const_io_error!(
                         io::ErrorKind::InvalidInput,
                         "cannot set a 0 duration timeout",
                     ));
@@ -300,8 +364,23 @@ impl Socket {
             Shutdown::Read => libc::SHUT_RD,
             Shutdown::Both => libc::SHUT_RDWR,
         };
-        cvt(unsafe { libc::shutdown(self.0.raw(), how) })?;
+        cvt(unsafe { libc::shutdown(self.as_raw_fd(), how) })?;
         Ok(())
+    }
+
+    pub fn set_linger(&self, linger: Option<Duration>) -> io::Result<()> {
+        let linger = libc::linger {
+            l_onoff: linger.is_some() as libc::c_int,
+            l_linger: linger.unwrap_or_default().as_secs() as libc::c_int,
+        };
+
+        setsockopt(self, libc::SOL_SOCKET, SO_LINGER, linger)
+    }
+
+    pub fn linger(&self) -> io::Result<Option<Duration>> {
+        let val: libc::linger = getsockopt(self, libc::SOL_SOCKET, SO_LINGER)?;
+
+        Ok((val.l_onoff != 0).then(|| Duration::from_secs(val.l_linger as u64)))
     }
 
     pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
@@ -313,10 +392,43 @@ impl Socket {
         Ok(raw != 0)
     }
 
+    #[cfg(any(target_os = "android", target_os = "linux",))]
+    pub fn set_quickack(&self, quickack: bool) -> io::Result<()> {
+        setsockopt(self, libc::IPPROTO_TCP, libc::TCP_QUICKACK, quickack as c_int)
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux",))]
+    pub fn quickack(&self) -> io::Result<bool> {
+        let raw: c_int = getsockopt(self, libc::IPPROTO_TCP, libc::TCP_QUICKACK)?;
+        Ok(raw != 0)
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux",))]
+    pub fn set_passcred(&self, passcred: bool) -> io::Result<()> {
+        setsockopt(self, libc::SOL_SOCKET, libc::SO_PASSCRED, passcred as libc::c_int)
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux",))]
+    pub fn passcred(&self) -> io::Result<bool> {
+        let passcred: libc::c_int = getsockopt(self, libc::SOL_SOCKET, libc::SO_PASSCRED)?;
+        Ok(passcred != 0)
+    }
+
+    #[cfg(target_os = "netbsd")]
+    pub fn set_passcred(&self, passcred: bool) -> io::Result<()> {
+        setsockopt(self, 0 as libc::c_int, libc::LOCAL_CREDS, passcred as libc::c_int)
+    }
+
+    #[cfg(target_os = "netbsd")]
+    pub fn passcred(&self) -> io::Result<bool> {
+        let passcred: libc::c_int = getsockopt(self, 0 as libc::c_int, libc::LOCAL_CREDS)?;
+        Ok(passcred != 0)
+    }
+
     #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         let mut nonblocking = nonblocking as libc::c_int;
-        cvt(unsafe { libc::ioctl(*self.as_inner(), libc::FIONBIO, &mut nonblocking) }).map(drop)
+        cvt(unsafe { libc::ioctl(self.as_raw_fd(), libc::FIONBIO, &mut nonblocking) }).map(drop)
     }
 
     #[cfg(any(target_os = "solaris", target_os = "illumos"))]
@@ -326,27 +438,67 @@ impl Socket {
         self.0.set_nonblocking(nonblocking)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
+    pub fn set_mark(&self, mark: u32) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        let option = libc::SO_MARK;
+        #[cfg(target_os = "freebsd")]
+        let option = libc::SO_USER_COOKIE;
+        #[cfg(target_os = "openbsd")]
+        let option = libc::SO_RTABLE;
+        setsockopt(self, libc::SOL_SOCKET, option, mark as libc::c_int)
+    }
+
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         let raw: c_int = getsockopt(self, libc::SOL_SOCKET, libc::SO_ERROR)?;
         if raw == 0 { Ok(None) } else { Ok(Some(io::Error::from_raw_os_error(raw as i32))) }
     }
-}
 
-impl AsInner<c_int> for Socket {
-    fn as_inner(&self) -> &c_int {
-        self.0.as_inner()
+    // This is used by sys_common code to abstract over Windows and Unix.
+    pub fn as_raw(&self) -> RawFd {
+        self.as_raw_fd()
     }
 }
 
-impl FromInner<c_int> for Socket {
-    fn from_inner(fd: c_int) -> Socket {
-        Socket(FileDesc::new(fd))
+impl AsInner<FileDesc> for Socket {
+    fn as_inner(&self) -> &FileDesc {
+        &self.0
     }
 }
 
-impl IntoInner<c_int> for Socket {
-    fn into_inner(self) -> c_int {
-        self.0.into_raw()
+impl IntoInner<FileDesc> for Socket {
+    fn into_inner(self) -> FileDesc {
+        self.0
+    }
+}
+
+impl FromInner<FileDesc> for Socket {
+    fn from_inner(file_desc: FileDesc) -> Self {
+        Self(file_desc)
+    }
+}
+
+impl AsFd for Socket {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl AsRawFd for Socket {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+impl IntoRawFd for Socket {
+    fn into_raw_fd(self) -> RawFd {
+        self.0.into_raw_fd()
+    }
+}
+
+impl FromRawFd for Socket {
+    unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
+        Self(FromRawFd::from_raw_fd(raw_fd))
     }
 }
 
@@ -366,7 +518,7 @@ impl IntoInner<c_int> for Socket {
 // res_init unconditionally, we call it only when we detect we're linking
 // against glibc version < 2.26. (That is, when we both know its needed and
 // believe it's thread-safe).
-#[cfg(target_env = "gnu")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn on_resolver_failure() {
     use crate::sys;
 
@@ -378,5 +530,5 @@ fn on_resolver_failure() {
     }
 }
 
-#[cfg(not(target_env = "gnu"))]
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn on_resolver_failure() {}

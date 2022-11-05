@@ -1,4 +1,4 @@
-use crate::mem;
+use crate::mem::ManuallyDrop;
 use crate::ptr;
 use crate::sync::atomic::AtomicPtr;
 use crate::sync::atomic::Ordering::SeqCst;
@@ -35,7 +35,7 @@ pub type Dtor = unsafe extern "C" fn(*mut u8);
 //
 // For more details and nitty-gritty, see the code sections below!
 //
-// [1]: http://www.codeproject.com/Articles/8113/Thread-Local-Storage-The-C-Way
+// [1]: https://www.codeproject.com/Articles/8113/Thread-Local-Storage-The-C-Way
 // [2]: https://github.com/ChromiumWebApps/chromium/blob/master/base
 //                        /threading/thread_local_storage_win.cc#L42
 
@@ -110,30 +110,14 @@ struct Node {
     next: *mut Node,
 }
 
-#[cfg(miri)]
-extern "Rust" {
-    /// Miri-provided extern function to mark the block `ptr` points to as a "root"
-    /// for some static memory. This memory and everything reachable by it is not
-    /// considered leaking even if it still exists when the program terminates.
-    ///
-    /// `ptr` has to point to the beginning of an allocated block.
-    fn miri_static_root(ptr: *const u8);
-}
-
 unsafe fn register_dtor(key: Key, dtor: Dtor) {
-    let mut node = Box::new(Node { key, dtor, next: ptr::null_mut() });
+    let mut node = ManuallyDrop::new(Box::new(Node { key, dtor, next: ptr::null_mut() }));
 
     let mut head = DTORS.load(SeqCst);
     loop {
         node.next = head;
-        match DTORS.compare_exchange(head, &mut *node, SeqCst, SeqCst) {
-            Ok(_) => {
-                #[cfg(miri)]
-                miri_static_root(&*node as *const _ as *const u8);
-
-                mem::forget(node);
-                return;
-            }
+        match DTORS.compare_exchange(head, &mut **node, SeqCst, SeqCst) {
+            Ok(_) => return, // nothing to drop, we successfully added the node to the list
             Err(cur) => head = cur,
         }
     }
@@ -212,6 +196,8 @@ pub static p_thread_callback: unsafe extern "system" fn(c::LPVOID, c::DWORD, c::
 unsafe extern "system" fn on_tls_callback(h: c::LPVOID, dwReason: c::DWORD, pv: c::LPVOID) {
     if dwReason == c::DLL_THREAD_DETACH || dwReason == c::DLL_PROCESS_DETACH {
         run_dtors();
+        #[cfg(target_thread_local)]
+        super::thread_local_dtor::run_keyless_dtors();
     }
 
     // See comments above for what this is doing. Note that we don't need this

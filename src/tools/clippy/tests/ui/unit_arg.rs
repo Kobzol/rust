@@ -1,6 +1,22 @@
-#![warn(clippy::unit_arg)]
-#![allow(clippy::no_effect, unused_must_use, unused_variables)]
+// aux-build: proc_macro_with_span.rs
 
+#![warn(clippy::unit_arg)]
+#![allow(
+    clippy::no_effect,
+    unused_must_use,
+    unused_variables,
+    clippy::unused_unit,
+    clippy::unnecessary_wraps,
+    clippy::or_fun_call,
+    clippy::needless_question_mark,
+    clippy::self_named_constructors,
+    clippy::let_unit_value,
+    clippy::never_loop
+)]
+
+extern crate proc_macro_with_span;
+
+use proc_macro_with_span::with_span;
 use std::fmt::Debug;
 
 fn foo<T: Debug>(t: T) {
@@ -16,6 +32,30 @@ struct Bar;
 impl Bar {
     fn bar<T: Debug>(&self, t: T) {
         println!("{:?}", t);
+    }
+}
+
+fn baz<T: Debug>(t: T) {
+    foo(t);
+}
+
+trait Tr {
+    type Args;
+    fn do_it(args: Self::Args);
+}
+
+struct A;
+impl Tr for A {
+    type Args = ();
+    fn do_it(_: Self::Args) {}
+}
+
+struct B;
+impl Tr for B {
+    type Args = <A as Tr>::Args;
+
+    fn do_it(args: Self::Args) {
+        A::do_it(args)
     }
 }
 
@@ -47,6 +87,11 @@ fn bad() {
             foo(3);
         },
     );
+    // here Some(foo(2)) isn't the top level statement expression, wrap the suggestion in a block
+    None.or(Some(foo(2)));
+    // in this case, the suggestion can be inlined, no need for a surrounding block
+    // foo(()); foo(()) instead of { foo(()); foo(()) }
+    foo(foo(()));
 }
 
 fn ok() {
@@ -58,6 +103,10 @@ fn ok() {
     b.bar({ 1 });
     b.bar(());
     question_mark();
+    let named_unit_arg = ();
+    foo(named_unit_arg);
+    baz(());
+    B::do_it(());
 }
 
 fn question_mark() -> Result<(), ()> {
@@ -83,6 +132,10 @@ fn returning_expr() -> Option<()> {
 }
 
 fn taking_multiple_units(a: (), b: ()) {}
+
+fn proc_macro() {
+    with_span!(span taking_multiple_units(unsafe { (); }, 'x: loop { break 'x (); }));
+}
 
 fn main() {
     bad();

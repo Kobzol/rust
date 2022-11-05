@@ -1,8 +1,5 @@
 // aux-build:type_dependent_lib.rs
 // run-pass
-#![feature(const_generics)]
-#![allow(incomplete_features)]
-
 extern crate type_dependent_lib;
 
 use type_dependent_lib::*;

@@ -1,6 +1,8 @@
 // run-rustfix
 // rustfix-only-machine-applicable
 
+#![feature(lint_reasons)]
+#![allow(clippy::implicit_clone, clippy::drop_non_drop)]
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -28,6 +30,10 @@ fn main() {
     #[allow(clippy::redundant_clone)]
     let _s = String::new().to_string();
 
+    // Check that lint level works
+    #[expect(clippy::redundant_clone)]
+    let _s = String::new().to_string();
+
     let tup = (String::from("foo"),);
     let _t = tup.0.clone();
 
@@ -53,16 +59,15 @@ fn main() {
     not_consumed();
     issue_5405();
     manually_drop();
+    clone_then_move_cloned();
+    hashmap_neg();
+    false_negative_5707();
 }
 
 #[derive(Clone)]
 struct Alpha;
 fn with_branch(a: Alpha, b: bool) -> (Alpha, Alpha) {
-    if b {
-        (a.clone(), a.clone())
-    } else {
-        (Alpha, a)
-    }
+    if b { (a.clone(), a.clone()) } else { (Alpha, a) }
 }
 
 fn cannot_double_move(a: Alpha) -> (Alpha, Alpha) {
@@ -184,4 +189,53 @@ fn manually_drop() {
         Arc::from_raw(p);
         Arc::from_raw(p);
     }
+}
+
+fn clone_then_move_cloned() {
+    // issue #5973
+    let x = Some(String::new());
+    // ok, x is moved while the clone is in use.
+    assert_eq!(x.clone(), None, "not equal {}", x.unwrap());
+
+    // issue #5595
+    fn foo<F: Fn()>(_: &Alpha, _: F) {}
+    let x = Alpha;
+    // ok, data is moved while the clone is in use.
+    foo(&x.clone(), move || {
+        let _ = x;
+    });
+
+    // issue #6998
+    struct S(String);
+    impl S {
+        fn m(&mut self) {}
+    }
+    let mut x = S(String::new());
+    x.0.clone().chars().for_each(|_| x.m());
+}
+
+fn hashmap_neg() {
+    // issue 5707
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    let p = PathBuf::from("/");
+
+    let mut h: HashMap<&str, &str> = HashMap::new();
+    h.insert("orig-p", p.to_str().unwrap());
+
+    let mut q = p.clone();
+    q.push("foo");
+
+    println!("{:?} {}", h, q.display());
+}
+
+fn false_negative_5707() {
+    fn foo(_x: &Alpha, _y: &mut Alpha) {}
+
+    let x = Alpha;
+    let mut y = Alpha;
+    foo(&x, &mut y);
+    let _z = x.clone(); // pr 7346 can't lint on `x`
+    drop(y);
 }

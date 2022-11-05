@@ -17,29 +17,27 @@
 use crate::io as std_io;
 use crate::mem;
 
+#[path = "../unix/alloc.rs"]
 pub mod alloc;
 pub mod args;
-#[path = "../unsupported/cmath.rs"]
+#[path = "../unix/cmath.rs"]
 pub mod cmath;
-#[path = "../unsupported/condvar.rs"]
-pub mod condvar;
 pub mod env;
 pub mod fd;
 pub mod fs;
 pub mod io;
-#[path = "../unsupported/mutex.rs"]
-pub mod mutex;
+#[path = "../unsupported/locks/mod.rs"]
+pub mod locks;
 pub mod net;
 pub mod os;
-pub use crate::sys_common::os_str_bytes as os_str;
-pub mod ext;
+#[path = "../unix/os_str.rs"]
+pub mod os_str;
+#[path = "../unix/path.rs"]
 pub mod path;
+#[path = "../unsupported/pipe.rs"]
 pub mod pipe;
+#[path = "../unsupported/process.rs"]
 pub mod process;
-#[path = "../unsupported/rwlock.rs"]
-pub mod rwlock;
-#[path = "../unsupported/stack_overflow.rs"]
-pub mod stack_overflow;
 pub mod stdio;
 pub mod thread;
 #[path = "../unsupported/thread_local_dtor.rs"]
@@ -49,6 +47,7 @@ pub mod thread_local_key;
 pub mod time;
 
 #[path = "../unsupported/common.rs"]
+#[deny(unsafe_op_in_unsafe_fn)]
 #[allow(unused)]
 mod common;
 pub use common::*;
@@ -56,24 +55,29 @@ pub use common::*;
 pub fn decode_error_kind(errno: i32) -> std_io::ErrorKind {
     use std_io::ErrorKind::*;
     if errno > u16::MAX as i32 || errno < 0 {
-        return Other;
+        return Uncategorized;
     }
-    match errno as u16 {
-        wasi::ERRNO_CONNREFUSED => ConnectionRefused,
-        wasi::ERRNO_CONNRESET => ConnectionReset,
-        wasi::ERRNO_PERM | wasi::ERRNO_ACCES => PermissionDenied,
-        wasi::ERRNO_PIPE => BrokenPipe,
-        wasi::ERRNO_NOTCONN => NotConnected,
-        wasi::ERRNO_CONNABORTED => ConnectionAborted,
-        wasi::ERRNO_ADDRNOTAVAIL => AddrNotAvailable,
-        wasi::ERRNO_ADDRINUSE => AddrInUse,
-        wasi::ERRNO_NOENT => NotFound,
-        wasi::ERRNO_INTR => Interrupted,
-        wasi::ERRNO_INVAL => InvalidInput,
-        wasi::ERRNO_TIMEDOUT => TimedOut,
-        wasi::ERRNO_EXIST => AlreadyExists,
-        wasi::ERRNO_AGAIN => WouldBlock,
-        _ => Other,
+
+    match errno {
+        e if e == wasi::ERRNO_CONNREFUSED.raw().into() => ConnectionRefused,
+        e if e == wasi::ERRNO_CONNRESET.raw().into() => ConnectionReset,
+        e if e == wasi::ERRNO_PERM.raw().into() || e == wasi::ERRNO_ACCES.raw().into() => {
+            PermissionDenied
+        }
+        e if e == wasi::ERRNO_PIPE.raw().into() => BrokenPipe,
+        e if e == wasi::ERRNO_NOTCONN.raw().into() => NotConnected,
+        e if e == wasi::ERRNO_CONNABORTED.raw().into() => ConnectionAborted,
+        e if e == wasi::ERRNO_ADDRNOTAVAIL.raw().into() => AddrNotAvailable,
+        e if e == wasi::ERRNO_ADDRINUSE.raw().into() => AddrInUse,
+        e if e == wasi::ERRNO_NOENT.raw().into() => NotFound,
+        e if e == wasi::ERRNO_INTR.raw().into() => Interrupted,
+        e if e == wasi::ERRNO_INVAL.raw().into() => InvalidInput,
+        e if e == wasi::ERRNO_TIMEDOUT.raw().into() => TimedOut,
+        e if e == wasi::ERRNO_EXIST.raw().into() => AlreadyExists,
+        e if e == wasi::ERRNO_AGAIN.raw().into() => WouldBlock,
+        e if e == wasi::ERRNO_NOSYS.raw().into() => Unsupported,
+        e if e == wasi::ERRNO_NOMEM.raw().into() => OutOfMemory,
+        _ => Uncategorized,
     }
 }
 
@@ -91,6 +95,6 @@ pub fn hashmap_random_keys() -> (u64, u64) {
     return ret;
 }
 
-fn err2io(err: wasi::Error) -> std_io::Error {
-    std_io::Error::from_raw_os_error(err.raw_error().into())
+fn err2io(err: wasi::Errno) -> std_io::Error {
+    std_io::Error::from_raw_os_error(err.raw().into())
 }

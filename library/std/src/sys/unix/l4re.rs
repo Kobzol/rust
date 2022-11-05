@@ -1,15 +1,18 @@
 macro_rules! unimpl {
     () => {
-        return Err(io::Error::new(io::ErrorKind::Other, "No networking available on L4Re."));
+        return Err(io::const_io_error!(
+            io::ErrorKind::Unsupported,
+            "No networking available on L4Re.",
+        ));
     };
 }
 
 pub mod net {
     #![allow(warnings)]
-    use crate::convert::TryFrom;
     use crate::fmt;
     use crate::io::{self, IoSlice, IoSliceMut};
     use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
+    use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
     use crate::sys::fd::FileDesc;
     use crate::sys_common::{AsInner, FromInner, IntoInner};
     use crate::time::Duration;
@@ -56,7 +59,7 @@ pub mod net {
         }
 
         pub fn is_read_vectored(&self) -> bool {
-            unimpl!();
+            false
         }
 
         pub fn peek(&self, _: &mut [u8]) -> io::Result<usize> {
@@ -80,7 +83,7 @@ pub mod net {
         }
 
         pub fn is_write_vectored(&self) -> bool {
-            unimpl!();
+            false
         }
 
         pub fn set_timeout(&self, _: Option<Duration>, _: libc::c_int) -> io::Result<()> {
@@ -92,6 +95,14 @@ pub mod net {
         }
 
         pub fn shutdown(&self, _: Shutdown) -> io::Result<()> {
+            unimpl!();
+        }
+
+        pub fn set_linger(&self, _: Option<Duration>) -> io::Result<()> {
+            unimpl!();
+        }
+
+        pub fn linger(&self) -> io::Result<Option<Duration>> {
             unimpl!();
         }
 
@@ -110,23 +121,52 @@ pub mod net {
         pub fn take_error(&self) -> io::Result<Option<io::Error>> {
             unimpl!();
         }
-    }
 
-    impl AsInner<libc::c_int> for Socket {
-        fn as_inner(&self) -> &libc::c_int {
-            self.0.as_inner()
+        // This is used by sys_common code to abstract over Windows and Unix.
+        pub fn as_raw(&self) -> RawFd {
+            self.as_raw_fd()
         }
     }
 
-    impl FromInner<libc::c_int> for Socket {
-        fn from_inner(fd: libc::c_int) -> Socket {
-            Socket(FileDesc::new(fd))
+    impl AsInner<FileDesc> for Socket {
+        fn as_inner(&self) -> &FileDesc {
+            &self.0
         }
     }
 
-    impl IntoInner<libc::c_int> for Socket {
-        fn into_inner(self) -> libc::c_int {
-            self.0.into_raw()
+    impl FromInner<FileDesc> for Socket {
+        fn from_inner(file_desc: FileDesc) -> Socket {
+            Socket(file_desc)
+        }
+    }
+
+    impl IntoInner<FileDesc> for Socket {
+        fn into_inner(self) -> FileDesc {
+            self.0
+        }
+    }
+
+    impl AsFd for Socket {
+        fn as_fd(&self) -> BorrowedFd<'_> {
+            self.0.as_fd()
+        }
+    }
+
+    impl AsRawFd for Socket {
+        fn as_raw_fd(&self) -> RawFd {
+            self.0.as_raw_fd()
+        }
+    }
+
+    impl IntoRawFd for Socket {
+        fn into_raw_fd(self) -> RawFd {
+            self.0.into_raw_fd()
+        }
+    }
+
+    impl FromRawFd for Socket {
+        unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
+            Self(FromRawFd::from_raw_fd(raw_fd))
         }
     }
 
@@ -180,7 +220,7 @@ pub mod net {
         }
 
         pub fn is_read_vectored(&self) -> bool {
-            unimpl!();
+            false
         }
 
         pub fn write(&self, _: &[u8]) -> io::Result<usize> {
@@ -192,7 +232,7 @@ pub mod net {
         }
 
         pub fn is_write_vectored(&self) -> bool {
-            unimpl!();
+            false
         }
 
         pub fn peer_addr(&self) -> io::Result<SocketAddr> {
@@ -208,6 +248,14 @@ pub mod net {
         }
 
         pub fn duplicate(&self) -> io::Result<TcpStream> {
+            unimpl!();
+        }
+
+        pub fn set_linger(&self, _: Option<Duration>) -> io::Result<()> {
+            unimpl!();
+        }
+
+        pub fn linger(&self) -> io::Result<Option<Duration>> {
             unimpl!();
         }
 
@@ -478,7 +526,7 @@ pub mod net {
 
     impl LookupHost {
         pub fn port(&self) -> u16 {
-            unimpl!();
+            0 // unimplemented
         }
     }
 

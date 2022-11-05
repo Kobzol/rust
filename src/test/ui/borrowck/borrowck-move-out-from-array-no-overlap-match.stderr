@@ -7,7 +7,7 @@ LL |     }
 LL |     match a {
    |           ^ value used here after partial move
    |
-   = note: partial move occurs because `a[..]` has type `(std::string::String, std::string::String)`, which does not implement the `Copy` trait
+   = note: partial move occurs because `a[..]` has type `(String, String)`, which does not implement the `Copy` trait
 
 error[E0382]: use of partially moved value: `a`
   --> $DIR/borrowck-move-out-from-array-no-overlap-match.rs:28:11
@@ -18,7 +18,7 @@ LL |     }
 LL |     match a {
    |           ^ value used here after partial move
    |
-   = note: partial move occurs because `a[..].0` has type `std::string::String`, which does not implement the `Copy` trait
+   = note: partial move occurs because `a[..].0` has type `String`, which does not implement the `Copy` trait
 
 error[E0382]: use of partially moved value: `a`
   --> $DIR/borrowck-move-out-from-array-no-overlap-match.rs:41:11
@@ -29,7 +29,7 @@ LL |     }
 LL |     match a {
    |           ^ value used here after partial move
    |
-   = note: partial move occurs because `a[..]` has type `(std::string::String, std::string::String)`, which does not implement the `Copy` trait
+   = note: partial move occurs because `a[..]` has type `(String, String)`, which does not implement the `Copy` trait
 
 error[E0382]: use of partially moved value: `a`
   --> $DIR/borrowck-move-out-from-array-no-overlap-match.rs:52:11
@@ -40,7 +40,7 @@ LL |     }
 LL |     match a {
    |           ^ value used here after partial move
    |
-   = note: partial move occurs because `a[..]` has type `(std::string::String, std::string::String)`, which does not implement the `Copy` trait
+   = note: partial move occurs because `a[..]` has type `(String, String)`, which does not implement the `Copy` trait
 
 error[E0382]: use of partially moved value: `a`
   --> $DIR/borrowck-move-out-from-array-no-overlap-match.rs:63:11
@@ -51,7 +51,7 @@ LL |     }
 LL |     match a {
    |           ^ value used here after partial move
    |
-   = note: partial move occurs because `a[..].0` has type `std::string::String`, which does not implement the `Copy` trait
+   = note: partial move occurs because `a[..].0` has type `String`, which does not implement the `Copy` trait
 
 error[E0382]: use of partially moved value: `a`
   --> $DIR/borrowck-move-out-from-array-no-overlap-match.rs:74:11
@@ -62,40 +62,40 @@ LL |     }
 LL |     match a {
    |           ^ value used here after partial move
    |
-   = note: partial move occurs because `a[..].0` has type `std::string::String`, which does not implement the `Copy` trait
+   = note: partial move occurs because `a[..].0` has type `String`, which does not implement the `Copy` trait
 
 error[E0382]: use of partially moved value: `a`
   --> $DIR/borrowck-move-out-from-array-no-overlap-match.rs:85:11
    |
 LL |         [_, _y @ ..] => {}
-   |             ------- value partially moved here
+   |             -- value partially moved here
 LL |     }
 LL |     match a {
    |           ^ value used here after partial move
    |
-   = note: partial move occurs because `a[..]` has type `(std::string::String, std::string::String)`, which does not implement the `Copy` trait
+   = note: partial move occurs because `a[..]` has type `(String, String)`, which does not implement the `Copy` trait
 
 error[E0382]: use of partially moved value: `a`
   --> $DIR/borrowck-move-out-from-array-no-overlap-match.rs:96:11
    |
 LL |         [_y @ .., _] => {}
-   |          ------- value partially moved here
+   |          -- value partially moved here
 LL |     }
 LL |     match a {
    |           ^ value used here after partial move
    |
-   = note: partial move occurs because `a[..]` has type `(std::string::String, std::string::String)`, which does not implement the `Copy` trait
+   = note: partial move occurs because `a[..]` has type `(String, String)`, which does not implement the `Copy` trait
 
 error[E0382]: use of partially moved value: `a`
   --> $DIR/borrowck-move-out-from-array-no-overlap-match.rs:109:11
    |
 LL |         [x @ .., _, _] => {}
-   |          ------ value partially moved here
+   |          - value partially moved here
 LL |     }
 LL |     match a {
    |           ^ value used here after partial move
    |
-   = note: partial move occurs because `a[..]` has type `(std::string::String, std::string::String)`, which does not implement the `Copy` trait
+   = note: partial move occurs because `a[..]` has type `(String, String)`, which does not implement the `Copy` trait
 
 error: aborting due to 9 previous errors
 

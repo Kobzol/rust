@@ -3,26 +3,47 @@
 //! This module is "publicly exported" through the `FromStr` implementations
 //! below.
 
+#[cfg(test)]
+mod tests;
+
 use crate::error::Error;
 use crate::fmt;
 use crate::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use crate::str::FromStr;
 
+trait ReadNumberHelper: crate::marker::Sized {
+    const ZERO: Self;
+    fn checked_mul(&self, other: u32) -> Option<Self>;
+    fn checked_add(&self, other: u32) -> Option<Self>;
+}
+
+macro_rules! impl_helper {
+    ($($t:ty)*) => ($(impl ReadNumberHelper for $t {
+        const ZERO: Self = 0;
+        #[inline]
+        fn checked_mul(&self, other: u32) -> Option<Self> {
+            Self::checked_mul(*self, other.try_into().ok()?)
+        }
+        #[inline]
+        fn checked_add(&self, other: u32) -> Option<Self> {
+            Self::checked_add(*self, other.try_into().ok()?)
+        }
+    })*)
+}
+
+impl_helper! { u8 u16 u32 }
+
 struct Parser<'a> {
-    // parsing as ASCII, so can use byte array
+    // Parsing as ASCII, so can use byte array.
     state: &'a [u8],
 }
 
 impl<'a> Parser<'a> {
-    fn new(input: &'a str) -> Parser<'a> {
-        Parser { state: input.as_bytes() }
+    fn new(input: &'a [u8]) -> Parser<'a> {
+        Parser { state: input }
     }
 
-    fn is_eof(&self) -> bool {
-        self.state.is_empty()
-    }
-
-    /// Run a parser, and restore the pre-parse state if it fails
+    /// Run a parser, and restore the pre-parse state if it fails.
     fn read_atomically<T, F>(&mut self, inner: F) -> Option<T>
     where
         F: FnOnce(&mut Parser<'_>) -> Option<T>,
@@ -37,32 +58,33 @@ impl<'a> Parser<'a> {
 
     /// Run a parser, but fail if the entire input wasn't consumed.
     /// Doesn't run atomically.
-    fn read_till_eof<T, F>(&mut self, inner: F) -> Option<T>
+    fn parse_with<T, F>(&mut self, inner: F, kind: AddrKind) -> Result<T, AddrParseError>
     where
         F: FnOnce(&mut Parser<'_>) -> Option<T>,
     {
-        inner(self).filter(|_| self.is_eof())
+        let result = inner(self);
+        if self.state.is_empty() { result } else { None }.ok_or(AddrParseError(kind))
     }
 
-    /// Same as read_till_eof, but returns a Result<AddrParseError> on failure
-    fn parse_with<T, F>(&mut self, inner: F) -> Result<T, AddrParseError>
-    where
-        F: FnOnce(&mut Parser<'_>) -> Option<T>,
-    {
-        self.read_till_eof(inner).ok_or(AddrParseError(()))
+    /// Peek the next character from the input
+    fn peek_char(&self) -> Option<char> {
+        self.state.first().map(|&b| char::from(b))
     }
 
     /// Read the next character from the input
     fn read_char(&mut self) -> Option<char> {
         self.state.split_first().map(|(&b, tail)| {
             self.state = tail;
-            b as char
+            char::from(b)
         })
     }
 
-    /// Read the next character from the input if it matches the target
-    fn read_given_char(&mut self, target: char) -> Option<char> {
-        self.read_atomically(|p| p.read_char().filter(|&c| c == target))
+    #[must_use]
+    /// Read the next character from the input if it matches the target.
+    fn read_given_char(&mut self, target: char) -> Option<()> {
+        self.read_atomically(|p| {
+            p.read_char().and_then(|c| if c == target { Some(()) } else { None })
+        })
     }
 
     /// Helper for reading separators in an indexed loop. Reads the separator
@@ -75,79 +97,92 @@ impl<'a> Parser<'a> {
     {
         self.read_atomically(move |p| {
             if index > 0 {
-                let _ = p.read_given_char(sep)?;
+                p.read_given_char(sep)?;
             }
             inner(p)
         })
     }
 
-    // Read a single digit in the given radix. For instance, 0-9 in radix 10;
-    // 0-9A-F in radix 16.
-    fn read_digit(&mut self, radix: u32) -> Option<u32> {
-        self.read_atomically(move |p| p.read_char()?.to_digit(radix))
-    }
-
     // Read a number off the front of the input in the given radix, stopping
     // at the first non-digit character or eof. Fails if the number has more
-    // digits than max_digits, or the value is >= upto, or if there is no number.
-    fn read_number(&mut self, radix: u32, max_digits: u32, upto: u32) -> Option<u32> {
+    // digits than max_digits or if there is no number.
+    fn read_number<T: ReadNumberHelper>(
+        &mut self,
+        radix: u32,
+        max_digits: Option<usize>,
+        allow_zero_prefix: bool,
+    ) -> Option<T> {
         self.read_atomically(move |p| {
-            let mut result = 0;
+            let mut result = T::ZERO;
             let mut digit_count = 0;
+            let has_leading_zero = p.peek_char() == Some('0');
 
-            while let Some(digit) = p.read_digit(radix) {
-                result = (result * radix) + digit;
+            while let Some(digit) = p.read_atomically(|p| p.read_char()?.to_digit(radix)) {
+                result = result.checked_mul(radix)?;
+                result = result.checked_add(digit)?;
                 digit_count += 1;
-                if digit_count > max_digits || result >= upto {
-                    return None;
+                if let Some(max_digits) = max_digits {
+                    if digit_count > max_digits {
+                        return None;
+                    }
                 }
             }
 
-            if digit_count == 0 { None } else { Some(result) }
+            if digit_count == 0 {
+                None
+            } else if !allow_zero_prefix && has_leading_zero && digit_count > 1 {
+                None
+            } else {
+                Some(result)
+            }
         })
     }
 
-    /// Read an IPv4 address
+    /// Read an IPv4 address.
     fn read_ipv4_addr(&mut self) -> Option<Ipv4Addr> {
         self.read_atomically(|p| {
             let mut groups = [0; 4];
 
             for (i, slot) in groups.iter_mut().enumerate() {
-                *slot = p.read_separator('.', i, |p| p.read_number(10, 3, 0x100))? as u8;
+                *slot = p.read_separator('.', i, |p| {
+                    // Disallow octal number in IP string.
+                    // https://tools.ietf.org/html/rfc6943#section-3.1.1
+                    p.read_number(10, Some(3), false)
+                })?;
             }
 
             Some(groups.into())
         })
     }
 
-    /// Read an IPV6 Address
+    /// Read an IPv6 Address.
     fn read_ipv6_addr(&mut self) -> Option<Ipv6Addr> {
-        /// Read a chunk of an ipv6 address into `groups`. Returns the number
+        /// Read a chunk of an IPv6 address into `groups`. Returns the number
         /// of groups read, along with a bool indicating if an embedded
-        /// trailing ipv4 address was read. Specifically, read a series of
-        /// colon-separated ipv6 groups (0x0000 - 0xFFFF), with an optional
-        /// trailing embedded ipv4 address.
+        /// trailing IPv4 address was read. Specifically, read a series of
+        /// colon-separated IPv6 groups (0x0000 - 0xFFFF), with an optional
+        /// trailing embedded IPv4 address.
         fn read_groups(p: &mut Parser<'_>, groups: &mut [u16]) -> (usize, bool) {
             let limit = groups.len();
 
             for (i, slot) in groups.iter_mut().enumerate() {
-                // Try to read a trailing embedded ipv4 address. There must be
+                // Try to read a trailing embedded IPv4 address. There must be
                 // at least two groups left.
                 if i < limit - 1 {
                     let ipv4 = p.read_separator(':', i, |p| p.read_ipv4_addr());
 
                     if let Some(v4_addr) = ipv4 {
-                        let octets = v4_addr.octets();
-                        groups[i + 0] = ((octets[0] as u16) << 8) | (octets[1] as u16);
-                        groups[i + 1] = ((octets[2] as u16) << 8) | (octets[3] as u16);
+                        let [one, two, three, four] = v4_addr.octets();
+                        groups[i + 0] = u16::from_be_bytes([one, two]);
+                        groups[i + 1] = u16::from_be_bytes([three, four]);
                         return (i + 2, true);
                     }
                 }
 
-                let group = p.read_separator(':', i, |p| p.read_number(16, 4, 0x10000));
+                let group = p.read_separator(':', i, |p| p.read_number(16, Some(4), true));
 
                 match group {
-                    Some(g) => *slot = g as u16,
+                    Some(g) => *slot = g,
                     None => return (i, false),
                 }
             }
@@ -169,10 +204,10 @@ impl<'a> Parser<'a> {
                 return None;
             }
 
-            // read `::` if previous code parsed less than 8 groups
-            // `::` indicates one or more groups of 16 bits of zeros
-            let _ = p.read_given_char(':')?;
-            let _ = p.read_given_char(':')?;
+            // Read `::` if previous code parsed less than 8 groups.
+            // `::` indicates one or more groups of 16 bits of zeros.
+            p.read_given_char(':')?;
+            p.read_given_char(':')?;
 
             // Read the back part of the address. The :: must contain at least one
             // set of zeroes, so our max length is 7.
@@ -187,21 +222,28 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Read an IP Address, either IPV4 or IPV6.
+    /// Read an IP Address, either IPv4 or IPv6.
     fn read_ip_addr(&mut self) -> Option<IpAddr> {
         self.read_ipv4_addr().map(IpAddr::V4).or_else(move || self.read_ipv6_addr().map(IpAddr::V6))
     }
 
-    /// Read a : followed by a port in base 10
+    /// Read a `:` followed by a port in base 10.
     fn read_port(&mut self) -> Option<u16> {
         self.read_atomically(|p| {
-            let _ = p.read_given_char(':')?;
-            let port = p.read_number(10, 5, 0x10000)?;
-            Some(port as u16)
+            p.read_given_char(':')?;
+            p.read_number(10, None, true)
         })
     }
 
-    /// Read an IPV4 address with a port
+    /// Read a `%` followed by a scope ID in base 10.
+    fn read_scope_id(&mut self) -> Option<u32> {
+        self.read_atomically(|p| {
+            p.read_given_char('%')?;
+            p.read_number(10, None, true)
+        })
+    }
+
+    /// Read an IPv4 address with a port.
     fn read_socket_addr_v4(&mut self) -> Option<SocketAddrV4> {
         self.read_atomically(|p| {
             let ip = p.read_ipv4_addr()?;
@@ -210,15 +252,16 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Read an IPV6 address with a port
+    /// Read an IPv6 address with a port.
     fn read_socket_addr_v6(&mut self) -> Option<SocketAddrV6> {
         self.read_atomically(|p| {
-            let _ = p.read_given_char('[')?;
+            p.read_given_char('[')?;
             let ip = p.read_ipv6_addr()?;
-            let _ = p.read_given_char(']')?;
+            let scope_id = p.read_scope_id().unwrap_or(0);
+            p.read_given_char(']')?;
 
             let port = p.read_port()?;
-            Some(SocketAddrV6::new(ip, port, 0, 0))
+            Some(SocketAddrV6::new(ip, port, 0, scope_id))
         })
     }
 
@@ -230,11 +273,54 @@ impl<'a> Parser<'a> {
     }
 }
 
+impl IpAddr {
+    /// Parse an IP address from a slice of bytes.
+    ///
+    /// ```
+    /// #![feature(addr_parse_ascii)]
+    ///
+    /// use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    ///
+    /// let localhost_v4 = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+    /// let localhost_v6 = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
+    ///
+    /// assert_eq!(IpAddr::parse_ascii(b"127.0.0.1"), Ok(localhost_v4));
+    /// assert_eq!(IpAddr::parse_ascii(b"::1"), Ok(localhost_v6));
+    /// ```
+    #[unstable(feature = "addr_parse_ascii", issue = "101035")]
+    pub fn parse_ascii(b: &[u8]) -> Result<Self, AddrParseError> {
+        Parser::new(b).parse_with(|p| p.read_ip_addr(), AddrKind::Ip)
+    }
+}
+
 #[stable(feature = "ip_addr", since = "1.7.0")]
 impl FromStr for IpAddr {
     type Err = AddrParseError;
     fn from_str(s: &str) -> Result<IpAddr, AddrParseError> {
-        Parser::new(s).parse_with(|p| p.read_ip_addr())
+        Self::parse_ascii(s.as_bytes())
+    }
+}
+
+impl Ipv4Addr {
+    /// Parse an IPv4 address from a slice of bytes.
+    ///
+    /// ```
+    /// #![feature(addr_parse_ascii)]
+    ///
+    /// use std::net::Ipv4Addr;
+    ///
+    /// let localhost = Ipv4Addr::new(127, 0, 0, 1);
+    ///
+    /// assert_eq!(Ipv4Addr::parse_ascii(b"127.0.0.1"), Ok(localhost));
+    /// ```
+    #[unstable(feature = "addr_parse_ascii", issue = "101035")]
+    pub fn parse_ascii(b: &[u8]) -> Result<Self, AddrParseError> {
+        // don't try to parse if too long
+        if b.len() > 15 {
+            Err(AddrParseError(AddrKind::Ipv4))
+        } else {
+            Parser::new(b).parse_with(|p| p.read_ipv4_addr(), AddrKind::Ipv4)
+        }
     }
 }
 
@@ -242,7 +328,25 @@ impl FromStr for IpAddr {
 impl FromStr for Ipv4Addr {
     type Err = AddrParseError;
     fn from_str(s: &str) -> Result<Ipv4Addr, AddrParseError> {
-        Parser::new(s).parse_with(|p| p.read_ipv4_addr())
+        Self::parse_ascii(s.as_bytes())
+    }
+}
+
+impl Ipv6Addr {
+    /// Parse an IPv6 address from a slice of bytes.
+    ///
+    /// ```
+    /// #![feature(addr_parse_ascii)]
+    ///
+    /// use std::net::Ipv6Addr;
+    ///
+    /// let localhost = Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1);
+    ///
+    /// assert_eq!(Ipv6Addr::parse_ascii(b"::1"), Ok(localhost));
+    /// ```
+    #[unstable(feature = "addr_parse_ascii", issue = "101035")]
+    pub fn parse_ascii(b: &[u8]) -> Result<Self, AddrParseError> {
+        Parser::new(b).parse_with(|p| p.read_ipv6_addr(), AddrKind::Ipv6)
     }
 }
 
@@ -250,7 +354,25 @@ impl FromStr for Ipv4Addr {
 impl FromStr for Ipv6Addr {
     type Err = AddrParseError;
     fn from_str(s: &str) -> Result<Ipv6Addr, AddrParseError> {
-        Parser::new(s).parse_with(|p| p.read_ipv6_addr())
+        Self::parse_ascii(s.as_bytes())
+    }
+}
+
+impl SocketAddrV4 {
+    /// Parse an IPv4 socket address from a slice of bytes.
+    ///
+    /// ```
+    /// #![feature(addr_parse_ascii)]
+    ///
+    /// use std::net::{Ipv4Addr, SocketAddrV4};
+    ///
+    /// let socket = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
+    ///
+    /// assert_eq!(SocketAddrV4::parse_ascii(b"127.0.0.1:8080"), Ok(socket));
+    /// ```
+    #[unstable(feature = "addr_parse_ascii", issue = "101035")]
+    pub fn parse_ascii(b: &[u8]) -> Result<Self, AddrParseError> {
+        Parser::new(b).parse_with(|p| p.read_socket_addr_v4(), AddrKind::SocketV4)
     }
 }
 
@@ -258,7 +380,25 @@ impl FromStr for Ipv6Addr {
 impl FromStr for SocketAddrV4 {
     type Err = AddrParseError;
     fn from_str(s: &str) -> Result<SocketAddrV4, AddrParseError> {
-        Parser::new(s).parse_with(|p| p.read_socket_addr_v4())
+        Self::parse_ascii(s.as_bytes())
+    }
+}
+
+impl SocketAddrV6 {
+    /// Parse an IPv6 socket address from a slice of bytes.
+    ///
+    /// ```
+    /// #![feature(addr_parse_ascii)]
+    ///
+    /// use std::net::{Ipv6Addr, SocketAddrV6};
+    ///
+    /// let socket = SocketAddrV6::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 8080, 0, 0);
+    ///
+    /// assert_eq!(SocketAddrV6::parse_ascii(b"[2001:db8::1]:8080"), Ok(socket));
+    /// ```
+    #[unstable(feature = "addr_parse_ascii", issue = "101035")]
+    pub fn parse_ascii(b: &[u8]) -> Result<Self, AddrParseError> {
+        Parser::new(b).parse_with(|p| p.read_socket_addr_v6(), AddrKind::SocketV6)
     }
 }
 
@@ -266,7 +406,27 @@ impl FromStr for SocketAddrV4 {
 impl FromStr for SocketAddrV6 {
     type Err = AddrParseError;
     fn from_str(s: &str) -> Result<SocketAddrV6, AddrParseError> {
-        Parser::new(s).parse_with(|p| p.read_socket_addr_v6())
+        Self::parse_ascii(s.as_bytes())
+    }
+}
+
+impl SocketAddr {
+    /// Parse a socket address from a slice of bytes.
+    ///
+    /// ```
+    /// #![feature(addr_parse_ascii)]
+    ///
+    /// use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    ///
+    /// let socket_v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+    /// let socket_v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)), 8080);
+    ///
+    /// assert_eq!(SocketAddr::parse_ascii(b"127.0.0.1:8080"), Ok(socket_v4));
+    /// assert_eq!(SocketAddr::parse_ascii(b"[::1]:8080"), Ok(socket_v6));
+    /// ```
+    #[unstable(feature = "addr_parse_ascii", issue = "101035")]
+    pub fn parse_ascii(b: &[u8]) -> Result<Self, AddrParseError> {
+        Parser::new(b).parse_with(|p| p.read_socket_addr(), AddrKind::Socket)
     }
 }
 
@@ -274,8 +434,18 @@ impl FromStr for SocketAddrV6 {
 impl FromStr for SocketAddr {
     type Err = AddrParseError;
     fn from_str(s: &str) -> Result<SocketAddr, AddrParseError> {
-        Parser::new(s).parse_with(|p| p.read_socket_addr())
+        Self::parse_ascii(s.as_bytes())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AddrKind {
+    Ip,
+    Ipv4,
+    Ipv6,
+    Socket,
+    SocketV4,
+    SocketV6,
 }
 
 /// An error which can be returned when parsing an IP address or a socket address.
@@ -304,7 +474,7 @@ impl FromStr for SocketAddr {
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AddrParseError(());
+pub struct AddrParseError(AddrKind);
 
 #[stable(feature = "addr_parse_error_error", since = "1.4.0")]
 impl fmt::Display for AddrParseError {
@@ -318,149 +488,13 @@ impl fmt::Display for AddrParseError {
 impl Error for AddrParseError {
     #[allow(deprecated)]
     fn description(&self) -> &str {
-        "invalid IP address syntax"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    // FIXME: These tests are all excellent candidates for AFL fuzz testing
-    use crate::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-    use crate::str::FromStr;
-
-    const PORT: u16 = 8080;
-
-    const IPV4: Ipv4Addr = Ipv4Addr::new(192, 168, 0, 1);
-    const IPV4_STR: &str = "192.168.0.1";
-    const IPV4_STR_PORT: &str = "192.168.0.1:8080";
-
-    const IPV6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0xc0a8, 0x1);
-    const IPV6_STR_FULL: &str = "2001:db8:0:0:0:0:c0a8:1";
-    const IPV6_STR_COMPRESS: &str = "2001:db8::c0a8:1";
-    const IPV6_STR_V4: &str = "2001:db8::192.168.0.1";
-    const IPV6_STR_PORT: &str = "[2001:db8::c0a8:1]:8080";
-
-    #[test]
-    fn parse_ipv4() {
-        let result: Ipv4Addr = IPV4_STR.parse().unwrap();
-        assert_eq!(result, IPV4);
-
-        assert!(Ipv4Addr::from_str(IPV4_STR_PORT).is_err());
-        assert!(Ipv4Addr::from_str(IPV6_STR_FULL).is_err());
-        assert!(Ipv4Addr::from_str(IPV6_STR_COMPRESS).is_err());
-        assert!(Ipv4Addr::from_str(IPV6_STR_V4).is_err());
-        assert!(Ipv4Addr::from_str(IPV6_STR_PORT).is_err());
-    }
-
-    #[test]
-    fn parse_ipv6() {
-        let result: Ipv6Addr = IPV6_STR_FULL.parse().unwrap();
-        assert_eq!(result, IPV6);
-
-        let result: Ipv6Addr = IPV6_STR_COMPRESS.parse().unwrap();
-        assert_eq!(result, IPV6);
-
-        let result: Ipv6Addr = IPV6_STR_V4.parse().unwrap();
-        assert_eq!(result, IPV6);
-
-        assert!(Ipv6Addr::from_str(IPV4_STR).is_err());
-        assert!(Ipv6Addr::from_str(IPV4_STR_PORT).is_err());
-        assert!(Ipv6Addr::from_str(IPV6_STR_PORT).is_err());
-    }
-
-    #[test]
-    fn parse_ip() {
-        let result: IpAddr = IPV4_STR.parse().unwrap();
-        assert_eq!(result, IpAddr::from(IPV4));
-
-        let result: IpAddr = IPV6_STR_FULL.parse().unwrap();
-        assert_eq!(result, IpAddr::from(IPV6));
-
-        let result: IpAddr = IPV6_STR_COMPRESS.parse().unwrap();
-        assert_eq!(result, IpAddr::from(IPV6));
-
-        let result: IpAddr = IPV6_STR_V4.parse().unwrap();
-        assert_eq!(result, IpAddr::from(IPV6));
-
-        assert!(IpAddr::from_str(IPV4_STR_PORT).is_err());
-        assert!(IpAddr::from_str(IPV6_STR_PORT).is_err());
-    }
-
-    #[test]
-    fn parse_socket_v4() {
-        let result: SocketAddrV4 = IPV4_STR_PORT.parse().unwrap();
-        assert_eq!(result, SocketAddrV4::new(IPV4, PORT));
-
-        assert!(SocketAddrV4::from_str(IPV4_STR).is_err());
-        assert!(SocketAddrV4::from_str(IPV6_STR_FULL).is_err());
-        assert!(SocketAddrV4::from_str(IPV6_STR_COMPRESS).is_err());
-        assert!(SocketAddrV4::from_str(IPV6_STR_V4).is_err());
-        assert!(SocketAddrV4::from_str(IPV6_STR_PORT).is_err());
-    }
-
-    #[test]
-    fn parse_socket_v6() {
-        let result: SocketAddrV6 = IPV6_STR_PORT.parse().unwrap();
-        assert_eq!(result, SocketAddrV6::new(IPV6, PORT, 0, 0));
-
-        assert!(SocketAddrV6::from_str(IPV4_STR).is_err());
-        assert!(SocketAddrV6::from_str(IPV4_STR_PORT).is_err());
-        assert!(SocketAddrV6::from_str(IPV6_STR_FULL).is_err());
-        assert!(SocketAddrV6::from_str(IPV6_STR_COMPRESS).is_err());
-        assert!(SocketAddrV6::from_str(IPV6_STR_V4).is_err());
-    }
-
-    #[test]
-    fn parse_socket() {
-        let result: SocketAddr = IPV4_STR_PORT.parse().unwrap();
-        assert_eq!(result, SocketAddr::from((IPV4, PORT)));
-
-        let result: SocketAddr = IPV6_STR_PORT.parse().unwrap();
-        assert_eq!(result, SocketAddr::from((IPV6, PORT)));
-
-        assert!(SocketAddr::from_str(IPV4_STR).is_err());
-        assert!(SocketAddr::from_str(IPV6_STR_FULL).is_err());
-        assert!(SocketAddr::from_str(IPV6_STR_COMPRESS).is_err());
-        assert!(SocketAddr::from_str(IPV6_STR_V4).is_err());
-    }
-
-    #[test]
-    fn ipv6_corner_cases() {
-        let result: Ipv6Addr = "1::".parse().unwrap();
-        assert_eq!(result, Ipv6Addr::new(1, 0, 0, 0, 0, 0, 0, 0));
-
-        let result: Ipv6Addr = "1:1::".parse().unwrap();
-        assert_eq!(result, Ipv6Addr::new(1, 1, 0, 0, 0, 0, 0, 0));
-
-        let result: Ipv6Addr = "::1".parse().unwrap();
-        assert_eq!(result, Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
-
-        let result: Ipv6Addr = "::1:1".parse().unwrap();
-        assert_eq!(result, Ipv6Addr::new(0, 0, 0, 0, 0, 0, 1, 1));
-
-        let result: Ipv6Addr = "::".parse().unwrap();
-        assert_eq!(result, Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0));
-
-        let result: Ipv6Addr = "::192.168.0.1".parse().unwrap();
-        assert_eq!(result, Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0xc0a8, 0x1));
-
-        let result: Ipv6Addr = "::1:192.168.0.1".parse().unwrap();
-        assert_eq!(result, Ipv6Addr::new(0, 0, 0, 0, 0, 1, 0xc0a8, 0x1));
-
-        let result: Ipv6Addr = "1:1:1:1:1:1:192.168.0.1".parse().unwrap();
-        assert_eq!(result, Ipv6Addr::new(1, 1, 1, 1, 1, 1, 0xc0a8, 0x1));
-    }
-
-    // Things that might not seem like failures but are
-    #[test]
-    fn ipv6_corner_failures() {
-        // No IP address before the ::
-        assert!(Ipv6Addr::from_str("1:192.168.0.1::").is_err());
-
-        // :: must have at least 1 set of zeroes
-        assert!(Ipv6Addr::from_str("1:1:1:1::1:1:1:1").is_err());
-
-        // Need brackets for a port
-        assert!(SocketAddrV6::from_str("1:1:1:1:1:1:1:1:8080").is_err());
+        match self.0 {
+            AddrKind::Ip => "invalid IP address syntax",
+            AddrKind::Ipv4 => "invalid IPv4 address syntax",
+            AddrKind::Ipv6 => "invalid IPv6 address syntax",
+            AddrKind::Socket => "invalid socket address syntax",
+            AddrKind::SocketV4 => "invalid IPv4 socket address syntax",
+            AddrKind::SocketV6 => "invalid IPv6 socket address syntax",
+        }
     }
 }

@@ -1,6 +1,4 @@
 // run-pass
-#![feature(const_generics)]
-#![allow(incomplete_features)]
 
 trait T {
     fn test<const A: i32>(&self) -> i32 { A }

@@ -1,6 +1,6 @@
-FROM ubuntu:16.04
+FROM ubuntu:20.04
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   g++ \
   automake \
   bison \
@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libncurses-dev \
   gawk \
   make \
+  ninja-build \
   file \
   curl \
   ca-certificates \
@@ -29,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   g++-aarch64-linux-gnu \
   g++-mips64-linux-gnuabi64 \
   g++-mips64el-linux-gnuabi64 \
+  gcc-arm-none-eabi \
   gcc-sparc64-linux-gnu \
   libc6-dev-sparc64-cross \
   bzip2 \
@@ -41,14 +43,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   software-properties-common
 
 WORKDIR /build
-
-# Use the team-gcc-arm-embedded PPA for a newer version of Arm GCC
-RUN add-apt-repository ppa:team-gcc-arm-embedded/ppa && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends gcc-arm-embedded
-
-COPY host-x86_64/dist-various-1/build-rumprun.sh /build
-RUN ./build-rumprun.sh
 
 COPY host-x86_64/dist-various-1/install-x86_64-redox.sh /build
 RUN ./install-x86_64-redox.sh
@@ -83,10 +77,6 @@ RUN env \
     CXX=arm-linux-gnueabihf-g++ CXXFLAGS="-march=armv7-a" \
     bash musl.sh armv7hf && \
     env \
-    CC=aarch64-linux-gnu-gcc \
-    CXX=aarch64-linux-gnu-g++ \
-    bash musl.sh aarch64 && \
-    env \
     CC=mips-openwrt-linux-gcc \
     CXX=mips-openwrt-linux-g++ \
     bash musl.sh mips && \
@@ -119,7 +109,6 @@ ENV RUN_MAKE_TARGETS=$RUN_MAKE_TARGETS,thumbv7em-none-eabihf
 
 ENV TARGETS=asmjs-unknown-emscripten
 ENV TARGETS=$TARGETS,wasm32-unknown-emscripten
-ENV TARGETS=$TARGETS,x86_64-rumprun-netbsd
 ENV TARGETS=$TARGETS,mips-unknown-linux-musl
 ENV TARGETS=$TARGETS,mipsel-unknown-linux-musl
 ENV TARGETS=$TARGETS,mips64-unknown-linux-muslabi64
@@ -129,7 +118,6 @@ ENV TARGETS=$TARGETS,arm-unknown-linux-musleabihf
 ENV TARGETS=$TARGETS,armv5te-unknown-linux-gnueabi
 ENV TARGETS=$TARGETS,armv5te-unknown-linux-musleabi
 ENV TARGETS=$TARGETS,armv7-unknown-linux-musleabihf
-ENV TARGETS=$TARGETS,aarch64-unknown-linux-musl
 ENV TARGETS=$TARGETS,aarch64-unknown-none
 ENV TARGETS=$TARGETS,aarch64-unknown-none-softfloat
 ENV TARGETS=$TARGETS,sparc64-unknown-linux-gnu
@@ -156,7 +144,11 @@ ENV TARGETS=$TARGETS,armv7a-none-eabi
 # riscv targets currently do not need a C compiler, as compiler_builtins
 # doesn't currently have it enabled, and the riscv gcc compiler is not
 # installed.
-ENV CC_mipsel_unknown_linux_musl=mipsel-openwrt-linux-gcc \
+ENV CFLAGS_armv5te_unknown_linux_musleabi="-march=armv5te -marm -mfloat-abi=soft" \
+    CFLAGS_arm_unknown_linux_musleabi="-march=armv6 -marm" \
+    CFLAGS_arm_unknown_linux_musleabihf="-march=armv6 -marm -mfpu=vfp" \
+    CFLAGS_armv7_unknown_linux_musleabihf="-march=armv7-a" \
+    CC_mipsel_unknown_linux_musl=mipsel-openwrt-linux-gcc \
     CC_mips_unknown_linux_musl=mips-openwrt-linux-gcc \
     CC_mips64el_unknown_linux_muslabi64=mips64el-linux-gnuabi64-gcc \
     CC_mips64_unknown_linux_muslabi64=mips64-linux-gnuabi64-gcc \
@@ -184,7 +176,6 @@ ENV RUST_CONFIGURE_ARGS \
       --musl-root-arm=/musl-arm \
       --musl-root-armhf=/musl-armhf \
       --musl-root-armv7hf=/musl-armv7hf \
-      --musl-root-aarch64=/musl-aarch64 \
       --musl-root-mips=/musl-mips \
       --musl-root-mipsel=/musl-mipsel \
       --musl-root-mips64=/musl-mips64 \
@@ -192,8 +183,8 @@ ENV RUST_CONFIGURE_ARGS \
       --disable-docs
 
 ENV SCRIPT \
-      python3 ../x.py --stage 2 test --target $RUN_MAKE_TARGETS src/test/run-make && \
-      python3 ../x.py dist --target $TARGETS
+      python3 ../x.py --stage 2 test --host='' --target $RUN_MAKE_TARGETS src/test/run-make && \
+      python3 ../x.py dist --host='' --target $TARGETS
 
 # sccache
 COPY scripts/sccache.sh /scripts/

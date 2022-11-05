@@ -1,8 +1,9 @@
 //! Module `time` contains everything related to the time measurement of unit tests
 //! execution.
-//! Two main purposes of this module:
+//! The purposes of this module:
 //! - Check whether test is timed out.
 //! - Provide helpers for `report-time` and `measure-time` options.
+//! - Provide newtypes for executions times.
 
 use std::env;
 use std::fmt;
@@ -60,13 +61,23 @@ pub fn get_default_test_timeout() -> Instant {
     Instant::now() + Duration::from_secs(TEST_WARN_TIMEOUT_S)
 }
 
-/// The meassured execution time of a unit test.
+/// The measured execution time of a unit test.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestExecTime(pub Duration);
 
 impl fmt::Display for TestExecTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:.3}s", self.0.as_secs_f64())
+    }
+}
+
+/// The measured execution time of the whole test suite.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TestSuiteExecTime(pub Duration);
+
+impl fmt::Display for TestSuiteExecTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.2}s", self.0.as_secs_f64())
     }
 }
 
@@ -94,30 +105,24 @@ impl TimeThreshold {
     /// value.
     pub fn from_env_var(env_var_name: &str) -> Option<Self> {
         let durations_str = env::var(env_var_name).ok()?;
+        let (warn_str, critical_str) = durations_str.split_once(',').unwrap_or_else(|| {
+            panic!(
+                "Duration variable {} expected to have 2 numbers separated by comma, but got {}",
+                env_var_name, durations_str
+            )
+        });
 
-        // Split string into 2 substrings by comma and try to parse numbers.
-        let mut durations = durations_str.splitn(2, ',').map(|v| {
+        let parse_u64 = |v| {
             u64::from_str(v).unwrap_or_else(|_| {
                 panic!(
                     "Duration value in variable {} is expected to be a number, but got {}",
                     env_var_name, v
                 )
             })
-        });
-
-        // Callback to be called if the environment variable has unexpected structure.
-        let panic_on_incorrect_value = || {
-            panic!(
-                "Duration variable {} expected to have 2 numbers separated by comma, but got {}",
-                env_var_name, durations_str
-            );
         };
 
-        let (warn, critical) = (
-            durations.next().unwrap_or_else(panic_on_incorrect_value),
-            durations.next().unwrap_or_else(panic_on_incorrect_value),
-        );
-
+        let warn = parse_u64(warn_str);
+        let critical = parse_u64(critical_str);
         if warn > critical {
             panic!("Test execution warn time should be less or equal to the critical time");
         }
@@ -132,14 +137,13 @@ pub struct TestTimeOptions {
     /// Denotes if the test critical execution time limit excess should be considered
     /// a test failure.
     pub error_on_excess: bool,
-    pub colored: bool,
     pub unit_threshold: TimeThreshold,
     pub integration_threshold: TimeThreshold,
     pub doctest_threshold: TimeThreshold,
 }
 
 impl TestTimeOptions {
-    pub fn new_from_env(error_on_excess: bool, colored: bool) -> Self {
+    pub fn new_from_env(error_on_excess: bool) -> Self {
         let unit_threshold = TimeThreshold::from_env_var(time_constants::UNIT_ENV_NAME)
             .unwrap_or_else(Self::default_unit);
 
@@ -150,7 +154,7 @@ impl TestTimeOptions {
         let doctest_threshold = TimeThreshold::from_env_var(time_constants::DOCTEST_ENV_NAME)
             .unwrap_or_else(Self::default_doctest);
 
-        Self { error_on_excess, colored, unit_threshold, integration_threshold, doctest_threshold }
+        Self { error_on_excess, unit_threshold, integration_threshold, doctest_threshold }
     }
 
     pub fn is_warn(&self, test: &TestDesc, exec_time: &TestExecTime) -> bool {

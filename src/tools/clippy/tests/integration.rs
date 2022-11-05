@@ -1,4 +1,6 @@
 #![cfg(feature = "integration")]
+#![cfg_attr(feature = "deny-warnings", deny(warnings))]
+#![warn(rust_2018_idioms, unused_lifetimes)]
 
 use std::env;
 use std::ffi::OsStr;
@@ -17,7 +19,7 @@ fn integration_test() {
     repo_dir.push(crate_name);
 
     let st = Command::new("git")
-        .args(&[
+        .args([
             OsStr::new("clone"),
             OsStr::new("--depth=1"),
             OsStr::new(&repo_url),
@@ -35,7 +37,7 @@ fn integration_test() {
         .current_dir(repo_dir)
         .env("RUST_BACKTRACE", "full")
         .env("CARGO_TARGET_DIR", target_dir)
-        .args(&[
+        .args([
             "clippy",
             "--all-targets",
             "--all-features",
@@ -72,6 +74,11 @@ fn integration_test() {
         panic!("incompatible crate versions");
     } else if stderr.contains("failed to run `rustc` to learn about target-specific information") {
         panic!("couldn't find librustc_driver, consider setting `LD_LIBRARY_PATH`");
+    } else {
+        assert!(
+            !stderr.contains("toolchain") || !stderr.contains("is not installed"),
+            "missing required toolchain"
+        );
     }
 
     match output.status.code() {

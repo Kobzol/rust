@@ -1,4 +1,4 @@
-// compile-flags: -Ztreat-err-as-bug
+// compile-flags: -Ztreat-err-as-bug=2
 // build-fail
 // failure-status: 101
 // rustc-env:RUST_BACKTRACE=1
@@ -15,8 +15,14 @@
 
 #![allow(unconditional_panic)]
 
+#[warn(const_err)]
+const X: i32 = 1 / 0; //~WARN any use of this value will cause an error
+//~| WARN this was previously accepted by the compiler but is being phased out
+
 fn main() {
-    let x: &'static i32 = &(1 / 0);
-    //~^ ERROR reaching this expression at runtime will panic or abort [const_err]
+    let x: &'static i32 = &X;
+    //~^ ERROR evaluation of constant value failed
+    //~| ERROR erroneous constant used
+    //~| WARNING this was previously accepted by the compiler
     println!("x={}", x);
 }

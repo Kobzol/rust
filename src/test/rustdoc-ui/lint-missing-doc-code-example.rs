@@ -1,5 +1,6 @@
+#![feature(rustdoc_missing_doc_code_examples)]
 #![deny(missing_docs)]
-#![deny(missing_doc_code_examples)]
+#![deny(rustdoc::missing_doc_code_examples)]
 
 //! crate level doc
 //! ```
@@ -12,16 +13,16 @@
 /// ```
 /// println!("hello");
 /// ```
-fn test() {
+pub fn test() {
 }
 
 #[allow(missing_docs)]
-mod module1 { //~ ERROR
+pub mod module1 { //~ ERROR
 }
 
-#[allow(missing_doc_code_examples)]
+#[allow(rustdoc::missing_doc_code_examples)]
 /// doc
-mod module2 {
+pub mod module2 {
 
   /// doc
   pub fn test() {}
@@ -63,9 +64,38 @@ pub enum Enum {
 /// Doc
 //~^ ERROR
 #[repr(C)]
-union Union {
+pub union Union {
     /// Doc, but no code example and it's fine!
     a: i32,
     /// Doc, but no code example and it's fine!
     b: f32,
+}
+
+// no code example and it's fine!
+impl Clone for Struct {
+    fn clone(&self) -> Self {
+        Self { field: self.field }
+    }
+}
+
+
+
+/// doc
+///
+/// ```
+/// println!("hello");
+/// ```
+#[derive(Clone)]
+pub struct NiceStruct;
+
+#[doc(hidden)]
+pub mod foo {
+    pub fn bar() {}
+}
+
+fn babar() {}
+
+
+mod fofoo {
+    pub fn tadam() {}
 }

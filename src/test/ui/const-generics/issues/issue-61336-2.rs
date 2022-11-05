@@ -1,14 +1,10 @@
-// revisions: full min
-#![cfg_attr(full, feature(const_generics))] //[full]~WARN the feature `const_generics` is incomplete
-#![cfg_attr(min, feature(min_const_generics))]
-
 fn f<T: Copy, const N: usize>(x: T) -> [T; N] {
     [x; { N }]
 }
 
 fn g<T, const N: usize>(x: T) -> [T; N] {
     [x; { N }]
-    //~^ ERROR the trait bound `T: std::marker::Copy` is not satisfied
+    //~^ ERROR the trait bound `T: Copy` is not satisfied
 }
 
 fn main() {

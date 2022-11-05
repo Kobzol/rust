@@ -49,17 +49,18 @@ fn compile(code: String, output: PathBuf, sysroot: PathBuf) {
     let config = interface::Config {
         opts,
         crate_cfg: Default::default(),
+        crate_check_cfg: Default::default(),
         input,
         input_path: None,
         output_file: Some(output),
         output_dir: None,
         file_loader: None,
         diagnostic_output: DiagnosticOutput::Default,
-        stderr: None,
-        crate_name: None,
         lint_caps: Default::default(),
+        parse_sess_created: None,
         register_lints: None,
         override_queries: None,
+        make_codegen_backend: None,
         registry: rustc_driver::diagnostics_registry(),
     };
 

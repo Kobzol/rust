@@ -24,9 +24,7 @@ fn main() {
     let doc_targets_md = std::fs::read_to_string(&src).expect("failed to read input source");
     let doc_targets: HashSet<_> = doc_targets_md
         .lines()
-        .filter(|line| line.starts_with('`') && line.contains('|'))
-        // These platforms only exist on macos.
-        .filter(|line| !line.contains("[^apple]") || cfg!(target_os = "macos"))
+        .filter(|line| line.starts_with(&['`', '['][..]) && line.contains('|'))
         .map(|line| line.split('`').skip(1).next().expect("expected target code span"))
         .collect();
 

@@ -1,16 +1,17 @@
-//! A character type.
+//! Utilities for the `char` primitive type.
+//!
+//! *[See also the `char` primitive type](primitive@char).*
 //!
 //! The `char` type represents a single character. More specifically, since
 //! 'character' isn't a well-defined concept in Unicode, `char` is a '[Unicode
 //! scalar value]', which is similar to, but not the same as, a '[Unicode code
 //! point]'.
 //!
-//! [Unicode scalar value]: http://www.unicode.org/glossary/#unicode_scalar_value
-//! [Unicode code point]: http://www.unicode.org/glossary/#code_point
+//! [Unicode scalar value]: https://www.unicode.org/glossary/#unicode_scalar_value
+//! [Unicode code point]: https://www.unicode.org/glossary/#code_point
 //!
 //! This module exists for technical reasons, the primary documentation for
-//! `char` is directly on [the `char` primitive type](../../std/primitive.char.html)
-//! itself.
+//! `char` is directly on [the `char` primitive type][char] itself.
 //!
 //! This module is the home of the iterator implementations for the iterators
 //! implemented on `char`, as well as some useful constants and conversion
@@ -24,18 +25,12 @@ mod decode;
 mod methods;
 
 // stable re-exports
-#[stable(feature = "char_from_unchecked", since = "1.5.0")]
-pub use self::convert::from_u32_unchecked;
 #[stable(feature = "try_from", since = "1.34.0")]
 pub use self::convert::CharTryFromError;
 #[stable(feature = "char_from_str", since = "1.20.0")]
 pub use self::convert::ParseCharError;
-#[stable(feature = "rust1", since = "1.0.0")]
-pub use self::convert::{from_digit, from_u32};
 #[stable(feature = "decode_utf16", since = "1.9.0")]
-pub use self::decode::{decode_utf16, DecodeUtf16, DecodeUtf16Error};
-#[stable(feature = "unicode_version", since = "1.45.0")]
-pub use crate::unicode::UNICODE_VERSION;
+pub use self::decode::{DecodeUtf16, DecodeUtf16Error};
 
 // perma-unstable re-exports
 #[unstable(feature = "char_internals", reason = "exposed only for libstd", issue = "none")]
@@ -43,8 +38,11 @@ pub use self::methods::encode_utf16_raw;
 #[unstable(feature = "char_internals", reason = "exposed only for libstd", issue = "none")]
 pub use self::methods::encode_utf8_raw;
 
+use crate::error::Error;
 use crate::fmt::{self, Write};
 use crate::iter::FusedIterator;
+
+pub(crate) use self::methods::EscapeDebugExtArgs;
 
 // UTF-8 ranges and tags for encoding characters
 const TAG_CONT: u8 = 0b1000_0000;
@@ -88,24 +86,56 @@ const MAX_THREE_B: u32 = 0x10000;
     Cn  Unassigned              a reserved unassigned code point or a noncharacter
 */
 
-/// The highest valid code point a `char` can have.
-///
-/// A [`char`] is a [Unicode Scalar Value], which means that it is a [Code
-/// Point], but only ones within a certain range. `MAX` is the highest valid
-/// code point that's a valid [Unicode Scalar Value].
-///
-/// [Unicode Scalar Value]: http://www.unicode.org/glossary/#unicode_scalar_value
-/// [Code Point]: http://www.unicode.org/glossary/#code_point
+/// The highest valid code point a `char` can have, `'\u{10FFFF}'`. Use [`char::MAX`] instead.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub const MAX: char = char::MAX;
 
 /// `U+FFFD REPLACEMENT CHARACTER` (�) is used in Unicode to represent a
-/// decoding error.
-///
-/// It can occur, for example, when giving ill-formed UTF-8 bytes to
-/// [`String::from_utf8_lossy`](../../std/string/struct.String.html#method.from_utf8_lossy).
+/// decoding error. Use [`char::REPLACEMENT_CHARACTER`] instead.
 #[stable(feature = "decode_utf16", since = "1.9.0")]
 pub const REPLACEMENT_CHARACTER: char = char::REPLACEMENT_CHARACTER;
+
+/// The version of [Unicode](https://www.unicode.org/) that the Unicode parts of
+/// `char` and `str` methods are based on. Use [`char::UNICODE_VERSION`] instead.
+#[stable(feature = "unicode_version", since = "1.45.0")]
+pub const UNICODE_VERSION: (u8, u8, u8) = char::UNICODE_VERSION;
+
+/// Creates an iterator over the UTF-16 encoded code points in `iter`, returning
+/// unpaired surrogates as `Err`s. Use [`char::decode_utf16`] instead.
+#[stable(feature = "decode_utf16", since = "1.9.0")]
+#[inline]
+pub fn decode_utf16<I: IntoIterator<Item = u16>>(iter: I) -> DecodeUtf16<I::IntoIter> {
+    self::decode::decode_utf16(iter)
+}
+
+/// Converts a `u32` to a `char`. Use [`char::from_u32`] instead.
+#[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_const_unstable(feature = "const_char_convert", issue = "89259")]
+#[must_use]
+#[inline]
+pub const fn from_u32(i: u32) -> Option<char> {
+    self::convert::from_u32(i)
+}
+
+/// Converts a `u32` to a `char`, ignoring validity. Use [`char::from_u32_unchecked`].
+/// instead.
+#[stable(feature = "char_from_unchecked", since = "1.5.0")]
+#[rustc_const_unstable(feature = "const_char_convert", issue = "89259")]
+#[must_use]
+#[inline]
+pub const unsafe fn from_u32_unchecked(i: u32) -> char {
+    // SAFETY: the safety contract must be upheld by the caller.
+    unsafe { self::convert::from_u32_unchecked(i) }
+}
+
+/// Converts a digit in the given radix to a `char`. Use [`char::from_digit`] instead.
+#[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_const_unstable(feature = "const_char_convert", issue = "89259")]
+#[must_use]
+#[inline]
+pub const fn from_digit(num: u32, radix: u32) -> Option<char> {
+    self::convert::from_digit(num, radix)
+}
 
 /// Returns an iterator that yields the hexadecimal Unicode escape of a
 /// character, as `char`s.
@@ -392,6 +422,13 @@ impl Iterator for ToLowercase {
     }
 }
 
+#[stable(feature = "case_mapping_double_ended", since = "1.59.0")]
+impl DoubleEndedIterator for ToLowercase {
+    fn next_back(&mut self) -> Option<char> {
+        self.0.next_back()
+    }
+}
+
 #[stable(feature = "fused", since = "1.26.0")]
 impl FusedIterator for ToLowercase {}
 
@@ -416,6 +453,13 @@ impl Iterator for ToUppercase {
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.0.size_hint()
+    }
+}
+
+#[stable(feature = "case_mapping_double_ended", since = "1.59.0")]
+impl DoubleEndedIterator for ToUppercase {
+    fn next_back(&mut self) -> Option<char> {
+        self.0.next_back()
     }
 }
 
@@ -478,6 +522,26 @@ impl Iterator for CaseMappingIter {
     }
 }
 
+impl DoubleEndedIterator for CaseMappingIter {
+    fn next_back(&mut self) -> Option<char> {
+        match *self {
+            CaseMappingIter::Three(a, b, c) => {
+                *self = CaseMappingIter::Two(a, b);
+                Some(c)
+            }
+            CaseMappingIter::Two(b, c) => {
+                *self = CaseMappingIter::One(b);
+                Some(c)
+            }
+            CaseMappingIter::One(c) => {
+                *self = CaseMappingIter::Zero;
+                Some(c)
+            }
+            CaseMappingIter::Zero => None,
+        }
+    }
+}
+
 impl fmt::Display for CaseMappingIter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -509,3 +573,18 @@ impl fmt::Display for ToUppercase {
         fmt::Display::fmt(&self.0, f)
     }
 }
+
+/// The error type returned when a checked char conversion fails.
+#[stable(feature = "u8_from_char", since = "1.59.0")]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct TryFromCharError(pub(crate) ());
+
+#[stable(feature = "u8_from_char", since = "1.59.0")]
+impl fmt::Display for TryFromCharError {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        "unicode code point out of range".fmt(fmt)
+    }
+}
+
+#[stable(feature = "u8_from_char", since = "1.59.0")]
+impl Error for TryFromCharError {}

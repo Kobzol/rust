@@ -19,7 +19,7 @@ use crate::hash::Hash;
 ///
 /// ```compile_fail,E0277
 /// for i in .. {
-///    // ...
+///     // ...
 /// }
 /// ```
 ///
@@ -27,16 +27,16 @@ use crate::hash::Hash;
 ///
 /// ```
 /// let arr = [0, 1, 2, 3, 4];
-/// assert_eq!(arr[ ..  ], [0,1,2,3,4]);  // RangeFull
-/// assert_eq!(arr[ .. 3], [0,1,2    ]);
-/// assert_eq!(arr[ ..=3], [0,1,2,3  ]);
-/// assert_eq!(arr[1..  ], [  1,2,3,4]);
-/// assert_eq!(arr[1.. 3], [  1,2    ]);
-/// assert_eq!(arr[1..=3], [  1,2,3  ]);
+/// assert_eq!(arr[ ..  ], [0, 1, 2, 3, 4]); // This is the `RangeFull`
+/// assert_eq!(arr[ .. 3], [0, 1, 2      ]);
+/// assert_eq!(arr[ ..=3], [0, 1, 2, 3   ]);
+/// assert_eq!(arr[1..  ], [   1, 2, 3, 4]);
+/// assert_eq!(arr[1.. 3], [   1, 2      ]);
+/// assert_eq!(arr[1..=3], [   1, 2, 3   ]);
 /// ```
 ///
 /// [slicing index]: crate::slice::SliceIndex
-#[cfg_attr(not(bootstrap), lang = "RangeFull")]
+#[lang = "RangeFull"]
 #[doc(alias = "..")]
 #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -52,24 +52,28 @@ impl fmt::Debug for RangeFull {
 /// A (half-open) range bounded inclusively below and exclusively above
 /// (`start..end`).
 ///
-/// The `Range` `start..end` contains all values with `x >= start` and
-/// `x < end`. It is empty unless `start < end`.
+/// The range `start..end` contains all values with `start <= x < end`.
+/// It is empty if `start >= end`.
 ///
 /// # Examples
+///
+/// The `start..end` syntax is a `Range`:
 ///
 /// ```
 /// assert_eq!((3..5), std::ops::Range { start: 3, end: 5 });
 /// assert_eq!(3 + 4 + 5, (3..6).sum());
-///
-/// let arr = [0, 1, 2, 3, 4];
-/// assert_eq!(arr[ ..  ], [0,1,2,3,4]);
-/// assert_eq!(arr[ .. 3], [0,1,2    ]);
-/// assert_eq!(arr[ ..=3], [0,1,2,3  ]);
-/// assert_eq!(arr[1..  ], [  1,2,3,4]);
-/// assert_eq!(arr[1.. 3], [  1,2    ]);  // Range
-/// assert_eq!(arr[1..=3], [  1,2,3  ]);
 /// ```
-#[cfg_attr(not(bootstrap), lang = "Range")]
+///
+/// ```
+/// let arr = [0, 1, 2, 3, 4];
+/// assert_eq!(arr[ ..  ], [0, 1, 2, 3, 4]);
+/// assert_eq!(arr[ .. 3], [0, 1, 2      ]);
+/// assert_eq!(arr[ ..=3], [0, 1, 2, 3   ]);
+/// assert_eq!(arr[1..  ], [   1, 2, 3, 4]);
+/// assert_eq!(arr[1.. 3], [   1, 2      ]); // This is a `Range`
+/// assert_eq!(arr[1..=3], [   1, 2, 3   ]);
+/// ```
+#[lang = "Range"]
 #[doc(alias = "..")]
 #[derive(Clone, Default, PartialEq, Eq, Hash)] // not Copy -- see #27186
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -160,19 +164,23 @@ impl<Idx: PartialOrd<Idx>> Range<Idx> {
 ///
 /// # Examples
 ///
+/// The `start..` syntax is a `RangeFrom`:
+///
 /// ```
 /// assert_eq!((2..), std::ops::RangeFrom { start: 2 });
 /// assert_eq!(2 + 3 + 4, (2..).take(3).sum());
-///
-/// let arr = [0, 1, 2, 3, 4];
-/// assert_eq!(arr[ ..  ], [0,1,2,3,4]);
-/// assert_eq!(arr[ .. 3], [0,1,2    ]);
-/// assert_eq!(arr[ ..=3], [0,1,2,3  ]);
-/// assert_eq!(arr[1..  ], [  1,2,3,4]);  // RangeFrom
-/// assert_eq!(arr[1.. 3], [  1,2    ]);
-/// assert_eq!(arr[1..=3], [  1,2,3  ]);
 /// ```
-#[cfg_attr(not(bootstrap), lang = "RangeFrom")]
+///
+/// ```
+/// let arr = [0, 1, 2, 3, 4];
+/// assert_eq!(arr[ ..  ], [0, 1, 2, 3, 4]);
+/// assert_eq!(arr[ .. 3], [0, 1, 2      ]);
+/// assert_eq!(arr[ ..=3], [0, 1, 2, 3   ]);
+/// assert_eq!(arr[1..  ], [   1, 2, 3, 4]); // This is a `RangeFrom`
+/// assert_eq!(arr[1.. 3], [   1, 2      ]);
+/// assert_eq!(arr[1..=3], [   1, 2, 3   ]);
+/// ```
+#[lang = "RangeFrom"]
 #[doc(alias = "..")]
 #[derive(Clone, PartialEq, Eq, Hash)] // not Copy -- see #27186
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -244,16 +252,16 @@ impl<Idx: PartialOrd<Idx>> RangeFrom<Idx> {
 ///
 /// ```
 /// let arr = [0, 1, 2, 3, 4];
-/// assert_eq!(arr[ ..  ], [0,1,2,3,4]);
-/// assert_eq!(arr[ .. 3], [0,1,2    ]);  // RangeTo
-/// assert_eq!(arr[ ..=3], [0,1,2,3  ]);
-/// assert_eq!(arr[1..  ], [  1,2,3,4]);
-/// assert_eq!(arr[1.. 3], [  1,2    ]);
-/// assert_eq!(arr[1..=3], [  1,2,3  ]);
+/// assert_eq!(arr[ ..  ], [0, 1, 2, 3, 4]);
+/// assert_eq!(arr[ .. 3], [0, 1, 2      ]); // This is a `RangeTo`
+/// assert_eq!(arr[ ..=3], [0, 1, 2, 3   ]);
+/// assert_eq!(arr[1..  ], [   1, 2, 3, 4]);
+/// assert_eq!(arr[1.. 3], [   1, 2      ]);
+/// assert_eq!(arr[1..=3], [   1, 2, 3   ]);
 /// ```
 ///
 /// [slicing index]: crate::slice::SliceIndex
-#[cfg_attr(not(bootstrap), lang = "RangeTo")]
+#[lang = "RangeTo"]
 #[doc(alias = "..")]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -310,19 +318,23 @@ impl<Idx: PartialOrd<Idx>> RangeTo<Idx> {
 ///
 /// # Examples
 ///
+/// The `start..=end` syntax is a `RangeInclusive`:
+///
 /// ```
 /// assert_eq!((3..=5), std::ops::RangeInclusive::new(3, 5));
 /// assert_eq!(3 + 4 + 5, (3..=5).sum());
-///
-/// let arr = [0, 1, 2, 3, 4];
-/// assert_eq!(arr[ ..  ], [0,1,2,3,4]);
-/// assert_eq!(arr[ .. 3], [0,1,2    ]);
-/// assert_eq!(arr[ ..=3], [0,1,2,3  ]);
-/// assert_eq!(arr[1..  ], [  1,2,3,4]);
-/// assert_eq!(arr[1.. 3], [  1,2    ]);
-/// assert_eq!(arr[1..=3], [  1,2,3  ]);  // RangeInclusive
 /// ```
-#[cfg_attr(not(bootstrap), lang = "RangeInclusive")]
+///
+/// ```
+/// let arr = [0, 1, 2, 3, 4];
+/// assert_eq!(arr[ ..  ], [0, 1, 2, 3, 4]);
+/// assert_eq!(arr[ .. 3], [0, 1, 2      ]);
+/// assert_eq!(arr[ ..=3], [0, 1, 2, 3   ]);
+/// assert_eq!(arr[1..  ], [   1, 2, 3, 4]);
+/// assert_eq!(arr[1.. 3], [   1, 2      ]);
+/// assert_eq!(arr[1..=3], [   1, 2, 3   ]); // This is a `RangeInclusive`
+/// ```
+#[lang = "RangeInclusive"]
 #[doc(alias = "..=")]
 #[derive(Clone, PartialEq, Eq, Hash)] // not Copy -- see #27186
 #[stable(feature = "inclusive_range", since = "1.26.0")]
@@ -354,7 +366,7 @@ impl<Idx> RangeInclusive<Idx> {
     ///
     /// assert_eq!(3..=5, RangeInclusive::new(3, 5));
     /// ```
-    #[cfg_attr(not(bootstrap), lang = "range_inclusive_new")]
+    #[lang = "range_inclusive_new"]
     #[stable(feature = "inclusive_range_methods", since = "1.27.0")]
     #[inline]
     #[rustc_promotable]
@@ -430,6 +442,20 @@ impl<Idx> RangeInclusive<Idx> {
     }
 }
 
+impl RangeInclusive<usize> {
+    /// Converts to an exclusive `Range` for `SliceIndex` implementations.
+    /// The caller is responsible for dealing with `end == usize::MAX`.
+    #[inline]
+    pub(crate) const fn into_slice_range(self) -> Range<usize> {
+        // If we're not exhausted, we want to simply slice `start..end + 1`.
+        // If we are exhausted, then slicing with `end + 1..end + 1` gives us an
+        // empty range that is still subject to bounds-checks for that endpoint.
+        let exclusive_end = self.end + 1;
+        let start = if self.exhausted { exclusive_end } else { self.start };
+        start..exclusive_end
+    }
+}
+
 #[stable(feature = "inclusive_range", since = "1.26.0")]
 impl<Idx: fmt::Debug> fmt::Debug for RangeInclusive<Idx> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -462,6 +488,16 @@ impl<Idx: PartialOrd<Idx>> RangeInclusive<Idx> {
     /// assert!(!(0.0..=1.0).contains(&f32::NAN));
     /// assert!(!(0.0..=f32::NAN).contains(&0.0));
     /// assert!(!(f32::NAN..=1.0).contains(&1.0));
+    /// ```
+    ///
+    /// This method always returns `false` after iteration has finished:
+    ///
+    /// ```
+    /// let mut r = 3..=5;
+    /// assert!(r.contains(&3) && r.contains(&5));
+    /// for _ in r.by_ref() {}
+    /// // Precise field values are unspecified here
+    /// assert!(!r.contains(&3) && !r.contains(&5));
     /// ```
     #[stable(feature = "range_contains", since = "1.35.0")]
     pub fn contains<U>(&self, item: &U) -> bool
@@ -534,16 +570,16 @@ impl<Idx: PartialOrd<Idx>> RangeInclusive<Idx> {
 ///
 /// ```
 /// let arr = [0, 1, 2, 3, 4];
-/// assert_eq!(arr[ ..  ], [0,1,2,3,4]);
-/// assert_eq!(arr[ .. 3], [0,1,2    ]);
-/// assert_eq!(arr[ ..=3], [0,1,2,3  ]);  // RangeToInclusive
-/// assert_eq!(arr[1..  ], [  1,2,3,4]);
-/// assert_eq!(arr[1.. 3], [  1,2    ]);
-/// assert_eq!(arr[1..=3], [  1,2,3  ]);
+/// assert_eq!(arr[ ..  ], [0, 1, 2, 3, 4]);
+/// assert_eq!(arr[ .. 3], [0, 1, 2      ]);
+/// assert_eq!(arr[ ..=3], [0, 1, 2, 3   ]); // This is a `RangeToInclusive`
+/// assert_eq!(arr[1..  ], [   1, 2, 3, 4]);
+/// assert_eq!(arr[1.. 3], [   1, 2      ]);
+/// assert_eq!(arr[1..=3], [   1, 2, 3   ]);
 /// ```
 ///
 /// [slicing index]: crate::slice::SliceIndex
-#[cfg_attr(not(bootstrap), lang = "RangeToInclusive")]
+#[lang = "RangeToInclusive"]
 #[doc(alias = "..=")]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 #[stable(feature = "inclusive_range", since = "1.26.0")]
@@ -617,7 +653,7 @@ impl<Idx: PartialOrd<Idx>> RangeToInclusive<Idx> {
 /// map.insert(8, "c");
 ///
 /// for (key, value) in map.range((Excluded(3), Included(8))) {
-///     println!("{}: {}", key, value);
+///     println!("{key}: {value}");
 /// }
 ///
 /// assert_eq!(Some((&3, &"a")), map.range((Unbounded, Included(5))).next());
@@ -638,20 +674,77 @@ pub enum Bound<T> {
     Unbounded,
 }
 
+impl<T> Bound<T> {
+    /// Converts from `&Bound<T>` to `Bound<&T>`.
+    #[inline]
+    #[stable(feature = "bound_as_ref_shared", since = "1.65.0")]
+    pub fn as_ref(&self) -> Bound<&T> {
+        match *self {
+            Included(ref x) => Included(x),
+            Excluded(ref x) => Excluded(x),
+            Unbounded => Unbounded,
+        }
+    }
+
+    /// Converts from `&mut Bound<T>` to `Bound<&mut T>`.
+    #[inline]
+    #[unstable(feature = "bound_as_ref", issue = "80996")]
+    pub fn as_mut(&mut self) -> Bound<&mut T> {
+        match *self {
+            Included(ref mut x) => Included(x),
+            Excluded(ref mut x) => Excluded(x),
+            Unbounded => Unbounded,
+        }
+    }
+
+    /// Maps a `Bound<T>` to a `Bound<U>` by applying a function to the contained value (including
+    /// both `Included` and `Excluded`), returning a `Bound` of the same kind.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(bound_map)]
+    /// use std::ops::Bound::*;
+    ///
+    /// let bound_string = Included("Hello, World!");
+    ///
+    /// assert_eq!(bound_string.map(|s| s.len()), Included(13));
+    /// ```
+    ///
+    /// ```
+    /// #![feature(bound_map)]
+    /// use std::ops::Bound;
+    /// use Bound::*;
+    ///
+    /// let unbounded_string: Bound<String> = Unbounded;
+    ///
+    /// assert_eq!(unbounded_string.map(|s| s.len()), Unbounded);
+    /// ```
+    #[inline]
+    #[unstable(feature = "bound_map", issue = "86026")]
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Bound<U> {
+        match self {
+            Unbounded => Unbounded,
+            Included(x) => Included(f(x)),
+            Excluded(x) => Excluded(f(x)),
+        }
+    }
+}
+
 impl<T: Clone> Bound<&T> {
     /// Map a `Bound<&T>` to a `Bound<T>` by cloning the contents of the bound.
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(bound_cloned)]
     /// use std::ops::Bound::*;
     /// use std::ops::RangeBounds;
     ///
     /// assert_eq!((1..12).start_bound(), Included(&1));
     /// assert_eq!((1..12).start_bound().cloned(), Included(1));
     /// ```
-    #[unstable(feature = "bound_cloned", issue = "61356")]
+    #[must_use = "`self` will be dropped if the result is not used"]
+    #[stable(feature = "bound_cloned", since = "1.55.0")]
     pub fn cloned(self) -> Bound<T> {
         match self {
             Bound::Unbounded => Bound::Unbounded,
@@ -661,9 +754,9 @@ impl<T: Clone> Bound<&T> {
     }
 }
 
-#[stable(feature = "collections_range", since = "1.28.0")]
 /// `RangeBounds` is implemented by Rust's built-in range types, produced
 /// by range syntax like `..`, `a..`, `..b`, `..=c`, `d..e`, or `f..=g`.
+#[stable(feature = "collections_range", since = "1.28.0")]
 pub trait RangeBounds<T: ?Sized> {
     /// Start index bound.
     ///
@@ -720,12 +813,12 @@ pub trait RangeBounds<T: ?Sized> {
         U: ?Sized + PartialOrd<T>,
     {
         (match self.start_bound() {
-            Included(ref start) => *start <= item,
-            Excluded(ref start) => *start < item,
+            Included(start) => start <= item,
+            Excluded(start) => start < item,
             Unbounded => true,
         }) && (match self.end_bound() {
-            Included(ref end) => item <= *end,
-            Excluded(ref end) => item < *end,
+            Included(end) => item <= end,
+            Excluded(end) => item < end,
             Unbounded => true,
         })
     }
@@ -779,7 +872,13 @@ impl<T> RangeBounds<T> for RangeInclusive<T> {
         Included(&self.start)
     }
     fn end_bound(&self) -> Bound<&T> {
-        Included(&self.end)
+        if self.exhausted {
+            // When the iterator is exhausted, we usually have start == end,
+            // but we want the range to appear empty, containing nothing.
+            Excluded(&self.end)
+        } else {
+            Included(&self.end)
+        }
     }
 }
 
@@ -872,3 +971,21 @@ impl<T> RangeBounds<T> for RangeToInclusive<&T> {
         Included(self.end)
     }
 }
+
+/// `OneSidedRange` is implemented for built-in range types that are unbounded
+/// on one side. For example, `a..`, `..b` and `..=c` implement `OneSidedRange`,
+/// but `..`, `d..e`, and `f..=g` do not.
+///
+/// Types that implement `OneSidedRange<T>` must return `Bound::Unbounded`
+/// from one of `RangeBounds::start_bound` or `RangeBounds::end_bound`.
+#[unstable(feature = "one_sided_range", issue = "69780")]
+pub trait OneSidedRange<T: ?Sized>: RangeBounds<T> {}
+
+#[unstable(feature = "one_sided_range", issue = "69780")]
+impl<T> OneSidedRange<T> for RangeTo<T> where Self: RangeBounds<T> {}
+
+#[unstable(feature = "one_sided_range", issue = "69780")]
+impl<T> OneSidedRange<T> for RangeFrom<T> where Self: RangeBounds<T> {}
+
+#[unstable(feature = "one_sided_range", issue = "69780")]
+impl<T> OneSidedRange<T> for RangeToInclusive<T> where Self: RangeBounds<T> {}

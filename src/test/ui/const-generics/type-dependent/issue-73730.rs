@@ -1,7 +1,4 @@
 // check-pass
-#![feature(const_generics)]
-#![allow(incomplete_features)]
-
 trait Foo<'a, A>: Iterator<Item=A> {
     fn bar<const N: usize>(&mut self) -> *const [A; N];
 }

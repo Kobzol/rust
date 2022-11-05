@@ -1,10 +1,5 @@
 // Test that a concrete const type i.e. A<2>, can be used as an argument type in a function
 // run-pass
-// revisions: full min
-
-#![cfg_attr(full, feature(const_generics))]
-#![cfg_attr(full, allow(incomplete_features))]
-#![cfg_attr(min, feature(min_const_generics))]
 
 struct A<const N: usize>; // ok
 

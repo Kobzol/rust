@@ -1,7 +1,4 @@
 // check-pass
-#![feature(const_generics)]
-#![allow(incomplete_features)]
-
 pub struct S(u8);
 
 impl S {

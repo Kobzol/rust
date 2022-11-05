@@ -32,10 +32,11 @@ struct Outer {
 
 
 #[cfg(any(target_os = "android",
-          target_os = "cloudabi",
           target_os = "dragonfly",
           target_os = "emscripten",
           target_os = "freebsd",
+          target_os = "fuchsia",
+          target_os = "illumos",
           target_os = "linux",
           target_os = "macos",
           target_os = "netbsd",

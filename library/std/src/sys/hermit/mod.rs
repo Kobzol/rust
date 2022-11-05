@@ -13,35 +13,50 @@
 //! compiling for wasm. That way it's a compile time error for something that's
 //! guaranteed to be a runtime error!
 
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use crate::intrinsics;
 use crate::os::raw::c_char;
 
 pub mod alloc;
 pub mod args;
+#[path = "../unix/cmath.rs"]
 pub mod cmath;
-pub mod condvar;
 pub mod env;
-pub mod ext;
 pub mod fd;
 pub mod fs;
+pub mod futex;
+#[path = "../unsupported/io.rs"]
 pub mod io;
 pub mod memchr;
-pub mod mutex;
 pub mod net;
 pub mod os;
+#[path = "../unix/os_str.rs"]
+pub mod os_str;
+#[path = "../unix/path.rs"]
 pub mod path;
+#[path = "../unsupported/pipe.rs"]
 pub mod pipe;
+#[path = "../unsupported/process.rs"]
 pub mod process;
-pub mod rwlock;
-pub mod stack_overflow;
 pub mod stdio;
 pub mod thread;
 pub mod thread_local_dtor;
+#[path = "../unsupported/thread_local_key.rs"]
 pub mod thread_local_key;
 pub mod time;
 
+#[path = "../unix/locks"]
+pub mod locks {
+    mod futex_condvar;
+    mod futex_mutex;
+    mod futex_rwlock;
+    pub(crate) use futex_condvar::MovableCondvar;
+    pub(crate) use futex_mutex::{MovableMutex, Mutex};
+    pub(crate) use futex_rwlock::{MovableRwLock, RwLock};
+}
+
 use crate::io::ErrorKind;
-pub use crate::sys_common::os_str_bytes as os_str;
 
 #[allow(unused_extern_crates)]
 pub extern crate hermit_abi as abi;
@@ -51,22 +66,10 @@ pub fn unsupported<T>() -> crate::io::Result<T> {
 }
 
 pub fn unsupported_err() -> crate::io::Error {
-    crate::io::Error::new(crate::io::ErrorKind::Other, "operation not supported on HermitCore yet")
-}
-
-// This enum is used as the storage for a bunch of types which can't actually
-// exist.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-pub enum Void {}
-
-pub unsafe fn strlen(start: *const c_char) -> usize {
-    let mut str = start;
-
-    while *str != 0 {
-        str = str.offset(1);
-    }
-
-    (str as usize) - (start as usize)
+    crate::io::const_io_error!(
+        crate::io::ErrorKind::Unsupported,
+        "operation not supported on HermitCore yet",
+    )
 }
 
 #[no_mangle]
@@ -94,9 +97,17 @@ pub extern "C" fn __rust_abort() {
     abort_internal();
 }
 
-#[cfg(not(test))]
-pub fn init() {
+// SAFETY: must be called only once during runtime initialization.
+// NOTE: this is not guaranteed to run, for example when Rust code is called externally.
+pub unsafe fn init(argc: isize, argv: *const *const u8, _sigpipe: u8) {
     let _ = net::init();
+    args::init(argc, argv);
+}
+
+// SAFETY: must be called only once during runtime cleanup.
+// NOTE: this is not guaranteed to run, for example when the program aborts.
+pub unsafe fn cleanup() {
+    args::cleanup();
 }
 
 #[cfg(not(test))]
@@ -137,7 +148,7 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
         x if x == 1 as i32 => ErrorKind::PermissionDenied,
         x if x == 32 as i32 => ErrorKind::BrokenPipe,
         x if x == 110 as i32 => ErrorKind::TimedOut,
-        _ => ErrorKind::Other,
+        _ => ErrorKind::Uncategorized,
     }
 }
 

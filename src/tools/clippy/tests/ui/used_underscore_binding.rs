@@ -1,9 +1,8 @@
-// edition:2018
 // aux-build:proc_macro_derive.rs
 
 #![feature(rustc_private)]
 #![warn(clippy::all)]
-#![allow(clippy::blacklisted_name)]
+#![allow(clippy::disallowed_names, clippy::eq_op)]
 #![warn(clippy::used_underscore_binding)]
 
 #[macro_use]
@@ -43,6 +42,12 @@ struct StructFieldTest {
 fn in_struct_field() {
     let mut s = StructFieldTest { _underscore_field: 0 };
     s._underscore_field += 1;
+}
+
+/// Tests that we do not lint if the struct field is used in code created with derive.
+#[derive(Clone, Debug)]
+pub struct UnderscoreInStruct {
+    _foo: u32,
 }
 
 /// Tests that we do not lint if the underscore is not a prefix

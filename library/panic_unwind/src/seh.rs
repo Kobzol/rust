@@ -42,7 +42,7 @@
 //!   of the `try` intrinsic.
 //!
 //! [win64]: https://docs.microsoft.com/en-us/cpp/build/exception-handling-x64
-//! [llvm]: http://llvm.org/docs/ExceptionHandling.html#background-on-windows-exceptions
+//! [llvm]: https://llvm.org/docs/ExceptionHandling.html#background-on-windows-exceptions
 
 #![allow(nonstandard_style)]
 
@@ -100,7 +100,7 @@ struct Exception {
 // In any case, these structures are all constructed in a similar manner, and
 // it's just somewhat verbose for us.
 //
-// [1]: http://www.geoffchappell.com/studies/msvc/language/predefined/
+// [1]: https://www.geoffchappell.com/studies/msvc/language/predefined/
 
 #[cfg(target_arch = "x86")]
 #[macro_use]
@@ -175,7 +175,7 @@ pub struct _TypeDescriptor {
 // to be able to catch Rust panics by simply declaring a `struct rust_panic`.
 //
 // When modifying, make sure that the type name string exactly matches
-// the one used in src/librustc_codegen_llvm/intrinsic.rs.
+// the one used in `compiler/rustc_codegen_llvm/src/intrinsic.rs`.
 const TYPE_NAME: [u8; 11] = *b"rust_panic\0";
 
 static mut THROW_INFO: _ThrowInfo = _ThrowInfo {
@@ -233,15 +233,14 @@ static mut TYPE_DESCRIPTOR: _TypeDescriptor = _TypeDescriptor {
 // support capturing exceptions with std::exception_ptr, which we can't support
 // because Box<dyn Any> isn't clonable.
 macro_rules! define_cleanup {
-    ($abi:tt) => {
+    ($abi:tt $abi2:tt) => {
         unsafe extern $abi fn exception_cleanup(e: *mut Exception) {
             if let Exception { data: Some(b) } = e.read() {
                 drop(b);
                 super::__rust_drop_panic();
             }
         }
-        #[unwind(allowed)]
-        unsafe extern $abi fn exception_copy(_dest: *mut Exception,
+        unsafe extern $abi2 fn exception_copy(_dest: *mut Exception,
                                              _src: *mut Exception)
                                              -> *mut Exception {
             panic!("Rust panics cannot be copied");
@@ -250,14 +249,14 @@ macro_rules! define_cleanup {
 }
 cfg_if::cfg_if! {
    if #[cfg(target_arch = "x86")] {
-       define_cleanup!("thiscall");
+       define_cleanup!("thiscall" "thiscall-unwind");
    } else {
-       define_cleanup!("C");
+       define_cleanup!("C" "C-unwind");
    }
 }
 
 pub unsafe fn panic(data: Box<dyn Any + Send>) -> u32 {
-    use core::intrinsics::atomic_store;
+    use core::intrinsics::atomic_store_seqcst;
 
     // _CxxThrowException executes entirely on this stack frame, so there's no
     // need to otherwise transfer `data` to the heap. We just pass a stack
@@ -289,43 +288,41 @@ pub unsafe fn panic(data: Box<dyn Any + Send>) -> u32 {
     //
     // In any case, we basically need to do something like this until we can
     // express more operations in statics (and we may never be able to).
-    atomic_store(&mut THROW_INFO.pmfnUnwind as *mut _ as *mut u32, ptr!(exception_cleanup) as u32);
-    atomic_store(
+    atomic_store_seqcst(
+        &mut THROW_INFO.pmfnUnwind as *mut _ as *mut u32,
+        ptr!(exception_cleanup) as u32,
+    );
+    atomic_store_seqcst(
         &mut THROW_INFO.pCatchableTypeArray as *mut _ as *mut u32,
         ptr!(&CATCHABLE_TYPE_ARRAY as *const _) as u32,
     );
-    atomic_store(
+    atomic_store_seqcst(
         &mut CATCHABLE_TYPE_ARRAY.arrayOfCatchableTypes[0] as *mut _ as *mut u32,
         ptr!(&CATCHABLE_TYPE as *const _) as u32,
     );
-    atomic_store(
+    atomic_store_seqcst(
         &mut CATCHABLE_TYPE.pType as *mut _ as *mut u32,
         ptr!(&TYPE_DESCRIPTOR as *const _) as u32,
     );
-    atomic_store(
+    atomic_store_seqcst(
         &mut CATCHABLE_TYPE.copyFunction as *mut _ as *mut u32,
         ptr!(exception_copy) as u32,
     );
 
-    extern "system" {
-        #[unwind(allowed)]
-        pub fn _CxxThrowException(pExceptionObject: *mut c_void, pThrowInfo: *mut u8) -> !;
+    extern "system-unwind" {
+        fn _CxxThrowException(pExceptionObject: *mut c_void, pThrowInfo: *mut u8) -> !;
     }
 
     _CxxThrowException(throw_ptr, &mut THROW_INFO as *mut _ as *mut _);
 }
 
 pub unsafe fn cleanup(payload: *mut u8) -> Box<dyn Any + Send> {
-    let exception = &mut *(payload as *mut Exception);
-    exception.data.take().unwrap()
-}
-
-// This is required by the compiler to exist (e.g., it's a lang item), but
-// it's never actually called by the compiler because __C_specific_handler
-// or _except_handler3 is the personality function that is always used.
-// Hence this is just an aborting stub.
-#[lang = "eh_personality"]
-#[cfg(not(test))]
-fn rust_eh_personality() {
-    core::intrinsics::abort()
+    // A null payload here means that we got here from the catch (...) of
+    // __rust_try. This happens when a non-Rust foreign exception is caught.
+    if payload.is_null() {
+        super::__rust_foreign_exception();
+    } else {
+        let exception = &mut *(payload as *mut Exception);
+        exception.data.take().unwrap()
+    }
 }

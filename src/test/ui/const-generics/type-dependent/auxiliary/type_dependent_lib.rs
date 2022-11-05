@@ -1,6 +1,3 @@
-#![feature(const_generics)]
-#![allow(incomplete_features)]
-
 pub struct Struct<const N: usize>(());
 
 impl<const N: usize> Struct<N> {

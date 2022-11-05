@@ -1,4 +1,11 @@
-// error-pattern: error reading Clippy's configuration file: found deprecated field
-// `cyclomatic-complexity-threshold`. Please use `cognitive-complexity-threshold` instead.
-
 fn main() {}
+
+#[warn(clippy::cognitive_complexity)]
+fn cognitive_complexity() {
+    let x = vec![1, 2, 3];
+    for i in x {
+        if i == 1 {
+            println!("{}", i);
+        }
+    }
+}

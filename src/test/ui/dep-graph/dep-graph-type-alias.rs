@@ -1,5 +1,6 @@
 // Test that changing what a `type` points to does not go unnoticed.
 
+// incremental
 // compile-flags: -Z query-dep-graph
 
 #![feature(rustc_attrs)]

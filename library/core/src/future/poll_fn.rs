@@ -3,17 +3,16 @@ use crate::future::Future;
 use crate::pin::Pin;
 use crate::task::{Context, Poll};
 
-/// Creates a future that wraps a function returning `Poll`.
+/// Creates a future that wraps a function returning [`Poll`].
 ///
 /// Polling the future delegates to the wrapped function.
 ///
 /// # Examples
 ///
 /// ```
-/// #![feature(future_poll_fn)]
 /// # async fn run() {
 /// use core::future::poll_fn;
-/// use core::task::{Context, Poll};
+/// use std::task::{Context, Poll};
 ///
 /// fn read_line(_cx: &mut Context<'_>) -> Poll<String> {
 ///     Poll::Ready("Hello, World!".into())
@@ -21,9 +20,9 @@ use crate::task::{Context, Poll};
 ///
 /// let read_future = poll_fn(read_line);
 /// assert_eq!(read_future.await, "Hello, World!".to_owned());
-/// # };
+/// # }
 /// ```
-#[unstable(feature = "future_poll_fn", issue = "72302")]
+#[stable(feature = "future_poll_fn", since = "1.64.0")]
 pub fn poll_fn<T, F>(f: F) -> PollFn<F>
 where
     F: FnMut(&mut Context<'_>) -> Poll<T>,
@@ -31,29 +30,27 @@ where
     PollFn { f }
 }
 
-/// A Future that wraps a function returning `Poll`.
+/// A Future that wraps a function returning [`Poll`].
 ///
-/// This `struct` is created by the [`poll_fn`] function. See its
+/// This `struct` is created by [`poll_fn()`]. See its
 /// documentation for more.
-///
-/// [`poll_fn`]: fn.poll_fn.html
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-#[unstable(feature = "future_poll_fn", issue = "72302")]
+#[stable(feature = "future_poll_fn", since = "1.64.0")]
 pub struct PollFn<F> {
     f: F,
 }
 
-#[unstable(feature = "future_poll_fn", issue = "72302")]
+#[stable(feature = "future_poll_fn", since = "1.64.0")]
 impl<F> Unpin for PollFn<F> {}
 
-#[unstable(feature = "future_poll_fn", issue = "72302")]
+#[stable(feature = "future_poll_fn", since = "1.64.0")]
 impl<F> fmt::Debug for PollFn<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PollFn").finish()
     }
 }
 
-#[unstable(feature = "future_poll_fn", issue = "72302")]
+#[stable(feature = "future_poll_fn", since = "1.64.0")]
 impl<T, F> Future for PollFn<F>
 where
     F: FnMut(&mut Context<'_>) -> Poll<T>,

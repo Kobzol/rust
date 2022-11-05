@@ -8,7 +8,8 @@ struct ChunkingIterator<T, S: 'static + Iterator<Item = T>> {
 impl<T, S: Iterator<Item = T>> Iterator for ChunkingIterator<T, S> {
     type Item = IteratorChunk<T, S>; //~ ERROR missing lifetime
 
-    fn next(&mut self) -> Option<IteratorChunk<T, S>> { //~ ERROR `impl`
+    fn next(&mut self) -> Option<IteratorChunk<T, S>> {
+        //~^ ERROR `impl` item signature doesn't match `trait` item signature
         todo!()
     }
 }

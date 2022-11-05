@@ -45,7 +45,7 @@ fn bench_max_by_key(b: &mut Bencher) {
     })
 }
 
-// http://www.reddit.com/r/rust/comments/31syce/using_iterators_to_find_the_index_of_the_min_or/
+// https://www.reddit.com/r/rust/comments/31syce/using_iterators_to_find_the_index_of_the_min_or/
 #[bench]
 fn bench_max_by_key2(b: &mut Bencher) {
     fn max_index_iter(array: &[i32]) -> usize {
@@ -276,7 +276,29 @@ bench_sums! {
 bench_sums! {
     bench_cycle_take_sum,
     bench_cycle_take_ref_sum,
-    (0i64..10000).cycle().take(1000000)
+    (0..10000).cycle().take(1000000)
+}
+
+bench_sums! {
+    bench_cycle_skip_take_sum,
+    bench_cycle_skip_take_ref_sum,
+    (0..100000).cycle().skip(1000000).take(1000000)
+}
+
+bench_sums! {
+    bench_cycle_take_skip_sum,
+    bench_cycle_take_skip_ref_sum,
+    (0..100000).cycle().take(1000000).skip(100000)
+}
+
+bench_sums! {
+    bench_skip_cycle_skip_zip_add_sum,
+    bench_skip_cycle_skip_zip_add_ref_sum,
+    (0..100000).skip(100).cycle().skip(100)
+      .zip((0..100000).cycle().skip(10))
+      .map(|(a,b)| a+b)
+      .skip(100000)
+      .take(1000000)
 }
 
 // Checks whether Skip<Zip<A,B>> is as fast as Zip<Skip<A>, Skip<B>>, from
@@ -342,6 +364,37 @@ fn bench_partial_cmp(b: &mut Bencher) {
 }
 
 #[bench]
+fn bench_chain_partial_cmp(b: &mut Bencher) {
+    b.iter(|| {
+        (0..50000).chain(50000..100000).map(black_box).partial_cmp((0..100000).map(black_box))
+    })
+}
+
+#[bench]
 fn bench_lt(b: &mut Bencher) {
     b.iter(|| (0..100000).map(black_box).lt((0..100000).map(black_box)))
+}
+
+#[bench]
+fn bench_trusted_random_access_adapters(b: &mut Bencher) {
+    let vec1: Vec<_> = (0usize..100000).collect();
+    let vec2 = black_box(vec1.clone());
+    b.iter(|| {
+        let mut iter = vec1
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(idx, e)| idx.wrapping_add(e))
+            .zip(vec2.iter().copied())
+            .map(|(a, b)| a.wrapping_add(b))
+            .fuse();
+        let mut acc: usize = 0;
+        let size = iter.size();
+        for i in 0..size {
+            // SAFETY: TRA requirements are satisfied by 0..size iteration and then dropping the
+            // iterator.
+            acc = acc.wrapping_add(unsafe { iter.__iterator_get_unchecked(i) });
+        }
+        acc
+    })
 }

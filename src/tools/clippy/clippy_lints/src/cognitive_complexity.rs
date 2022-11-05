@@ -1,26 +1,32 @@
 //! calculate cognitive complexity and warn about overly complex functions
 
+use clippy_utils::diagnostics::span_lint_and_help;
+use clippy_utils::source::snippet_opt;
+use clippy_utils::ty::is_type_diagnostic_item;
+use clippy_utils::LimitStack;
 use rustc_ast::ast::Attribute;
-use rustc_hir::intravisit::{walk_expr, FnKind, NestedVisitorMap, Visitor};
+use rustc_hir::intravisit::{walk_expr, FnKind, Visitor};
 use rustc_hir::{Body, Expr, ExprKind, FnDecl, HirId};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
-use rustc_middle::hir::map::Map;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
-use rustc_span::BytePos;
-
-use crate::utils::{is_type_diagnostic_item, snippet_opt, span_lint_and_help, LimitStack};
+use rustc_span::{sym, BytePos};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for methods with high cognitive complexity.
+    /// ### What it does
+    /// Checks for methods with high cognitive complexity.
     ///
-    /// **Why is this bad?** Methods of high cognitive complexity tend to be hard to
+    /// ### Why is this bad?
+    /// Methods of high cognitive complexity tend to be hard to
     /// both read and maintain. Also LLVM will tend to optimize small methods better.
     ///
-    /// **Known problems:** Sometimes it's hard to find a way to reduce the
+    /// ### Known problems
+    /// Sometimes it's hard to find a way to reduce the
     /// complexity.
     ///
-    /// **Example:** No. You'll see it when you get the warning.
+    /// ### Example
+    /// You'll see it when you get the warning.
+    #[clippy::version = "1.35.0"]
     pub COGNITIVE_COMPLEXITY,
     nursery,
     "functions that should be split up into multiple functions"
@@ -42,7 +48,7 @@ impl CognitiveComplexity {
 impl_lint_pass!(CognitiveComplexity => [COGNITIVE_COMPLEXITY]);
 
 impl CognitiveComplexity {
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation)]
     fn check<'tcx>(
         &mut self,
         cx: &LateContext<'tcx>,
@@ -57,14 +63,14 @@ impl CognitiveComplexity {
 
         let expr = &body.value;
 
-        let mut helper = CCHelper { cc: 1, returns: 0 };
+        let mut helper = CcHelper { cc: 1, returns: 0 };
         helper.visit_expr(expr);
-        let CCHelper { cc, returns } = helper;
+        let CcHelper { cc, returns } = helper;
         let ret_ty = cx.typeck_results().node_type(expr.hir_id);
-        let ret_adjust = if is_type_diagnostic_item(cx, ret_ty, sym!(result_type)) {
+        let ret_adjust = if is_type_diagnostic_item(cx, ret_ty, sym::Result) {
             returns
         } else {
-            #[allow(clippy::integer_division)]
+            #[expect(clippy::integer_division)]
             (returns / 2)
         };
 
@@ -76,8 +82,8 @@ impl CognitiveComplexity {
 
         if rust_cc > self.limit.limit() {
             let fn_span = match kind {
-                FnKind::ItemFn(ident, _, _, _, _) | FnKind::Method(ident, _, _, _) => ident.span,
-                FnKind::Closure(_) => {
+                FnKind::ItemFn(ident, _, _) | FnKind::Method(ident, _) => ident.span,
+                FnKind::Closure => {
                     let header_span = body_span.with_hi(decl.output.span().lo());
                     let pos = snippet_opt(cx, header_span).and_then(|snip| {
                         let low_offset = snip.find('|')?;
@@ -89,7 +95,7 @@ impl CognitiveComplexity {
                     });
 
                     if let Some((low, high)) = pos {
-                        Span::new(low, high, header_span.ctxt())
+                        Span::new(low, high, header_span.ctxt(), header_span.parent())
                     } else {
                         return;
                     }
@@ -123,7 +129,7 @@ impl<'tcx> LateLintPass<'tcx> for CognitiveComplexity {
         hir_id: HirId,
     ) {
         let def_id = cx.tcx.hir().local_def_id(hir_id);
-        if !cx.tcx.has_attr(def_id.to_def_id(), sym!(test)) {
+        if !cx.tcx.has_attr(def_id.to_def_id(), sym::test) {
             self.check(cx, kind, decl, body, span);
         }
     }
@@ -136,18 +142,19 @@ impl<'tcx> LateLintPass<'tcx> for CognitiveComplexity {
     }
 }
 
-struct CCHelper {
+struct CcHelper {
     cc: u64,
     returns: u64,
 }
 
-impl<'tcx> Visitor<'tcx> for CCHelper {
-    type Map = Map<'tcx>;
-
+impl<'tcx> Visitor<'tcx> for CcHelper {
     fn visit_expr(&mut self, e: &'tcx Expr<'_>) {
         walk_expr(self, e);
         match e.kind {
-            ExprKind::Match(_, ref arms, _) => {
+            ExprKind::If(_, _, _) => {
+                self.cc += 1;
+            },
+            ExprKind::Match(_, arms, _) => {
                 if arms.len() > 1 {
                     self.cc += 1;
                 }
@@ -156,8 +163,5 @@ impl<'tcx> Visitor<'tcx> for CCHelper {
             ExprKind::Ret(_) => self.returns += 1,
             _ => {},
         }
-    }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
     }
 }

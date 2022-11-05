@@ -1,4 +1,4 @@
-// compile-flags: -O --target=avr-unknown-unknown --crate-type=rlib
+// compile-flags: -O --target=avr-unknown-gnu-atmega328 --crate-type=rlib
 // needs-llvm-components: avr
 
 // This test validates that function pointers can be stored in global variables
@@ -23,6 +23,7 @@ pub trait Receiver { }
 pub struct Result<T, E> { _a: T, _b: E }
 
 impl Copy for usize {}
+impl Copy for &usize {}
 
 #[lang = "drop_in_place"]
 pub unsafe fn drop_in_place<T: ?Sized>(_: *mut T) {}
@@ -76,7 +77,7 @@ fn update_bar_value() {
     }
 }
 
-// CHECK: define void @test(){{.+}}addrspace(1)
+// CHECK: define dso_local void @test(){{.+}}addrspace(1)
 #[no_mangle]
 pub extern "C" fn test() {
     let mut buf = 7;

@@ -1,18 +1,22 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use super::fd::WasiFd;
 use crate::ffi::{CStr, CString, OsStr, OsString};
 use crate::fmt;
-use crate::io::{self, IoSlice, IoSliceMut, SeekFrom};
+use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut, SeekFrom};
 use crate::iter;
 use crate::mem::{self, ManuallyDrop};
+use crate::os::raw::c_int;
 use crate::os::wasi::ffi::{OsStrExt, OsStringExt};
+use crate::os::wasi::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 use crate::path::{Path, PathBuf};
 use crate::ptr;
 use crate::sync::Arc;
-use crate::sys::fd::WasiFd;
 use crate::sys::time::SystemTime;
 use crate::sys::unsupported;
-use crate::sys_common::FromInner;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
 
-pub use crate::sys_common::fs::remove_dir_all;
+pub use crate::sys_common::fs::try_exists;
 
 pub struct File {
     fd: WasiFd,
@@ -57,6 +61,12 @@ pub struct OpenOptions {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FilePermissions {
     readonly: bool,
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct FileTimes {
+    accessed: Option<wasi::Timestamp>,
+    modified: Option<wasi::Timestamp>,
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Copy, Clone)]
@@ -108,6 +118,16 @@ impl FilePermissions {
     }
 }
 
+impl FileTimes {
+    pub fn set_accessed(&mut self, t: SystemTime) {
+        self.accessed = Some(t.to_wasi_timestamp_or_panic());
+    }
+
+    pub fn set_modified(&mut self, t: SystemTime) {
+        self.modified = Some(t.to_wasi_timestamp_or_panic());
+    }
+}
+
 impl FileType {
     pub fn is_dir(&self) -> bool {
         self.bits == wasi::FILETYPE_DIRECTORY
@@ -126,9 +146,21 @@ impl FileType {
     }
 }
 
+impl ReadDir {
+    fn new(dir: File, root: PathBuf) -> ReadDir {
+        ReadDir {
+            cookie: Some(0),
+            buf: vec![0; 128],
+            offset: 0,
+            cap: 0,
+            inner: Arc::new(ReadDirInner { dir, root }),
+        }
+    }
+}
+
 impl fmt::Debug for ReadDir {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ReadDir").finish()
+        f.debug_struct("ReadDir").finish_non_exhaustive()
     }
 }
 
@@ -407,6 +439,10 @@ impl File {
         true
     }
 
+    pub fn read_buf(&self, cursor: BorrowedCursor<'_>) -> io::Result<()> {
+        crate::io::default_read_buf(|buf| self.read(buf), cursor)
+    }
+
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.write_vectored(&[IoSlice::new(buf)])
     }
@@ -439,12 +475,13 @@ impl File {
         unsupported()
     }
 
-    pub fn fd(&self) -> &WasiFd {
-        &self.fd
-    }
-
-    pub fn into_fd(self) -> WasiFd {
-        self.fd
+    pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
+        self.fd.filestat_set_times(
+            times.accessed.unwrap_or(0),
+            times.modified.unwrap_or(0),
+            times.accessed.map_or(0, |_| wasi::FSTFLAGS_ATIM)
+                | times.modified.map_or(0, |_| wasi::FSTFLAGS_MTIM),
+        )
     }
 
     pub fn read_link(&self, file: &Path) -> io::Result<PathBuf> {
@@ -452,9 +489,45 @@ impl File {
     }
 }
 
-impl FromInner<u32> for File {
-    fn from_inner(fd: u32) -> File {
-        unsafe { File { fd: WasiFd::from_raw(fd) } }
+impl AsInner<WasiFd> for File {
+    fn as_inner(&self) -> &WasiFd {
+        &self.fd
+    }
+}
+
+impl IntoInner<WasiFd> for File {
+    fn into_inner(self) -> WasiFd {
+        self.fd
+    }
+}
+
+impl FromInner<WasiFd> for File {
+    fn from_inner(fd: WasiFd) -> File {
+        File { fd }
+    }
+}
+
+impl AsFd for File {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+impl AsRawFd for File {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
+impl IntoRawFd for File {
+    fn into_raw_fd(self) -> RawFd {
+        self.fd.into_raw_fd()
+    }
+}
+
+impl FromRawFd for File {
+    unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
+        unsafe { Self { fd: FromRawFd::from_raw_fd(raw_fd) } }
     }
 }
 
@@ -471,7 +544,7 @@ impl DirBuilder {
 
 impl fmt::Debug for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("File").field("fd", &self.fd.as_raw()).finish()
+        f.debug_struct("File").field("fd", &self.as_raw_fd()).finish()
     }
 }
 
@@ -480,13 +553,7 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
     opts.directory(true);
     opts.read(true);
     let dir = File::open(p, &opts)?;
-    Ok(ReadDir {
-        cookie: Some(0),
-        buf: vec![0; 128],
-        offset: 0,
-        cap: 0,
-        inner: Arc::new(ReadDirInner { dir, root: p.to_path_buf() }),
-    })
+    Ok(ReadDir::new(dir, p.to_path_buf()))
 }
 
 pub fn unlink(p: &Path) -> io::Result<()> {
@@ -547,20 +614,16 @@ fn read_link(fd: &WasiFd, file: &Path) -> io::Result<PathBuf> {
     }
 }
 
-pub fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
-    let (dst, dst_file) = open_parent(dst)?;
-    dst.symlink(osstr2str(src.as_ref())?, osstr2str(dst_file.as_ref())?)
+pub fn symlink(original: &Path, link: &Path) -> io::Result<()> {
+    let (link, link_file) = open_parent(link)?;
+    link.symlink(osstr2str(original.as_ref())?, osstr2str(link_file.as_ref())?)
 }
 
-pub fn link(src: &Path, dst: &Path) -> io::Result<()> {
-    let (src, src_file) = open_parent(src)?;
-    let (dst, dst_file) = open_parent(dst)?;
-    src.link(
-        wasi::LOOKUPFLAGS_SYMLINK_FOLLOW,
-        osstr2str(src_file.as_ref())?,
-        &dst,
-        osstr2str(dst_file.as_ref())?,
-    )
+pub fn link(original: &Path, link: &Path) -> io::Result<()> {
+    let (original, original_file) = open_parent(original)?;
+    let (link, link_file) = open_parent(link)?;
+    // Pass 0 as the flags argument, meaning don't follow symlinks.
+    original.link(0, osstr2str(original_file.as_ref())?, &link, osstr2str(link_file.as_ref())?)
 }
 
 pub fn stat(p: &Path) -> io::Result<FileAttr> {
@@ -625,39 +688,55 @@ fn open_at(fd: &WasiFd, path: &Path, opts: &OpenOptions) -> io::Result<File> {
 /// to any pre-opened file descriptor.
 fn open_parent(p: &Path) -> io::Result<(ManuallyDrop<WasiFd>, PathBuf)> {
     let p = CString::new(p.as_os_str().as_bytes())?;
-    unsafe {
-        let mut ret = ptr::null();
-        let fd = __wasilibc_find_relpath(p.as_ptr(), &mut ret);
-        if fd == -1 {
-            let msg = format!(
-                "failed to find a pre-opened file descriptor \
-                 through which {:?} could be opened",
-                p
+    let mut buf = Vec::<u8>::with_capacity(512);
+    loop {
+        unsafe {
+            let mut relative_path = buf.as_ptr().cast();
+            let mut abs_prefix = ptr::null();
+            let fd = __wasilibc_find_relpath(
+                p.as_ptr(),
+                &mut abs_prefix,
+                &mut relative_path,
+                buf.capacity(),
             );
-            return Err(io::Error::new(io::ErrorKind::Other, msg));
+            if fd == -1 {
+                if io::Error::last_os_error().raw_os_error() == Some(libc::ENOMEM) {
+                    // Trigger the internal buffer resizing logic of `Vec` by requiring
+                    // more space than the current capacity.
+                    let cap = buf.capacity();
+                    buf.set_len(cap);
+                    buf.reserve(1);
+                    continue;
+                }
+                let msg = format!(
+                    "failed to find a pre-opened file descriptor \
+                     through which {:?} could be opened",
+                    p
+                );
+                return Err(io::Error::new(io::ErrorKind::Uncategorized, msg));
+            }
+            let relative = CStr::from_ptr(relative_path).to_bytes().to_vec();
+
+            return Ok((
+                ManuallyDrop::new(WasiFd::from_raw_fd(fd as c_int)),
+                PathBuf::from(OsString::from_vec(relative)),
+            ));
         }
-        let path = Path::new(OsStr::from_bytes(CStr::from_ptr(ret).to_bytes()));
-
-        // FIXME: right now `path` is a pointer into `p`, the `CString` above.
-        // When we return `p` is deallocated and we can't use it, so we need to
-        // currently separately allocate `path`. If this becomes an issue though
-        // we should probably turn this into a closure-taking interface or take
-        // `&CString` and then pass off `&Path` tied to the same lifetime.
-        let path = path.to_path_buf();
-
-        return Ok((ManuallyDrop::new(WasiFd::from_raw(fd as u32)), path));
     }
 
     extern "C" {
         pub fn __wasilibc_find_relpath(
             path: *const libc::c_char,
+            abs_prefix: *mut *const libc::c_char,
             relative_path: *mut *const libc::c_char,
+            relative_path_len: libc::size_t,
         ) -> libc::c_int;
     }
 }
 
 pub fn osstr2str(f: &OsStr) -> io::Result<&str> {
-    f.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "input must be utf-8"))
+    f.to_str()
+        .ok_or_else(|| io::const_io_error!(io::ErrorKind::Uncategorized, "input must be utf-8"))
 }
 
 pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
@@ -667,4 +746,53 @@ pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
     let mut writer = File::create(to)?;
 
     io::copy(&mut reader, &mut writer)
+}
+
+pub fn remove_dir_all(path: &Path) -> io::Result<()> {
+    let (parent, path) = open_parent(path)?;
+    remove_dir_all_recursive(&parent, &path)
+}
+
+fn remove_dir_all_recursive(parent: &WasiFd, path: &Path) -> io::Result<()> {
+    // Open up a file descriptor for the directory itself. Note that we don't
+    // follow symlinks here and we specifically open directories.
+    //
+    // At the root invocation of this function this will correctly handle
+    // symlinks passed to the top-level `remove_dir_all`. At the recursive
+    // level this will double-check that after the `readdir` call deduced this
+    // was a directory it's still a directory by the time we open it up.
+    //
+    // If the opened file was actually a symlink then the symlink is deleted,
+    // not the directory recursively.
+    let mut opts = OpenOptions::new();
+    opts.lookup_flags(0);
+    opts.directory(true);
+    opts.read(true);
+    let fd = open_at(parent, path, &opts)?;
+    if fd.file_attr()?.file_type().is_symlink() {
+        return parent.unlink_file(osstr2str(path.as_ref())?);
+    }
+
+    // this "root" is only used by `DirEntry::path` which we don't use below so
+    // it's ok for this to be a bogus value
+    let dummy_root = PathBuf::new();
+
+    // Iterate over all the entries in this directory, and travel recursively if
+    // necessary
+    for entry in ReadDir::new(fd, dummy_root) {
+        let entry = entry?;
+        let path = crate::str::from_utf8(&entry.name).map_err(|_| {
+            io::const_io_error!(io::ErrorKind::Uncategorized, "invalid utf-8 file name found")
+        })?;
+
+        if entry.file_type()?.is_dir() {
+            remove_dir_all_recursive(&entry.inner.dir.fd, path.as_ref())?;
+        } else {
+            entry.inner.dir.fd.unlink_file(path)?;
+        }
+    }
+
+    // Once all this directory's contents are deleted it should be safe to
+    // delete the directory tiself.
+    parent.remove_directory(osstr2str(path.as_ref())?)
 }

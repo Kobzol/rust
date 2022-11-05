@@ -1,6 +1,3 @@
-#![feature(const_generics)]
-#![allow(incomplete_features)]
-
 struct Bad<const N: usize, T> {
     arr: [u8; { N }],
     another: T,

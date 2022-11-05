@@ -10,6 +10,12 @@ fn stderr() -> String {
     String::new()
 }
 
+macro_rules! one {
+    () => {
+        1
+    };
+}
+
 fn main() {
     // these should warn
     {
@@ -24,6 +30,14 @@ fn main() {
         // including newlines
         writeln!(std::io::stdout(), "test\ntest").unwrap();
         writeln!(std::io::stderr(), "test\ntest").unwrap();
+
+        let value = 1;
+        writeln!(std::io::stderr(), "with {}", value).unwrap();
+        writeln!(std::io::stderr(), "with {} {}", 2, value).unwrap();
+        writeln!(std::io::stderr(), "with {value}").unwrap();
+        writeln!(std::io::stderr(), "macro arg {}", one!()).unwrap();
+        let width = 2;
+        writeln!(std::io::stderr(), "{:w$}", value, w = width).unwrap();
     }
     // these should not warn, different destination
     {

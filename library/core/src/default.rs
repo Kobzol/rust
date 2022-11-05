@@ -1,4 +1,4 @@
-//! The `Default` trait for types which may have meaningful default values.
+//! The `Default` trait for types with a default value.
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
@@ -52,6 +52,23 @@
 /// This trait can be used with `#[derive]` if all of the type's fields implement
 /// `Default`. When `derive`d, it will use the default value for each field's type.
 ///
+/// ### `enum`s
+///
+/// When using `#[derive(Default)]` on an `enum`, you need to choose which unit variant will be
+/// default. You do this by placing the `#[default]` attribute on the variant.
+///
+/// ```
+/// #[derive(Default)]
+/// enum Kind {
+///     #[default]
+///     A,
+///     B,
+///     C,
+/// }
+/// ```
+///
+/// You cannot use the `#[default]` attribute on non-unit or non-exhaustive variants.
+///
 /// ## How can I implement `Default`?
 ///
 /// Provide an implementation for the `default()` method that returns the value of
@@ -80,7 +97,9 @@
 ///     bar: f32,
 /// }
 /// ```
+#[cfg_attr(not(test), rustc_diagnostic_item = "Default")]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(bootstrap), const_trait)]
 pub trait Default: Sized {
     /// Returns the "default value" for a type.
     ///
@@ -154,13 +173,14 @@ pub trait Default: Sized {
 /// }
 /// ```
 #[unstable(feature = "default_free_fn", issue = "73014")]
+#[must_use]
 #[inline]
 pub fn default<T: Default>() -> T {
     Default::default()
 }
 
 /// Derive macro generating an impl of the trait `Default`.
-#[rustc_builtin_macro]
+#[rustc_builtin_macro(Default, attributes(default))]
 #[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
 #[allow_internal_unstable(core_intrinsics)]
 pub macro Default($item:item) {
@@ -170,12 +190,15 @@ pub macro Default($item:item) {
 macro_rules! default_impl {
     ($t:ty, $v:expr, $doc:tt) => {
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl Default for $t {
+        #[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+        impl const Default for $t {
             #[inline]
             #[doc = $doc]
-            fn default() -> $t { $v }
+            fn default() -> $t {
+                $v
+            }
         }
-    }
+    };
 }
 
 default_impl! { (), (), "Returns the default value of `()`" }

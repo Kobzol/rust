@@ -73,7 +73,7 @@ x--expand-yaml-anchors--remove:
     env: {}
 
   - &job-linux-xl
-    os: ubuntu-latest-xl
+    os: ubuntu-20.04-xl
     <<: *base-job
 
   - &job-macos-xl
@@ -99,16 +99,9 @@ x--expand-yaml-anchors--remove:
         run: git config --global core.autocrlf false
 
       - name: checkout the source code
-        uses: actions/checkout@v1
+        uses: actions/checkout@v3
         with:
           fetch-depth: 2
-
-      - name: configure GitHub Actions to kill the build when outdated
-        uses: rust-lang/simpleinfra/github-actions/cancel-outdated-builds@master
-        with:
-          github_token: "${{ secrets.github_token }}"
-        if: success() && !env.SKIP_JOB && github.ref != 'refs/heads/try'
-        <<: *step
 
       # Rust Log Analyzer can't currently detect the PR number of a GitHub
       # Actions build on its own, so a hint in the log message is needed to
@@ -117,7 +110,7 @@ x--expand-yaml-anchors--remove:
         run: echo "[CI_PR_NUMBER=$num]"
         env:
           num: ${{ github.event.number }}
-        if: success() && !env.SKIP_JOBS && github.event_name == 'pull_request'
+        if: success() && !env.SKIP_JOB && github.event_name == 'pull_request'
 
       - name: add extra environment variables
         run: src/ci/scripts/setup-environment.sh
@@ -131,6 +124,17 @@ x--expand-yaml-anchors--remove:
 
       - name: decide whether to skip this job
         run: src/ci/scripts/should-skip-this.sh
+        <<: *step
+
+      - name: ensure the channel matches the target branch
+        run: src/ci/scripts/verify-channel.sh
+        <<: *step
+
+      - name: configure GitHub Actions to kill the build when outdated
+        uses: rust-lang/simpleinfra/github-actions/cancel-outdated-builds@master
+        with:
+          github_token: "${{ secrets.github_token }}"
+        if: success() && !env.SKIP_JOB && github.ref != 'refs/heads/try' && github.ref != 'refs/heads/try-perf'
         <<: *step
 
       - name: collect CPU statistics
@@ -157,12 +161,12 @@ x--expand-yaml-anchors--remove:
         run: src/ci/scripts/install-wix.sh
         <<: *step
 
-      - name: ensure the build happens on a partition with enough space
-        run: src/ci/scripts/symlink-build-dir.sh
-        <<: *step
-
       - name: disable git crlf conversion
         run: src/ci/scripts/disable-git-crlf-conversion.sh
+        <<: *step
+
+      - name: checkout submodules
+        run: src/ci/scripts/checkout-submodules.sh
         <<: *step
 
       - name: install MSYS2
@@ -190,12 +194,16 @@ x--expand-yaml-anchors--remove:
         run: src/ci/scripts/disable-git-crlf-conversion.sh
         <<: *step
 
-      - name: checkout submodules
-        run: src/ci/scripts/checkout-submodules.sh
-        <<: *step
-
       - name: ensure line endings are correct
         run: src/ci/scripts/verify-line-endings.sh
+        <<: *step
+
+      - name: ensure backported commits are in upstream branches
+        run: src/ci/scripts/verify-backported-commits.sh
+        <<: *step
+
+      - name: ensure the stable version number is correct
+        run: src/ci/scripts/verify-stable-version-number.sh
         <<: *step
 
       - name: run the build
@@ -256,6 +264,9 @@ on:
     branches:
       - "**"
 
+permissions:
+  contents: read
+
 defaults:
   run:
     # On Linux, macOS, and Windows, use the system-provided bash as the default
@@ -265,6 +276,8 @@ defaults:
 
 jobs:
   pr:
+    permissions:
+      actions: write # for rust-lang/simpleinfra/github-actions/cancel-outdated-builds
     <<: *base-ci-job
     name: PR
     env:
@@ -276,7 +289,7 @@ jobs:
           - name: mingw-check
             <<: *job-linux-xl
 
-          - name: x86_64-gnu-llvm-8
+          - name: x86_64-gnu-llvm-13
             <<: *job-linux-xl
 
           - name: x86_64-gnu-tools
@@ -284,19 +297,9 @@ jobs:
               CI_ONLY_WHEN_SUBMODULES_CHANGED: 1
             <<: *job-linux-xl
 
-  try:
-    <<: *base-ci-job
-    name: try
-    env:
-      <<: [*shared-ci-variables, *prod-variables]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/try' || github.ref == 'refs/heads/try-perf') && github.repository == 'rust-lang-ci/rust'
-    strategy:
-      matrix:
-        include:
-          - name: dist-x86_64-linux
-            <<: *job-linux-xl
-
   auto:
+    permissions:
+      actions: write # for rust-lang/simpleinfra/github-actions/cancel-outdated-builds
     <<: *base-ci-job
     name: auto
     env:
@@ -308,6 +311,9 @@ jobs:
           #############################
           #   Linux/Docker builders   #
           #############################
+
+          - name: aarch64-gnu
+            <<: *job-aarch64-linux
 
           - name: arm-android
             <<: *job-linux-xl
@@ -331,9 +337,6 @@ jobs:
             <<: *job-linux-xl
 
           - name: dist-i586-gnu-i586-i686-musl
-            <<: *job-linux-xl
-
-          - name: dist-i686-freebsd
             <<: *job-linux-xl
 
           - name: dist-i686-linux
@@ -378,7 +381,8 @@ jobs:
           - name: dist-x86_64-illumos
             <<: *job-linux-xl
 
-          - name: dist-x86_64-linux
+          - &dist-x86_64-linux
+            name: dist-x86_64-linux
             <<: *job-linux-xl
 
           - name: dist-x86_64-linux-alt
@@ -410,6 +414,21 @@ jobs:
           - name: x86_64-gnu
             <<: *job-linux-xl
 
+          # This job ensures commits landing on nightly still pass the full
+          # test suite on the stable channel. There are some UI tests that
+          # depend on the channel being built (for example if they include the
+          # channel name on the output), and this builder prevents landing
+          # changes that would result in broken builds after a promotion.
+          - name: x86_64-gnu-stable
+            env:
+              IMAGE: x86_64-gnu
+              RUST_CI_OVERRIDE_RELEASE_CHANNEL: stable
+              # Only run this job on the nightly channel. Running this on beta
+              # could cause failures when `dev: 1` in `stage0.txt`, and running
+              # this on stable is useless.
+              CI_ONLY_WHEN_CHANNEL: nightly
+            <<: *job-linux-xl
+
           - name: x86_64-gnu-aux
             <<: *job-linux-xl
 
@@ -419,7 +438,12 @@ jobs:
           - name: x86_64-gnu-distcheck
             <<: *job-linux-xl
 
-          - name: x86_64-gnu-llvm-8
+          - name: x86_64-gnu-llvm-13
+            env:
+              RUST_BACKTRACE: 1
+            <<: *job-linux-xl
+
+          - name: x86_64-gnu-llvm-13-stage1
             env:
               RUST_BACKTRACE: 1
             <<: *job-linux-xl
@@ -432,6 +456,94 @@ jobs:
               DEPLOY_TOOLSTATES_JSON: toolstates-linux.json
             <<: *job-linux-xl
 
+          ####################
+          #  macOS Builders  #
+          ####################
+
+          - name: dist-x86_64-apple
+            env:
+              SCRIPT: ./x.py dist bootstrap --include-default-paths --host=x86_64-apple-darwin --target=x86_64-apple-darwin
+              RUST_CONFIGURE_ARGS: --enable-full-tools --enable-sanitizers --enable-profiler --set rust.jemalloc --set llvm.ninja=false
+              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
+              MACOSX_DEPLOYMENT_TARGET: 10.7
+              NO_LLVM_ASSERTIONS: 1
+              NO_DEBUG_ASSERTIONS: 1
+              NO_OVERFLOW_CHECKS: 1
+              DIST_REQUIRE_ALL_TOOLS: 1
+            <<: *job-macos-xl
+
+          - name: dist-apple-various
+            env:
+              SCRIPT: ./x.py dist bootstrap --include-default-paths --host='' --target=aarch64-apple-ios,x86_64-apple-ios,aarch64-apple-ios-sim
+              RUST_CONFIGURE_ARGS: --enable-sanitizers --enable-profiler --set rust.jemalloc --set llvm.ninja=false
+              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
+              MACOSX_DEPLOYMENT_TARGET: 10.7
+              NO_LLVM_ASSERTIONS: 1
+              NO_DEBUG_ASSERTIONS: 1
+              NO_OVERFLOW_CHECKS: 1
+            <<: *job-macos-xl
+
+          - name: dist-x86_64-apple-alt
+            env:
+              SCRIPT: ./x.py dist bootstrap --include-default-paths
+              RUST_CONFIGURE_ARGS: --enable-extended --enable-profiler --set rust.jemalloc --set llvm.ninja=false
+              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
+              MACOSX_DEPLOYMENT_TARGET: 10.7
+              NO_LLVM_ASSERTIONS: 1
+              NO_DEBUG_ASSERTIONS: 1
+              NO_OVERFLOW_CHECKS: 1
+            <<: *job-macos-xl
+
+          - name: x86_64-apple-1
+            env: &env-x86_64-apple-tests
+              SCRIPT: ./x.py --stage 2 test --exclude src/test/ui --exclude src/test/rustdoc --exclude src/test/run-make-fulldeps
+              RUST_CONFIGURE_ARGS: --build=x86_64-apple-darwin --enable-sanitizers --enable-profiler --set rust.jemalloc --set llvm.ninja=false
+              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
+              MACOSX_DEPLOYMENT_TARGET: 10.8
+              MACOSX_STD_DEPLOYMENT_TARGET: 10.7
+              NO_LLVM_ASSERTIONS: 1
+              NO_DEBUG_ASSERTIONS: 1
+              NO_OVERFLOW_CHECKS: 1
+            <<: *job-macos-xl
+
+          - name: x86_64-apple-2
+            env:
+              SCRIPT: ./x.py --stage 2 test src/test/ui src/test/rustdoc src/test/run-make-fulldeps
+              <<: *env-x86_64-apple-tests
+            <<: *job-macos-xl
+
+          # This target only needs to support 11.0 and up as nothing else supports the hardware
+          - name: dist-aarch64-apple
+            env:
+              SCRIPT: ./x.py dist bootstrap --include-default-paths --stage 2
+              RUST_CONFIGURE_ARGS: >-
+                --build=x86_64-apple-darwin
+                --host=aarch64-apple-darwin
+                --target=aarch64-apple-darwin
+                --enable-full-tools
+                --enable-sanitizers
+                --enable-profiler
+                --disable-docs
+                --set rust.jemalloc
+                --set llvm.ninja=false
+              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
+              USE_XCODE_CLANG: 1
+              MACOSX_DEPLOYMENT_TARGET: 11.0
+              MACOSX_STD_DEPLOYMENT_TARGET: 11.0
+              NO_LLVM_ASSERTIONS: 1
+              NO_DEBUG_ASSERTIONS: 1
+              NO_OVERFLOW_CHECKS: 1
+              DIST_REQUIRE_ALL_TOOLS: 1
+              # Corresponds to 16K page size
+              #
+              # Shouldn't be needed if jemalloc-sys is updated to
+              # handle this platform like iOS or if we build on
+              # aarch64-apple-darwin itself.
+              #
+              # https://github.com/gnzlbg/jemallocator/blob/c27a859e98e3cb790dc269773d9da71a1e918458/jemalloc-sys/build.rs#L237
+              JEMALLOC_SYS_WITH_LG_PAGE: 14
+            <<: *job-macos-xl
+
           ######################
           #  Windows Builders  #
           ######################
@@ -440,9 +552,6 @@ jobs:
             env:
               RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --enable-profiler
               SCRIPT: make ci-subset-1
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: x86_64-msvc-2
@@ -455,41 +564,32 @@ jobs:
             env:
               RUST_CONFIGURE_ARGS: --build=i686-pc-windows-msvc
               SCRIPT: make ci-subset-1
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: i686-msvc-2
             env:
               RUST_CONFIGURE_ARGS: --build=i686-pc-windows-msvc
               SCRIPT: make ci-subset-2
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: x86_64-msvc-cargo
             env:
               SCRIPT: python x.py --stage 2 test src/tools/cargotest src/tools/cargo
               RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --enable-lld
-              VCVARS_BAT: vcvars64.bat
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: x86_64-msvc-tools
             env:
               SCRIPT: src/ci/docker/host-x86_64/x86_64-gnu-tools/checktools.sh x.py /tmp/toolstate/toolstates.json windows
               RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --save-toolstates=/tmp/toolstate/toolstates.json
+              DEPLOY_TOOLSTATES_JSON: toolstates-windows.json
             <<: *job-windows-xl
 
           # 32/64-bit MinGW builds.
           #
           # We are using MinGW with POSIX threads since LLVM requires
           # C++'s std::thread which is disabled in libstdc++ with win32 threads.
-          # FIXME: Libc++ doesn't have this limitation so we can avoid 
+          # FIXME: Libc++ doesn't have this limitation so we can avoid
           # winpthreads if we switch to it.
           #
           # Instead of relying on the MinGW version installed on CI we download
@@ -503,35 +603,51 @@ jobs:
 
           - name: i686-mingw-1
             env:
-              RUST_CONFIGURE_ARGS: --build=i686-pc-windows-gnu
+              RUST_CONFIGURE_ARGS: >-
+                --build=i686-pc-windows-gnu
+                --set llvm.allow-old-toolchain
               SCRIPT: make ci-mingw-subset-1
+              # We are intentionally allowing an old toolchain on this builder (and that's
+              # incompatible with LLVM downloads today).
+              NO_DOWNLOAD_CI_LLVM: 1
               CUSTOM_MINGW: 1
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: i686-mingw-2
             env:
-              RUST_CONFIGURE_ARGS: --build=i686-pc-windows-gnu
+              RUST_CONFIGURE_ARGS: >-
+                --build=i686-pc-windows-gnu
+                --set llvm.allow-old-toolchain
               SCRIPT: make ci-mingw-subset-2
+              # We are intentionally allowing an old toolchain on this builder (and that's
+              # incompatible with LLVM downloads today).
+              NO_DOWNLOAD_CI_LLVM: 1
               CUSTOM_MINGW: 1
             <<: *job-windows-xl
 
           - name: x86_64-mingw-1
             env:
               SCRIPT: make ci-mingw-subset-1
-              RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-gnu
+              RUST_CONFIGURE_ARGS: >-
+                --build=x86_64-pc-windows-gnu
+                --enable-profiler
+                --set llvm.allow-old-toolchain
+              # We are intentionally allowing an old toolchain on this builder (and that's
+              # incompatible with LLVM downloads today).
+              NO_DOWNLOAD_CI_LLVM: 1
               CUSTOM_MINGW: 1
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: x86_64-mingw-2
             env:
               SCRIPT: make ci-mingw-subset-2
-              RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-gnu
+              RUST_CONFIGURE_ARGS: >-
+                --build=x86_64-pc-windows-gnu
+                --enable-profiler
+                --set llvm.allow-old-toolchain
+              # We are intentionally allowing an old toolchain on this builder (and that's
+              # incompatible with LLVM downloads today).
+              NO_DOWNLOAD_CI_LLVM: 1
               CUSTOM_MINGW: 1
             <<: *job-windows-xl
 
@@ -539,10 +655,11 @@ jobs:
             env:
               RUST_CONFIGURE_ARGS: >-
                 --build=x86_64-pc-windows-msvc
-                --target=x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+                --host=x86_64-pc-windows-msvc
+                --target=x86_64-pc-windows-msvc
                 --enable-full-tools
                 --enable-profiler
-              SCRIPT: python x.py dist
+              SCRIPT: PGO_HOST=x86_64-pc-windows-msvc src/ci/pgo.sh python x.py dist bootstrap --include-default-paths
               DIST_REQUIRE_ALL_TOOLS: 1
             <<: *job-windows-xl
 
@@ -550,25 +667,54 @@ jobs:
             env:
               RUST_CONFIGURE_ARGS: >-
                 --build=i686-pc-windows-msvc
-                --target=i586-pc-windows-msvc
+                --host=i686-pc-windows-msvc
+                --target=i686-pc-windows-msvc,i586-pc-windows-msvc
                 --enable-full-tools
                 --enable-profiler
-              SCRIPT: python x.py dist
+              SCRIPT: python x.py dist bootstrap --include-default-paths
               DIST_REQUIRE_ALL_TOOLS: 1
+            <<: *job-windows-xl
+
+          - name: dist-aarch64-msvc
+            env:
+              RUST_CONFIGURE_ARGS: >-
+                --build=x86_64-pc-windows-msvc
+                --host=aarch64-pc-windows-msvc
+                --enable-full-tools
+                --enable-profiler
+              SCRIPT: python x.py dist bootstrap --include-default-paths
+              DIST_REQUIRE_ALL_TOOLS: 1
+              # Hack around this SDK version, because it doesn't work with clang.
+              # See https://github.com/rust-lang/rust/issues/88796
+              WINDOWS_SDK_20348_HACK: 1
             <<: *job-windows-xl
 
           - name: dist-i686-mingw
             env:
-              RUST_CONFIGURE_ARGS: --build=i686-pc-windows-gnu --enable-full-tools --enable-profiler
-              SCRIPT: python x.py dist
+              RUST_CONFIGURE_ARGS: >-
+                --build=i686-pc-windows-gnu
+                --enable-full-tools
+                --enable-profiler
+                --set llvm.allow-old-toolchain
+              # We are intentionally allowing an old toolchain on this builder (and that's
+              # incompatible with LLVM downloads today).
+              NO_DOWNLOAD_CI_LLVM: 1
+              SCRIPT: python x.py dist bootstrap --include-default-paths
               CUSTOM_MINGW: 1
               DIST_REQUIRE_ALL_TOOLS: 1
             <<: *job-windows-xl
 
           - name: dist-x86_64-mingw
             env:
-              SCRIPT: python x.py dist
-              RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-gnu --enable-full-tools --enable-profiler
+              SCRIPT: python x.py dist bootstrap --include-default-paths
+              RUST_CONFIGURE_ARGS: >-
+                --build=x86_64-pc-windows-gnu
+                --enable-full-tools
+                --enable-profiler
+                --set llvm.allow-old-toolchain
+              # We are intentionally allowing an old toolchain on this builder (and that's
+              # incompatible with LLVM downloads today).
+              NO_DOWNLOAD_CI_LLVM: 1
               CUSTOM_MINGW: 1
               DIST_REQUIRE_ALL_TOOLS: 1
             <<: *job-windows-xl
@@ -576,61 +722,23 @@ jobs:
           - name: dist-x86_64-msvc-alt
             env:
               RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --enable-extended --enable-profiler
-              SCRIPT: python x.py dist
+              SCRIPT: python x.py dist bootstrap --include-default-paths
             <<: *job-windows-xl
 
-  auto-fallible:
+  try:
+    permissions:
+      actions: write # for rust-lang/simpleinfra/github-actions/cancel-outdated-builds
     <<: *base-ci-job
-    name: auto-fallible
+    name: try
     env:
-      <<: [*shared-ci-variables, *dummy-variables]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/auto' && github.repository == 'rust-lang-ci/rust'
+      <<: [*shared-ci-variables, *prod-variables]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/try' || github.ref == 'refs/heads/try-perf') && github.repository == 'rust-lang-ci/rust'
     strategy:
-      fail-fast: false
       matrix:
         include:
-          #############################
-          #   Linux/Docker builders   #
-          #############################
-
-          - name: aarch64-gnu
-            <<: *job-aarch64-linux
-
-          ####################
-          #  macOS Builders  #
-          ####################
-
-          - name: dist-x86_64-apple
-            env:
-              SCRIPT: ./x.py dist
-              RUST_CONFIGURE_ARGS: --target=aarch64-apple-ios,x86_64-apple-ios --enable-full-tools --enable-sanitizers --enable-profiler --set rust.jemalloc
-              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
-              MACOSX_DEPLOYMENT_TARGET: 10.7
-              NO_LLVM_ASSERTIONS: 1
-              NO_DEBUG_ASSERTIONS: 1
-              DIST_REQUIRE_ALL_TOOLS: 1
-            <<: *job-macos-xl
-
-          - name: dist-x86_64-apple-alt
-            env:
-              SCRIPT: ./x.py dist
-              RUST_CONFIGURE_ARGS: --enable-extended --enable-profiler --set rust.jemalloc
-              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
-              MACOSX_DEPLOYMENT_TARGET: 10.7
-              NO_LLVM_ASSERTIONS: 1
-              NO_DEBUG_ASSERTIONS: 1
-            <<: *job-macos-xl
-
-          - name: x86_64-apple
-            env:
-              SCRIPT: ./x.py --stage 2 test
-              RUST_CONFIGURE_ARGS: --build=x86_64-apple-darwin --enable-sanitizers --enable-profiler --set rust.jemalloc
-              RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
-              MACOSX_DEPLOYMENT_TARGET: 10.8
-              MACOSX_STD_DEPLOYMENT_TARGET: 10.7
-              NO_LLVM_ASSERTIONS: 1
-              NO_DEBUG_ASSERTIONS: 1
-            <<: *job-macos-xl
+          - &dist-x86_64-linux
+            name: dist-x86_64-linux
+            <<: *job-linux-xl
 
   master:
     name: master
@@ -640,7 +748,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'rust-lang-ci/rust'
     steps:
       - name: checkout the source code
-        uses: actions/checkout@v1
+        uses: actions/checkout@v3
         with:
           fetch-depth: 2
 

@@ -1,5 +1,4 @@
 // run-rustfix
-// edition:2018
 #![warn(clippy::manual_async_fn)]
 #![allow(unused)]
 
@@ -7,7 +6,19 @@ use std::future::Future;
 
 async fn fut() -> i32 { 42 }
 
-async fn empty_fut()  {}
+#[rustfmt::skip]
+async fn fut2() -> i32 { 42 }
+
+#[rustfmt::skip]
+async fn fut3() -> i32 { 42 }
+
+async fn empty_fut() {}
+
+#[rustfmt::skip]
+async fn empty_fut2() {}
+
+#[rustfmt::skip]
+async fn empty_fut3() {}
 
 async fn core_fut() -> i32 { 42 }
 
@@ -27,7 +38,7 @@ async fn already_async() -> impl Future<Output = i32> {
     async { 42 }
 }
 
-struct S {}
+struct S;
 impl S {
     async fn inh_fut() -> i32 {
         // NOTE: this code is here just to check that the indentation is correct in the suggested fix

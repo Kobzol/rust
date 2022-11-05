@@ -126,7 +126,7 @@ fn test_format_int_exp_limits() {
 fn test_format_int_exp_precision() {
     //test that float and integer match
     let big_int: u32 = 314_159_265;
-    assert_eq!(format!("{:.1e}", big_int), format!("{:.1e}", f64::from(big_int)));
+    assert_eq!(format!("{big_int:.1e}"), format!("{:.1e}", f64::from(big_int)));
 
     //test adding precision
     assert_eq!(format!("{:.10e}", i8::MIN), "-1.2800000000e2");
@@ -146,6 +146,7 @@ fn test_format_int_exp_precision() {
     assert_eq!(format!("{:.1000e}", 1), format!("1.{}e0", "0".repeat(1000)));
     //test zero precision
     assert_eq!(format!("{:.0e}", 1), format!("1e0",));
+    assert_eq!(format!("{:.0e}", 35), format!("4e1",));
 
     //test padding with precision (and sign)
     assert_eq!(format!("{:+10.3e}", 1), "  +1.000e0");

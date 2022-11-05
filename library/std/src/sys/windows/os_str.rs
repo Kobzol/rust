@@ -1,6 +1,7 @@
 /// The underlying OsString/OsStr implementation on Windows is a
 /// wrapper around the "WTF-8" encoding; see the `wtf8` module for more.
 use crate::borrow::Cow;
+use crate::collections::TryReserveError;
 use crate::fmt;
 use crate::mem;
 use crate::rc::Rc;
@@ -43,6 +44,7 @@ impl fmt::Display for Buf {
     }
 }
 
+#[repr(transparent)]
 pub struct Slice {
     pub inner: Wtf8,
 }
@@ -77,14 +79,14 @@ impl Buf {
     }
 
     pub fn as_slice(&self) -> &Slice {
-        // Safety: Slice is just a wrapper for Wtf8,
+        // SAFETY: Slice is just a wrapper for Wtf8,
         // and self.inner.as_slice() returns &Wtf8.
         // Therefore, transmuting &Wtf8 to &Slice is safe.
         unsafe { mem::transmute(self.inner.as_slice()) }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut Slice {
-        // Safety: Slice is just a wrapper for Wtf8,
+        // SAFETY: Slice is just a wrapper for Wtf8,
         // and self.inner.as_mut_slice() returns &mut Wtf8.
         // Therefore, transmuting &mut Wtf8 to &mut Slice is safe.
         // Additionally, care should be taken to ensure the slice
@@ -104,8 +106,16 @@ impl Buf {
         self.inner.reserve(additional)
     }
 
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.inner.try_reserve(additional)
+    }
+
     pub fn reserve_exact(&mut self, additional: usize) {
         self.inner.reserve_exact(additional)
+    }
+
+    pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        self.inner.try_reserve_exact(additional)
     }
 
     pub fn shrink_to_fit(&mut self) {
@@ -154,9 +164,7 @@ impl Slice {
     }
 
     pub fn to_owned(&self) -> Buf {
-        let mut buf = Wtf8Buf::with_capacity(self.inner.len());
-        buf.push_wtf8(&self.inner);
-        Buf { inner: buf }
+        Buf { inner: self.inner.to_owned() }
     }
 
     pub fn clone_into(&self, buf: &mut Buf) {

@@ -1,5 +1,5 @@
 #![feature(type_alias_impl_trait)]
-
+// check-pass
 fn main() {}
 
 // two definitions with different types
@@ -9,10 +9,10 @@ fn foo() -> Foo {
     ""
 }
 
-fn bar() -> Foo { //~ ERROR concrete type differs from previous
+fn bar() -> Foo {
     panic!()
 }
 
-fn boo() -> Foo { //~ ERROR concrete type differs from previous
+fn boo() -> Foo {
     loop {}
 }

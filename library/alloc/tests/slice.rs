@@ -1,5 +1,7 @@
 use std::cell::Cell;
 use std::cmp::Ordering::{self, Equal, Greater, Less};
+use std::convert::identity;
+use std::fmt;
 use std::mem;
 use std::panic;
 use std::rc::Rc;
@@ -266,9 +268,9 @@ fn test_swap_remove_fail() {
 fn test_swap_remove_noncopyable() {
     // Tests that we don't accidentally run destructors twice.
     let mut v: Vec<Box<_>> = Vec::new();
-    v.push(box 0);
-    v.push(box 0);
-    v.push(box 0);
+    v.push(Box::new(0));
+    v.push(Box::new(0));
+    v.push(Box::new(0));
     let mut _e = v.swap_remove(0);
     assert_eq!(v.len(), 2);
     _e = v.swap_remove(1);
@@ -294,7 +296,7 @@ fn test_push() {
 
 #[test]
 fn test_truncate() {
-    let mut v: Vec<Box<_>> = vec![box 6, box 5, box 4];
+    let mut v: Vec<Box<_>> = vec![Box::new(6), Box::new(5), Box::new(4)];
     v.truncate(1);
     let v = v;
     assert_eq!(v.len(), 1);
@@ -304,7 +306,7 @@ fn test_truncate() {
 
 #[test]
 fn test_clear() {
-    let mut v: Vec<Box<_>> = vec![box 6, box 5, box 4];
+    let mut v: Vec<Box<_>> = vec![Box::new(6), Box::new(5), Box::new(4)];
     v.clear();
     assert_eq!(v.len(), 0);
     // If the unsafe block didn't drop things properly, we blow up here.
@@ -861,7 +863,7 @@ fn test_splitator_inclusive() {
     assert_eq!(xs.split_inclusive(|_| true).collect::<Vec<&[i32]>>(), splits);
 
     let xs: &[i32] = &[];
-    let splits: &[&[i32]] = &[&[]];
+    let splits: &[&[i32]] = &[];
     assert_eq!(xs.split_inclusive(|x| *x == 5).collect::<Vec<&[i32]>>(), splits);
 }
 
@@ -881,7 +883,7 @@ fn test_splitator_inclusive_reverse() {
     assert_eq!(xs.split_inclusive(|_| true).rev().collect::<Vec<_>>(), splits);
 
     let xs: &[i32] = &[];
-    let splits: &[&[i32]] = &[&[]];
+    let splits: &[&[i32]] = &[];
     assert_eq!(xs.split_inclusive(|x| *x == 5).rev().collect::<Vec<_>>(), splits);
 }
 
@@ -901,7 +903,7 @@ fn test_splitator_mut_inclusive() {
     assert_eq!(xs.split_inclusive_mut(|_| true).collect::<Vec<_>>(), splits);
 
     let xs: &mut [i32] = &mut [];
-    let splits: &[&[i32]] = &[&[]];
+    let splits: &[&[i32]] = &[];
     assert_eq!(xs.split_inclusive_mut(|x| *x == 5).collect::<Vec<_>>(), splits);
 }
 
@@ -921,7 +923,7 @@ fn test_splitator_mut_inclusive_reverse() {
     assert_eq!(xs.split_inclusive_mut(|_| true).rev().collect::<Vec<_>>(), splits);
 
     let xs: &mut [i32] = &mut [];
-    let splits: &[&[i32]] = &[&[]];
+    let splits: &[&[i32]] = &[];
     assert_eq!(xs.split_inclusive_mut(|x| *x == 5).rev().collect::<Vec<_>>(), splits);
 }
 
@@ -990,6 +992,66 @@ fn test_rsplitnator() {
     let splits: &[&[i32]] = &[&[]];
     assert_eq!(xs.rsplitn(2, |x| *x == 5).collect::<Vec<&[i32]>>(), splits);
     assert!(xs.rsplitn(0, |x| *x % 2 == 0).next().is_none());
+}
+
+#[test]
+fn test_split_iterators_size_hint() {
+    #[derive(Copy, Clone)]
+    enum Bounds {
+        Lower,
+        Upper,
+    }
+    fn assert_tight_size_hints(mut it: impl Iterator, which: Bounds, ctx: impl fmt::Display) {
+        match which {
+            Bounds::Lower => {
+                let mut lower_bounds = vec![it.size_hint().0];
+                while let Some(_) = it.next() {
+                    lower_bounds.push(it.size_hint().0);
+                }
+                let target: Vec<_> = (0..lower_bounds.len()).rev().collect();
+                assert_eq!(lower_bounds, target, "lower bounds incorrect or not tight: {}", ctx);
+            }
+            Bounds::Upper => {
+                let mut upper_bounds = vec![it.size_hint().1];
+                while let Some(_) = it.next() {
+                    upper_bounds.push(it.size_hint().1);
+                }
+                let target: Vec<_> = (0..upper_bounds.len()).map(Some).rev().collect();
+                assert_eq!(upper_bounds, target, "upper bounds incorrect or not tight: {}", ctx);
+            }
+        }
+    }
+
+    for len in 0..=2 {
+        let mut v: Vec<u8> = (0..len).collect();
+
+        // p: predicate, b: bound selection
+        for (p, b) in [
+            // with a predicate always returning false, the split*-iterators
+            // become maximally short, so the size_hint lower bounds are tight
+            ((|_| false) as fn(&_) -> _, Bounds::Lower),
+            // with a predicate always returning true, the split*-iterators
+            // become maximally long, so the size_hint upper bounds are tight
+            ((|_| true) as fn(&_) -> _, Bounds::Upper),
+        ] {
+            use assert_tight_size_hints as a;
+            use format_args as f;
+
+            a(v.split(p), b, "split");
+            a(v.split_mut(p), b, "split_mut");
+            a(v.split_inclusive(p), b, "split_inclusive");
+            a(v.split_inclusive_mut(p), b, "split_inclusive_mut");
+            a(v.rsplit(p), b, "rsplit");
+            a(v.rsplit_mut(p), b, "rsplit_mut");
+
+            for n in 0..=3 {
+                a(v.splitn(n, p), b, f!("splitn, n = {n}"));
+                a(v.splitn_mut(n, p), b, f!("splitn_mut, n = {n}"));
+                a(v.rsplitn(n, p), b, f!("rsplitn, n = {n}"));
+                a(v.rsplitn_mut(n, p), b, f!("rsplitn_mut, n = {n}"));
+            }
+        }
+    }
 }
 
 #[test]
@@ -1122,8 +1184,8 @@ fn test_show() {
     macro_rules! test_show_vec {
         ($x:expr, $x_str:expr) => {{
             let (x, x_str) = ($x, $x_str);
-            assert_eq!(format!("{:?}", x), x_str);
-            assert_eq!(format!("{:?}", x), x_str);
+            assert_eq!(format!("{x:?}"), x_str);
+            assert_eq!(format!("{x:?}"), x_str);
         }};
     }
     let empty = Vec::<i32>::new();
@@ -1454,9 +1516,18 @@ fn test_mut_last() {
 
 #[test]
 fn test_to_vec() {
-    let xs: Box<_> = box [1, 2, 3];
+    let xs: Box<_> = Box::new([1, 2, 3]);
     let ys = xs.to_vec();
     assert_eq!(ys, [1, 2, 3]);
+}
+
+#[test]
+fn test_in_place_iterator_specialization() {
+    let src: Box<[usize]> = Box::new([1, 2, 3]);
+    let src_ptr = src.as_ptr();
+    let sink: Box<_> = src.into_vec().into_iter().map(std::convert::identity).collect();
+    let sink_ptr = sink.as_ptr();
+    assert_eq!(src_ptr, sink_ptr);
 }
 
 #[test]
@@ -1712,12 +1783,11 @@ thread_local!(static SILENCE_PANIC: Cell<bool> = Cell::new(false));
 #[test]
 #[cfg_attr(target_os = "emscripten", ignore)] // no threads
 fn panic_safe() {
-    let prev = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
+    panic::update_hook(move |prev, info| {
         if !SILENCE_PANIC.with(|s| s.get()) {
             prev(info);
         }
-    }));
+    });
 
     let mut rng = thread_rng();
 
@@ -1768,4 +1838,181 @@ fn repeat_generic_slice() {
     assert_eq!([1, 2, 3, 4].repeat(0), vec![]);
     assert_eq!([1, 2, 3, 4].repeat(1), vec![1, 2, 3, 4]);
     assert_eq!([1, 2, 3, 4].repeat(3), vec![1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4]);
+}
+
+#[test]
+#[allow(unreachable_patterns)]
+fn subslice_patterns() {
+    // This test comprehensively checks the passing static and dynamic semantics
+    // of subslice patterns `..`, `x @ ..`, `ref x @ ..`, and `ref mut @ ..`
+    // in slice patterns `[$($pat), $(,)?]` .
+
+    #[derive(PartialEq, Debug, Clone)]
+    struct N(u8);
+
+    macro_rules! n {
+        ($($e:expr),* $(,)?) => {
+            [$(N($e)),*]
+        }
+    }
+
+    macro_rules! c {
+        ($inp:expr, $typ:ty, $out:expr $(,)?) => {
+            assert_eq!($out, identity::<$typ>($inp))
+        };
+    }
+
+    macro_rules! m {
+        ($e:expr, $p:pat => $b:expr) => {
+            match $e {
+                $p => $b,
+                _ => panic!(),
+            }
+        };
+    }
+
+    // == Slices ==
+
+    // Matching slices using `ref` patterns:
+    let mut v = vec![N(0), N(1), N(2), N(3), N(4)];
+    let mut vc = (0..=4).collect::<Vec<u8>>();
+
+    let [..] = v[..]; // Always matches.
+    m!(v[..], [N(0), ref sub @ .., N(4)] => c!(sub, &[N], n![1, 2, 3]));
+    m!(v[..], [N(0), ref sub @ ..] => c!(sub, &[N], n![1, 2, 3, 4]));
+    m!(v[..], [ref sub @ .., N(4)] => c!(sub, &[N], n![0, 1, 2, 3]));
+    m!(v[..], [ref sub @ .., _, _, _, _, _] => c!(sub, &[N], &n![] as &[N]));
+    m!(v[..], [_, _, _, _, _, ref sub @ ..] => c!(sub, &[N], &n![] as &[N]));
+    m!(vc[..], [x, .., y] => c!((x, y), (u8, u8), (0, 4)));
+
+    // Matching slices using `ref mut` patterns:
+    let [..] = v[..]; // Always matches.
+    m!(v[..], [N(0), ref mut sub @ .., N(4)] => c!(sub, &mut [N], n![1, 2, 3]));
+    m!(v[..], [N(0), ref mut sub @ ..] => c!(sub, &mut [N], n![1, 2, 3, 4]));
+    m!(v[..], [ref mut sub @ .., N(4)] => c!(sub, &mut [N], n![0, 1, 2, 3]));
+    m!(v[..], [ref mut sub @ .., _, _, _, _, _] => c!(sub, &mut [N], &mut n![] as &mut [N]));
+    m!(v[..], [_, _, _, _, _, ref mut sub @ ..] => c!(sub, &mut [N], &mut n![] as &mut [N]));
+    m!(vc[..], [x, .., y] => c!((x, y), (u8, u8), (0, 4)));
+
+    // Matching slices using default binding modes (&):
+    let [..] = &v[..]; // Always matches.
+    m!(&v[..], [N(0), sub @ .., N(4)] => c!(sub, &[N], n![1, 2, 3]));
+    m!(&v[..], [N(0), sub @ ..] => c!(sub, &[N], n![1, 2, 3, 4]));
+    m!(&v[..], [sub @ .., N(4)] => c!(sub, &[N], n![0, 1, 2, 3]));
+    m!(&v[..], [sub @ .., _, _, _, _, _] => c!(sub, &[N], &n![] as &[N]));
+    m!(&v[..], [_, _, _, _, _, sub @ ..] => c!(sub, &[N], &n![] as &[N]));
+    m!(&vc[..], [x, .., y] => c!((x, y), (&u8, &u8), (&0, &4)));
+
+    // Matching slices using default binding modes (&mut):
+    let [..] = &mut v[..]; // Always matches.
+    m!(&mut v[..], [N(0), sub @ .., N(4)] => c!(sub, &mut [N], n![1, 2, 3]));
+    m!(&mut v[..], [N(0), sub @ ..] => c!(sub, &mut [N], n![1, 2, 3, 4]));
+    m!(&mut v[..], [sub @ .., N(4)] => c!(sub, &mut [N], n![0, 1, 2, 3]));
+    m!(&mut v[..], [sub @ .., _, _, _, _, _] => c!(sub, &mut [N], &mut n![] as &mut [N]));
+    m!(&mut v[..], [_, _, _, _, _, sub @ ..] => c!(sub, &mut [N], &mut n![] as &mut [N]));
+    m!(&mut vc[..], [x, .., y] => c!((x, y), (&mut u8, &mut u8), (&mut 0, &mut 4)));
+
+    // == Arrays ==
+    let mut v = n![0, 1, 2, 3, 4];
+    let vc = [0, 1, 2, 3, 4];
+
+    // Matching arrays by value:
+    m!(v.clone(), [N(0), sub @ .., N(4)] => c!(sub, [N; 3], n![1, 2, 3]));
+    m!(v.clone(), [N(0), sub @ ..] => c!(sub, [N; 4], n![1, 2, 3, 4]));
+    m!(v.clone(), [sub @ .., N(4)] => c!(sub, [N; 4], n![0, 1, 2, 3]));
+    m!(v.clone(), [sub @ .., _, _, _, _, _] => c!(sub, [N; 0], n![] as [N; 0]));
+    m!(v.clone(), [_, _, _, _, _, sub @ ..] => c!(sub, [N; 0], n![] as [N; 0]));
+    m!(v.clone(), [x, .., y] => c!((x, y), (N, N), (N(0), N(4))));
+    m!(v.clone(), [..] => ());
+
+    // Matching arrays by ref patterns:
+    m!(v, [N(0), ref sub @ .., N(4)] => c!(sub, &[N; 3], &n![1, 2, 3]));
+    m!(v, [N(0), ref sub @ ..] => c!(sub, &[N; 4], &n![1, 2, 3, 4]));
+    m!(v, [ref sub @ .., N(4)] => c!(sub, &[N; 4], &n![0, 1, 2, 3]));
+    m!(v, [ref sub @ .., _, _, _, _, _] => c!(sub, &[N; 0], &n![] as &[N; 0]));
+    m!(v, [_, _, _, _, _, ref sub @ ..] => c!(sub, &[N; 0], &n![] as &[N; 0]));
+    m!(vc, [x, .., y] => c!((x, y), (u8, u8), (0, 4)));
+
+    // Matching arrays by ref mut patterns:
+    m!(v, [N(0), ref mut sub @ .., N(4)] => c!(sub, &mut [N; 3], &mut n![1, 2, 3]));
+    m!(v, [N(0), ref mut sub @ ..] => c!(sub, &mut [N; 4], &mut n![1, 2, 3, 4]));
+    m!(v, [ref mut sub @ .., N(4)] => c!(sub, &mut [N; 4], &mut n![0, 1, 2, 3]));
+    m!(v, [ref mut sub @ .., _, _, _, _, _] => c!(sub, &mut [N; 0], &mut n![] as &mut [N; 0]));
+    m!(v, [_, _, _, _, _, ref mut sub @ ..] => c!(sub, &mut [N; 0], &mut n![] as &mut [N; 0]));
+
+    // Matching arrays by default binding modes (&):
+    m!(&v, [N(0), sub @ .., N(4)] => c!(sub, &[N; 3], &n![1, 2, 3]));
+    m!(&v, [N(0), sub @ ..] => c!(sub, &[N; 4], &n![1, 2, 3, 4]));
+    m!(&v, [sub @ .., N(4)] => c!(sub, &[N; 4], &n![0, 1, 2, 3]));
+    m!(&v, [sub @ .., _, _, _, _, _] => c!(sub, &[N; 0], &n![] as &[N; 0]));
+    m!(&v, [_, _, _, _, _, sub @ ..] => c!(sub, &[N; 0], &n![] as &[N; 0]));
+    m!(&v, [..] => ());
+    m!(&v, [x, .., y] => c!((x, y), (&N, &N), (&N(0), &N(4))));
+
+    // Matching arrays by default binding modes (&mut):
+    m!(&mut v, [N(0), sub @ .., N(4)] => c!(sub, &mut [N; 3], &mut n![1, 2, 3]));
+    m!(&mut v, [N(0), sub @ ..] => c!(sub, &mut [N; 4], &mut n![1, 2, 3, 4]));
+    m!(&mut v, [sub @ .., N(4)] => c!(sub, &mut [N; 4], &mut n![0, 1, 2, 3]));
+    m!(&mut v, [sub @ .., _, _, _, _, _] => c!(sub, &mut [N; 0], &mut n![] as &[N; 0]));
+    m!(&mut v, [_, _, _, _, _, sub @ ..] => c!(sub, &mut [N; 0], &mut n![] as &[N; 0]));
+    m!(&mut v, [..] => ());
+    m!(&mut v, [x, .., y] => c!((x, y), (&mut N, &mut N), (&mut N(0), &mut N(4))));
+}
+
+#[test]
+fn test_group_by() {
+    let slice = &[1, 1, 1, 3, 3, 2, 2, 2, 1, 0];
+
+    let mut iter = slice.group_by(|a, b| a == b);
+    assert_eq!(iter.next(), Some(&[1, 1, 1][..]));
+    assert_eq!(iter.next(), Some(&[3, 3][..]));
+    assert_eq!(iter.next(), Some(&[2, 2, 2][..]));
+    assert_eq!(iter.next(), Some(&[1][..]));
+    assert_eq!(iter.next(), Some(&[0][..]));
+    assert_eq!(iter.next(), None);
+
+    let mut iter = slice.group_by(|a, b| a == b);
+    assert_eq!(iter.next_back(), Some(&[0][..]));
+    assert_eq!(iter.next_back(), Some(&[1][..]));
+    assert_eq!(iter.next_back(), Some(&[2, 2, 2][..]));
+    assert_eq!(iter.next_back(), Some(&[3, 3][..]));
+    assert_eq!(iter.next_back(), Some(&[1, 1, 1][..]));
+    assert_eq!(iter.next_back(), None);
+
+    let mut iter = slice.group_by(|a, b| a == b);
+    assert_eq!(iter.next(), Some(&[1, 1, 1][..]));
+    assert_eq!(iter.next_back(), Some(&[0][..]));
+    assert_eq!(iter.next(), Some(&[3, 3][..]));
+    assert_eq!(iter.next_back(), Some(&[1][..]));
+    assert_eq!(iter.next(), Some(&[2, 2, 2][..]));
+    assert_eq!(iter.next_back(), None);
+}
+
+#[test]
+fn test_group_by_mut() {
+    let slice = &mut [1, 1, 1, 3, 3, 2, 2, 2, 1, 0];
+
+    let mut iter = slice.group_by_mut(|a, b| a == b);
+    assert_eq!(iter.next(), Some(&mut [1, 1, 1][..]));
+    assert_eq!(iter.next(), Some(&mut [3, 3][..]));
+    assert_eq!(iter.next(), Some(&mut [2, 2, 2][..]));
+    assert_eq!(iter.next(), Some(&mut [1][..]));
+    assert_eq!(iter.next(), Some(&mut [0][..]));
+    assert_eq!(iter.next(), None);
+
+    let mut iter = slice.group_by_mut(|a, b| a == b);
+    assert_eq!(iter.next_back(), Some(&mut [0][..]));
+    assert_eq!(iter.next_back(), Some(&mut [1][..]));
+    assert_eq!(iter.next_back(), Some(&mut [2, 2, 2][..]));
+    assert_eq!(iter.next_back(), Some(&mut [3, 3][..]));
+    assert_eq!(iter.next_back(), Some(&mut [1, 1, 1][..]));
+    assert_eq!(iter.next_back(), None);
+
+    let mut iter = slice.group_by_mut(|a, b| a == b);
+    assert_eq!(iter.next(), Some(&mut [1, 1, 1][..]));
+    assert_eq!(iter.next_back(), Some(&mut [0][..]));
+    assert_eq!(iter.next(), Some(&mut [3, 3][..]));
+    assert_eq!(iter.next_back(), Some(&mut [1][..]));
+    assert_eq!(iter.next(), Some(&mut [2, 2, 2][..]));
+    assert_eq!(iter.next_back(), None);
 }

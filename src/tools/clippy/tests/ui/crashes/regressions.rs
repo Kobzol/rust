@@ -1,6 +1,4 @@
-// run-pass
-
-#![allow(clippy::blacklisted_name)]
+#![allow(clippy::disallowed_names)]
 
 pub fn foo(bar: *const u8) {
     println!("{:#p}", bar);
@@ -8,6 +6,6 @@ pub fn foo(bar: *const u8) {
 
 // Regression test for https://github.com/rust-lang/rust-clippy/issues/4917
 /// <foo
-struct A {}
+struct A;
 
 fn main() {}

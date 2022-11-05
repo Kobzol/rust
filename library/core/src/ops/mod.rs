@@ -49,18 +49,18 @@
 //! }
 //!
 //! impl Add for Point {
-//!     type Output = Point;
+//!     type Output = Self;
 //!
-//!     fn add(self, other: Point) -> Point {
-//!         Point {x: self.x + other.x, y: self.y + other.y}
+//!     fn add(self, other: Self) -> Self {
+//!         Self {x: self.x + other.x, y: self.y + other.y}
 //!     }
 //! }
 //!
 //! impl Sub for Point {
-//!     type Output = Point;
+//!     type Output = Self;
 //!
-//!     fn sub(self, other: Point) -> Point {
-//!         Point {x: self.x - other.x, y: self.y - other.y}
+//!     fn sub(self, other: Self) -> Self {
+//!         Self {x: self.x - other.x, y: self.y - other.y}
 //!     }
 //! }
 //!
@@ -140,13 +140,15 @@
 
 mod arith;
 mod bit;
+mod control_flow;
 mod deref;
 mod drop;
 mod function;
 mod generator;
 mod index;
+mod index_range;
 mod range;
-mod r#try;
+mod try_trait;
 mod unsize;
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -177,11 +179,24 @@ pub use self::index::{Index, IndexMut};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::range::{Range, RangeFrom, RangeFull, RangeTo};
 
+pub(crate) use self::index_range::IndexRange;
+
 #[stable(feature = "inclusive_range", since = "1.26.0")]
 pub use self::range::{Bound, RangeBounds, RangeInclusive, RangeToInclusive};
 
-#[unstable(feature = "try_trait", issue = "42327")]
-pub use self::r#try::Try;
+#[unstable(feature = "one_sided_range", issue = "69780")]
+pub use self::range::OneSidedRange;
+
+#[unstable(feature = "try_trait_v2", issue = "84277")]
+pub use self::try_trait::{FromResidual, Try};
+
+#[unstable(feature = "try_trait_v2_yeet", issue = "96374")]
+pub use self::try_trait::Yeet;
+
+#[unstable(feature = "try_trait_v2_residual", issue = "91285")]
+pub use self::try_trait::Residual;
+
+pub(crate) use self::try_trait::{ChangeOutputType, NeverShortCircuit};
 
 #[unstable(feature = "generator_trait", issue = "43122")]
 pub use self::generator::{Generator, GeneratorState};
@@ -191,3 +206,6 @@ pub use self::unsize::CoerceUnsized;
 
 #[unstable(feature = "dispatch_from_dyn", issue = "none")]
 pub use self::unsize::DispatchFromDyn;
+
+#[unstable(feature = "control_flow_enum", reason = "new API", issue = "75744")]
+pub use self::control_flow::ControlFlow;

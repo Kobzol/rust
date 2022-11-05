@@ -60,21 +60,28 @@
 #[doc(alias = "*")]
 #[doc(alias = "&*")]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_diagnostic_item = "Deref"]
+#[cfg_attr(not(bootstrap), const_trait)]
 pub trait Deref {
     /// The resulting type after dereferencing.
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_diagnostic_item = "deref_target"]
+    #[lang = "deref_target"]
     type Target: ?Sized;
 
     /// Dereferences the value.
     #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_diagnostic_item = "deref_method"]
     fn deref(&self) -> &Self::Target;
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: ?Sized> Deref for &T {
+#[rustc_const_unstable(feature = "const_deref", issue = "88955")]
+impl<T: ?Sized> const Deref for &T {
     type Target = T;
 
+    #[rustc_diagnostic_item = "noop_method_deref"]
     fn deref(&self) -> &T {
         *self
     }
@@ -84,7 +91,8 @@ impl<T: ?Sized> Deref for &T {
 impl<T: ?Sized> !DerefMut for &T {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: ?Sized> Deref for &mut T {
+#[rustc_const_unstable(feature = "const_deref", issue = "88955")]
+impl<T: ?Sized> const Deref for &mut T {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -157,11 +165,12 @@ impl<T: ?Sized> Deref for &mut T {
 ///
 /// let mut x = DerefMutExample { value: 'a' };
 /// *x = 'b';
-/// assert_eq!('b', *x);
+/// assert_eq!('b', x.value);
 /// ```
 #[lang = "deref_mut"]
 #[doc(alias = "*")]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[const_trait]
 pub trait DerefMut: Deref {
     /// Mutably dereferences the value.
     #[stable(feature = "rust1", since = "1.0.0")]

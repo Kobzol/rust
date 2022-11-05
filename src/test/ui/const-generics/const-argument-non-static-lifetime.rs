@@ -1,8 +1,10 @@
-// run-pass
-// revisions: full
-// FIXME(#75323) Omitted min revision for now due to ICE.
+// [full] check-pass
+// revisions: full min
 
-#![cfg_attr(full, feature(const_generics))]
+// regression test for #78180
+// compile-flags: -Zsave-analysis
+
+#![cfg_attr(full, feature(generic_const_exprs))]
 #![cfg_attr(full, allow(incomplete_features))]
 #![allow(dead_code)]
 
@@ -10,7 +12,7 @@ fn test<const N: usize>() {}
 
 fn wow<'a>() -> &'a () {
     test::<{
-        let _: &'a ();
+        let _: &'a (); //[min]~ ERROR a non-static lifetime
         3
     }>();
     &()

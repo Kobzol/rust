@@ -65,7 +65,7 @@ impl io::Write for Stderr {
 pub const STDIN_BUF_SIZE: usize = crate::sys_common::io::DEFAULT_BUF_SIZE;
 
 pub fn is_ebadf(err: &io::Error) -> bool {
-    // FIXME: Rust normally maps Unix EBADF to `Other`
+    // FIXME: Rust normally maps Unix EBADF to `Uncategorized`
     err.raw_os_error() == Some(abi::Error::BrokenPipe as _)
 }
 
@@ -81,8 +81,8 @@ pub unsafe extern "C" fn __rust_print_err(m: *mut u8, s: i32) {
     if s < 0 {
         return;
     }
-    let buf = slice::from_raw_parts(m as *const u8, s as _);
+    let buf = unsafe { slice::from_raw_parts(m as *const u8, s as _) };
     if let Ok(s) = str::from_utf8(&buf[..buf.iter().position(|&b| b == 0).unwrap_or(buf.len())]) {
-        eprint!("{}", s);
+        eprint!("{s}");
     }
 }

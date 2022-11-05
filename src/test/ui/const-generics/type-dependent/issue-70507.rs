@@ -1,6 +1,4 @@
 // run-pass
-#![feature(const_generics)]
-#![allow(incomplete_features)]
 
 trait ConstChunksExactTrait<T> {
     fn const_chunks_exact<const N: usize>(&self) -> ConstChunksExact<'_, T, {N}>;

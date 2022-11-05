@@ -4,7 +4,7 @@
 extern crate impl_trait_aux;
 
 // @has impl_trait/fn.func.html
-// @has - '//pre[@class="rust fn"]' "pub fn func<'a>(_x: impl Clone + Into<Vec<u8>> + 'a)"
+// @has - '//pre[@class="rust fn"]' "pub fn func<'a>(_x: impl Clone + Into<Vec<u8, Global>> + 'a)"
 // @!has - '//pre[@class="rust fn"]' 'where'
 pub use impl_trait_aux::func;
 
@@ -17,7 +17,7 @@ pub use impl_trait_aux::func2;
 
 // @has impl_trait/fn.func3.html
 // @has - '//pre[@class="rust fn"]' "func3("
-// @has - '//pre[@class="rust fn"]' "_x: impl Clone + Iterator<Item = impl Iterator<Item = u8>>)"
+// @has - '//pre[@class="rust fn"]' "_x: impl Iterator<Item = impl Iterator<Item = u8>> + Clone)"
 // @!has - '//pre[@class="rust fn"]' 'where'
 pub use impl_trait_aux::func3;
 
@@ -31,8 +31,8 @@ pub use impl_trait_aux::func4;
 pub use impl_trait_aux::async_fn;
 
 // @has impl_trait/struct.Foo.html
-// @has - '//*[@id="method.method"]//code' "pub fn method<'a>(_x: impl Clone + Into<Vec<u8>> + 'a)"
-// @!has - '//*[@id="method.method"]//code' 'where'
+// @has - '//*[@id="method.method"]//h4[@class="code-header"]' "pub fn method<'a>(_x: impl Clone + Into<Vec<u8, Global>> + 'a)"
+// @!has - '//*[@id="method.method"]//h4[@class="code-header"]' 'where'
 pub use impl_trait_aux::Foo;
 
 // @has impl_trait/struct.Bar.html

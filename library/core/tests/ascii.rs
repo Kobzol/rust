@@ -115,7 +115,7 @@ fn test_eq_ignore_ascii_case() {
 #[test]
 fn inference_works() {
     let x = "a".to_string();
-    x.eq_ignore_ascii_case("A");
+    let _ = x.eq_ignore_ascii_case("A");
 }
 
 // Shorthands used by the is_ascii_* tests.
@@ -395,5 +395,69 @@ fn test_is_ascii_align_size_thoroughly() {
                 assert_eq!(is_ascii_baseline(mid), mid.is_ascii(),);
             }
         }
+    }
+}
+
+#[test]
+fn ascii_const() {
+    // test that the `is_ascii` methods of `char` and `u8` are usable in a const context
+
+    const CHAR_IS_ASCII: bool = 'a'.is_ascii();
+    assert!(CHAR_IS_ASCII);
+
+    const BYTE_IS_ASCII: bool = 97u8.is_ascii();
+    assert!(BYTE_IS_ASCII);
+}
+
+#[test]
+fn ascii_ctype_const() {
+    macro_rules! suite {
+        ( $( $fn:ident => [$a:ident, $A:ident, $nine:ident, $dot:ident, $space:ident]; )* ) => {
+            $(
+                mod $fn {
+                    const CHAR_A_LOWER: bool = 'a'.$fn();
+                    const CHAR_A_UPPER: bool = 'A'.$fn();
+                    const CHAR_NINE: bool = '9'.$fn();
+                    const CHAR_DOT: bool = '.'.$fn();
+                    const CHAR_SPACE: bool = ' '.$fn();
+
+                    const U8_A_LOWER: bool = b'a'.$fn();
+                    const U8_A_UPPER: bool = b'A'.$fn();
+                    const U8_NINE: bool = b'9'.$fn();
+                    const U8_DOT: bool = b'.'.$fn();
+                    const U8_SPACE: bool = b' '.$fn();
+
+                    pub fn run() {
+                        assert_eq!(CHAR_A_LOWER, $a);
+                        assert_eq!(CHAR_A_UPPER, $A);
+                        assert_eq!(CHAR_NINE, $nine);
+                        assert_eq!(CHAR_DOT, $dot);
+                        assert_eq!(CHAR_SPACE, $space);
+
+                        assert_eq!(U8_A_LOWER, $a);
+                        assert_eq!(U8_A_UPPER, $A);
+                        assert_eq!(U8_NINE, $nine);
+                        assert_eq!(U8_DOT, $dot);
+                        assert_eq!(U8_SPACE, $space);
+                    }
+                }
+            )*
+
+            $( $fn::run(); )*
+        }
+    }
+
+    suite! {
+        //                        'a'    'A'    '9'    '.'    ' '
+        is_ascii_alphabetic   => [true,  true,  false, false, false];
+        is_ascii_uppercase    => [false, true,  false, false, false];
+        is_ascii_lowercase    => [true,  false, false, false, false];
+        is_ascii_alphanumeric => [true,  true,  true,  false, false];
+        is_ascii_digit        => [false, false, true,  false, false];
+        is_ascii_hexdigit     => [true,  true,  true,  false, false];
+        is_ascii_punctuation  => [false, false, false, true,  false];
+        is_ascii_graphic      => [true,  true,  true,  true,  false];
+        is_ascii_whitespace   => [false, false, false, false, true];
+        is_ascii_control      => [false, false, false, false, false];
     }
 }

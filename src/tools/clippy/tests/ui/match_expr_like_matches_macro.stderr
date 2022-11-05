@@ -48,5 +48,90 @@ error: if let .. else expression looks like `matches!` macro
 LL |     let _zzz = if let Some(5) = x { true } else { false };
    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try this: `matches!(x, Some(5))`
 
-error: aborting due to 5 previous errors
+error: match expression looks like `matches!` macro
+  --> $DIR/match_expr_like_matches_macro.rs:58:20
+   |
+LL |           let _ans = match x {
+   |  ____________________^
+LL | |             E::A(_) => true,
+LL | |             E::B(_) => true,
+LL | |             _ => false,
+LL | |         };
+   | |_________^ help: try this: `matches!(x, E::A(_) | E::B(_))`
+
+error: match expression looks like `matches!` macro
+  --> $DIR/match_expr_like_matches_macro.rs:68:20
+   |
+LL |           let _ans = match x {
+   |  ____________________^
+LL | |             E::A(_) => {
+LL | |                 true
+LL | |             }
+LL | |             E::B(_) => true,
+LL | |             _ => false,
+LL | |         };
+   | |_________^ help: try this: `matches!(x, E::A(_) | E::B(_))`
+
+error: match expression looks like `matches!` macro
+  --> $DIR/match_expr_like_matches_macro.rs:78:20
+   |
+LL |           let _ans = match x {
+   |  ____________________^
+LL | |             E::B(_) => false,
+LL | |             E::C => false,
+LL | |             _ => true,
+LL | |         };
+   | |_________^ help: try this: `!matches!(x, E::B(_) | E::C)`
+
+error: match expression looks like `matches!` macro
+  --> $DIR/match_expr_like_matches_macro.rs:138:18
+   |
+LL |           let _z = match &z {
+   |  __________________^
+LL | |             Some(3) => true,
+LL | |             _ => false,
+LL | |         };
+   | |_________^ help: try this: `matches!(z, Some(3))`
+
+error: match expression looks like `matches!` macro
+  --> $DIR/match_expr_like_matches_macro.rs:147:18
+   |
+LL |           let _z = match &z {
+   |  __________________^
+LL | |             Some(3) => true,
+LL | |             _ => false,
+LL | |         };
+   | |_________^ help: try this: `matches!(&z, Some(3))`
+
+error: match expression looks like `matches!` macro
+  --> $DIR/match_expr_like_matches_macro.rs:164:21
+   |
+LL |               let _ = match &z {
+   |  _____________________^
+LL | |                 AnEnum::X => true,
+LL | |                 _ => false,
+LL | |             };
+   | |_____________^ help: try this: `matches!(&z, AnEnum::X)`
+
+error: match expression looks like `matches!` macro
+  --> $DIR/match_expr_like_matches_macro.rs:178:20
+   |
+LL |           let _res = match &val {
+   |  ____________________^
+LL | |             &Some(ref _a) => true,
+LL | |             _ => false,
+LL | |         };
+   | |_________^ help: try this: `matches!(&val, &Some(ref _a))`
+
+error: match expression looks like `matches!` macro
+  --> $DIR/match_expr_like_matches_macro.rs:190:20
+   |
+LL |           let _res = match &val {
+   |  ____________________^
+LL | |             &Some(ref _a) => true,
+LL | |             _ => false,
+LL | |         };
+   | |_________^ help: try this: `matches!(&val, &Some(ref _a))`
+
+error: aborting due to 13 previous errors
 

@@ -1,4 +1,3 @@
-use core::array::FixedSizeArray;
 use core::ops::DerefMut;
 use core::option::*;
 
@@ -70,7 +69,7 @@ fn test_collect() {
 
     // test that it does not take more elements than it needs
     let mut functions: [Box<dyn Fn() -> Result<(), isize>>; 3] =
-        [box || Ok(()), box || Err(1), box || panic!()];
+        [Box::new(|| Ok(())), Box::new(|| Err(1)), Box::new(|| panic!())];
 
     let v: Result<Vec<()>, isize> = functions.iter_mut().map(|f| (*f)()).collect();
     assert!(v == Err(1));
@@ -81,9 +80,9 @@ fn test_fmt_default() {
     let ok: Result<isize, &'static str> = Ok(100);
     let err: Result<isize, &'static str> = Err("Err");
 
-    let s = format!("{:?}", ok);
+    let s = format!("{ok:?}");
     assert_eq!(s, "Ok(100)");
-    let s = format!("{:?}", err);
+    let s = format!("{err:?}");
     assert_eq!(s, "Err(\"Err\")");
 }
 
@@ -118,6 +117,18 @@ pub fn test_unwrap_or_else_panic() {
 
     let bad_err: Result<isize, &'static str> = Err("Unrecoverable mess.");
     let _: isize = bad_err.unwrap_or_else(handler);
+}
+
+#[test]
+fn test_unwrap_unchecked() {
+    let ok: Result<isize, &'static str> = Ok(100);
+    assert_eq!(unsafe { ok.unwrap_unchecked() }, 100);
+}
+
+#[test]
+fn test_unwrap_err_unchecked() {
+    let ok_err: Result<isize, &'static str> = Err("Err");
+    assert_eq!(unsafe { ok_err.unwrap_err_unchecked() }, "Err");
 }
 
 #[test]
@@ -206,27 +217,37 @@ pub fn test_into_ok() {
 }
 
 #[test]
+pub fn test_into_err() {
+    fn until_error_op() -> Result<!, isize> {
+        Err(666)
+    }
+
+    assert_eq!(until_error_op().into_err(), 666);
+
+    enum MyNeverToken {}
+    impl From<MyNeverToken> for ! {
+        fn from(never: MyNeverToken) -> ! {
+            match never {}
+        }
+    }
+
+    fn until_error_op2() -> Result<MyNeverToken, isize> {
+        Err(667)
+    }
+
+    assert_eq!(until_error_op2().into_err(), 667);
+}
+
+#[test]
 fn test_try() {
-    fn try_result_some() -> Option<u8> {
-        let val = Ok(1)?;
-        Some(val)
-    }
-    assert_eq!(try_result_some(), Some(1));
-
-    fn try_result_none() -> Option<u8> {
-        let val = Err(NoneError)?;
-        Some(val)
-    }
-    assert_eq!(try_result_none(), None);
-
-    fn try_result_ok() -> Result<u8, u8> {
+    fn try_result_ok() -> Result<u8, u32> {
         let result: Result<u8, u8> = Ok(1);
         let val = result?;
         Ok(val)
     }
     assert_eq!(try_result_ok(), Ok(1));
 
-    fn try_result_err() -> Result<u8, u8> {
+    fn try_result_err() -> Result<u8, u32> {
         let result: Result<u8, u8> = Err(1);
         let val = result?;
         Ok(val)
@@ -304,4 +325,94 @@ fn test_result_as_deref_mut() {
     let mut_err = &mut Result::Err::<&mut u32, Vec<i32>>(expected_vec.clone());
     let expected_result = Result::Err::<&mut u32, &mut Vec<i32>>(&mut expected_vec);
     assert_eq!(mut_err.as_deref_mut(), expected_result);
+}
+
+#[test]
+fn result_const() {
+    // test that the methods of `Result` are usable in a const context
+
+    const RESULT: Result<usize, bool> = Ok(32);
+
+    const REF: Result<&usize, &bool> = RESULT.as_ref();
+    assert_eq!(REF, Ok(&32));
+
+    const IS_OK: bool = RESULT.is_ok();
+    assert!(IS_OK);
+
+    const IS_ERR: bool = RESULT.is_err();
+    assert!(!IS_ERR)
+}
+
+#[test]
+const fn result_const_mut() {
+    let mut result: Result<usize, bool> = Ok(32);
+
+    {
+        let as_mut = result.as_mut();
+        match as_mut {
+            Ok(v) => *v = 42,
+            Err(_) => unreachable!(),
+        }
+    }
+
+    let mut result_err: Result<usize, bool> = Err(false);
+
+    {
+        let as_mut = result_err.as_mut();
+        match as_mut {
+            Ok(_) => unreachable!(),
+            Err(v) => *v = true,
+        }
+    }
+}
+
+#[test]
+fn result_opt_conversions() {
+    #[derive(Copy, Clone, Debug, PartialEq)]
+    struct BadNumErr;
+
+    fn try_num(x: i32) -> Result<i32, BadNumErr> {
+        if x <= 5 { Ok(x + 1) } else { Err(BadNumErr) }
+    }
+
+    type ResOpt = Result<Option<i32>, BadNumErr>;
+    type OptRes = Option<Result<i32, BadNumErr>>;
+
+    let mut x: ResOpt = Ok(Some(5));
+    let mut y: OptRes = Some(Ok(5));
+    assert_eq!(x, y.transpose());
+    assert_eq!(x.transpose(), y);
+
+    x = Ok(None);
+    y = None;
+    assert_eq!(x, y.transpose());
+    assert_eq!(x.transpose(), y);
+
+    x = Err(BadNumErr);
+    y = Some(Err(BadNumErr));
+    assert_eq!(x, y.transpose());
+    assert_eq!(x.transpose(), y);
+
+    let res: Result<Vec<i32>, BadNumErr> = (0..10)
+        .map(|x| {
+            let y = try_num(x)?;
+            Ok(if y % 2 == 0 { Some(y - 1) } else { None })
+        })
+        .filter_map(Result::transpose)
+        .collect();
+
+    assert_eq!(res, Err(BadNumErr))
+}
+
+#[test]
+fn result_try_trait_v2_branch() {
+    use core::num::NonZeroU32;
+    use core::ops::{ControlFlow::*, Try};
+    assert_eq!(Ok::<i32, i32>(4).branch(), Continue(4));
+    assert_eq!(Err::<i32, i32>(4).branch(), Break(Err(4)));
+    let one = NonZeroU32::new(1).unwrap();
+    assert_eq!(Ok::<(), NonZeroU32>(()).branch(), Continue(()));
+    assert_eq!(Err::<(), NonZeroU32>(one).branch(), Break(Err(one)));
+    assert_eq!(Ok::<NonZeroU32, ()>(one).branch(), Continue(one));
+    assert_eq!(Err::<NonZeroU32, ()>(()).branch(), Break(Err(())));
 }

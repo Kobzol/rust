@@ -1,4 +1,3 @@
-// no-system-llvm
 // assembly-output: emit-asm
 // compile-flags: -O
 // compile-flags: --target aarch64-unknown-linux-gnu

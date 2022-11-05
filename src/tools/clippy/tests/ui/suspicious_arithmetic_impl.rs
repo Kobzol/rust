@@ -1,5 +1,7 @@
 #![warn(clippy::suspicious_arithmetic_impl)]
-use std::ops::{Add, AddAssign, BitOrAssign, Div, DivAssign, Mul, MulAssign, Sub};
+use std::ops::{
+    Add, AddAssign, BitAnd, BitOr, BitOrAssign, BitXor, Div, DivAssign, Mul, MulAssign, Rem, Shl, Shr, Sub,
+};
 
 #[derive(Copy, Clone)]
 struct Foo(u32);
@@ -61,13 +63,61 @@ impl Div for Foo {
     }
 }
 
+impl Rem for Foo {
+    type Output = Foo;
+
+    fn rem(self, other: Self) -> Self {
+        Foo(self.0 / other.0)
+    }
+}
+
+impl BitAnd for Foo {
+    type Output = Foo;
+
+    fn bitand(self, other: Self) -> Self {
+        Foo(self.0 | other.0)
+    }
+}
+
+impl BitOr for Foo {
+    type Output = Foo;
+
+    fn bitor(self, other: Self) -> Self {
+        Foo(self.0 ^ other.0)
+    }
+}
+
+impl BitXor for Foo {
+    type Output = Foo;
+
+    fn bitxor(self, other: Self) -> Self {
+        Foo(self.0 & other.0)
+    }
+}
+
+impl Shl for Foo {
+    type Output = Foo;
+
+    fn shl(self, other: Self) -> Self {
+        Foo(self.0 >> other.0)
+    }
+}
+
+impl Shr for Foo {
+    type Output = Foo;
+
+    fn shr(self, other: Self) -> Self {
+        Foo(self.0 << other.0)
+    }
+}
+
 struct Bar(i32);
 
 impl Add for Bar {
     type Output = Bar;
 
     fn add(self, other: Self) -> Self {
-        Bar(self.0 & !other.0) // OK: UnNot part of BiExpr as child node
+        Bar(self.0 & !other.0) // OK: Not part of BiExpr as child node
     }
 }
 
@@ -76,7 +126,7 @@ impl Sub for Bar {
 
     fn sub(self, other: Self) -> Self {
         if self.0 <= other.0 {
-            Bar(-(self.0 & other.0)) // OK: UnNeg part of BiExpr as parent node
+            Bar(-(self.0 & other.0)) // OK: Neg part of BiExpr as parent node
         } else {
             Bar(0)
         }

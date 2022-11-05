@@ -1,9 +1,8 @@
 // Check that functions cannot be used as const parameters.
 // revisions: full min
 
-#![cfg_attr(full, feature(const_generics))]
+#![cfg_attr(full, feature(adt_const_params))]
 #![cfg_attr(full, allow(incomplete_features))]
-#![cfg_attr(min, feature(min_const_generics))]
 
 fn function() -> u32 {
     17

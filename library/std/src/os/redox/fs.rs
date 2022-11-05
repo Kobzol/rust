@@ -34,10 +34,10 @@ pub trait MetadataExt {
     /// }
     /// ```
     #[stable(feature = "metadata_ext", since = "1.1.0")]
-    #[rustc_deprecated(
+    #[deprecated(
         since = "1.8.0",
-        reason = "deprecated in favor of the accessor \
-                  methods of this trait"
+        note = "deprecated in favor of the accessor \
+                methods of this trait"
     )]
     #[allow(deprecated)]
     fn as_raw_stat(&self) -> &raw::stat;
@@ -200,7 +200,7 @@ pub trait MetadataExt {
     fn st_atime(&self) -> i64;
     /// Returns the last access time of the file, in nanoseconds since [`st_atime`].
     ///
-    /// [`st_atime`]: #tymethod.st_atime
+    /// [`st_atime`]: Self::st_atime
     ///
     /// # Examples
     ///
@@ -236,7 +236,7 @@ pub trait MetadataExt {
     fn st_mtime(&self) -> i64;
     /// Returns the last modification time of the file, in nanoseconds since [`st_mtime`].
     ///
-    /// [`st_mtime`]: #tymethod.st_mtime
+    /// [`st_mtime`]: Self::st_mtime
     ///
     /// # Examples
     ///
@@ -272,7 +272,7 @@ pub trait MetadataExt {
     fn st_ctime(&self) -> i64;
     /// Returns the last status change time of the file, in nanoseconds since [`st_ctime`].
     ///
-    /// [`st_ctime`]: #tymethod.st_ctime
+    /// [`st_ctime`]: Self::st_ctime
     ///
     /// # Examples
     ///

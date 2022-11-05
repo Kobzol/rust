@@ -1,9 +1,8 @@
-// no-system-llvm
 // assembly-output: emit-asm
 // compile-flags: --target aarch64-unknown-linux-gnu
 // needs-llvm-components: aarch64
 
-#![feature(no_core, lang_items, rustc_attrs, repr_simd)]
+#![feature(no_core, lang_items, rustc_attrs, repr_simd, asm_sym)]
 #![crate_type = "rlib"]
 #![no_core]
 #![allow(asm_sub_register, non_camel_case_types)]
@@ -94,6 +93,17 @@ pub unsafe fn sym_fn() {
 #[no_mangle]
 pub unsafe fn sym_static() {
     asm!("adr x0, {}", sym extern_static);
+}
+
+// Regression test for #75761
+// CHECK-LABEL: issue_75761:
+// CHECK: str {{.*}}x30
+// CHECK: //APP
+// CHECK: //NO_APP
+// CHECK: ldr {{.*}}x30
+#[no_mangle]
+pub unsafe fn issue_75761() {
+    asm!("", out("v0") _, out("x30") _);
 }
 
 macro_rules! check {
@@ -553,8 +563,3 @@ check_reg!(v0_f32x4 f32x4 "s0" "fmov");
 // CHECK: fmov s0, s0
 // CHECK: //NO_APP
 check_reg!(v0_f64x2 f64x2 "s0" "fmov");
-
-// Regression test for #75761
-pub unsafe fn issue_75761() {
-    asm!("", out("v0") _, out("x30") _);
-}

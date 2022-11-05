@@ -1,7 +1,4 @@
 // run-pass
-#![feature(const_generics)]
-#![allow(incomplete_features)]
-
 use std::mem::MaybeUninit;
 
 trait CollectSlice<'a>: Iterator {

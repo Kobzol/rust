@@ -2,6 +2,7 @@
 
 #![warn(clippy::option_map_unit_fn)]
 #![allow(unused)]
+#![allow(clippy::unnecessary_wraps)]
 
 fn do_nothing<T>(_: T) {}
 
@@ -79,6 +80,9 @@ fn option_map_unit_fn() {
 
     x.field.map(|ref value| { do_nothing(value + captured) });
 
-    option().map(do_nothing);}
+    option().map(do_nothing);
+
+    option().map(|value| println!("{:?}", value));
+}
 
 fn main() {}

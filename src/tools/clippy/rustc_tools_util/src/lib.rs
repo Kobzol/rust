@@ -84,7 +84,7 @@ impl std::fmt::Debug for VersionInfo {
 #[must_use]
 pub fn get_commit_hash() -> Option<String> {
     std::process::Command::new("git")
-        .args(&["rev-parse", "--short", "HEAD"])
+        .args(["rev-parse", "--short", "HEAD"])
         .output()
         .ok()
         .and_then(|r| String::from_utf8(r.stdout).ok())
@@ -93,16 +93,16 @@ pub fn get_commit_hash() -> Option<String> {
 #[must_use]
 pub fn get_commit_date() -> Option<String> {
     std::process::Command::new("git")
-        .args(&["log", "-1", "--date=short", "--pretty=format:%cd"])
+        .args(["log", "-1", "--date=short", "--pretty=format:%cd"])
         .output()
         .ok()
         .and_then(|r| String::from_utf8(r.stdout).ok())
 }
 
 #[must_use]
-pub fn get_channel() -> Option<String> {
+pub fn get_channel() -> String {
     match env::var("CFG_RELEASE_CHANNEL") {
-        Ok(channel) => Some(channel),
+        Ok(channel) => channel,
         Err(_) => {
             // if that failed, try to ask rustc -V, do some parsing and find out
             match std::process::Command::new("rustc")
@@ -113,16 +113,16 @@ pub fn get_channel() -> Option<String> {
             {
                 Some(rustc_output) => {
                     if rustc_output.contains("beta") {
-                        Some(String::from("beta"))
+                        String::from("beta")
                     } else if rustc_output.contains("stable") {
-                        Some(String::from("stable"))
+                        String::from("stable")
                     } else {
                         // default to nightly if we fail to parse
-                        Some(String::from("nightly"))
+                        String::from("nightly")
                     }
                 },
                 // default to nightly
-                None => Some(String::from("nightly")),
+                None => String::from("nightly"),
             }
         },
     }

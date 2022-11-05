@@ -11,61 +11,53 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::mpsc::Sender;
 
-macro_rules! try_err {
-    ($e:expr, $file:expr) => {
-        match $e {
-            Ok(e) => e,
-            Err(e) => return Err(E::new(e, $file)),
-        }
-    };
-}
-
-pub trait PathError {
+pub(crate) trait PathError {
     fn new<S, P: AsRef<Path>>(e: S, path: P) -> Self
     where
         S: ToString + Sized;
 }
 
-pub struct DocFS {
+pub(crate) struct DocFS {
     sync_only: bool,
     errors: Option<Sender<String>>,
 }
 
 impl DocFS {
-    pub fn new(errors: Sender<String>) -> DocFS {
+    pub(crate) fn new(errors: Sender<String>) -> DocFS {
         DocFS { sync_only: false, errors: Some(errors) }
     }
 
-    pub fn set_sync_only(&mut self, sync_only: bool) {
+    pub(crate) fn set_sync_only(&mut self, sync_only: bool) {
         self.sync_only = sync_only;
     }
 
-    pub fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         self.errors = None;
     }
 
-    pub fn create_dir_all<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+    pub(crate) fn create_dir_all<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         // For now, dir creation isn't a huge time consideration, do it
         // synchronously, which avoids needing ordering between write() actions
         // and directory creation.
         fs::create_dir_all(path)
     }
 
-    pub fn write<P, C, E>(&self, path: P, contents: C) -> Result<(), E>
+    pub(crate) fn write<E>(
+        &self,
+        path: PathBuf,
+        contents: impl 'static + Send + AsRef<[u8]>,
+    ) -> Result<(), E>
     where
-        P: AsRef<Path>,
-        C: AsRef<[u8]>,
         E: PathError,
     {
-        if !self.sync_only && cfg!(windows) {
+        #[cfg(windows)]
+        if !self.sync_only {
             // A possible future enhancement after more detailed profiling would
             // be to create the file sync so errors are reported eagerly.
-            let path = path.as_ref().to_path_buf();
-            let contents = contents.as_ref().to_vec();
             let sender = self.errors.clone().expect("can't write after closing");
             rayon::spawn(move || {
                 fs::write(&path, contents).unwrap_or_else(|e| {
@@ -75,8 +67,12 @@ impl DocFS {
                 });
             });
         } else {
-            try_err!(fs::write(&path, contents), path);
+            fs::write(&path, contents).map_err(|e| E::new(e, path))?;
         }
+
+        #[cfg(not(windows))]
+        fs::write(&path, contents).map_err(|e| E::new(e, path))?;
+
         Ok(())
     }
 }

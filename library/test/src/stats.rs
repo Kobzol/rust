@@ -1,29 +1,12 @@
 #![allow(missing_docs)]
-#![allow(deprecated)] // Float
 
-use std::cmp::Ordering::{self, Equal, Greater, Less};
 use std::mem;
 
 #[cfg(test)]
 mod tests;
 
-fn local_cmp(x: f64, y: f64) -> Ordering {
-    // arbitrarily decide that NaNs are larger than everything.
-    if y.is_nan() {
-        Less
-    } else if x.is_nan() {
-        Greater
-    } else if x < y {
-        Less
-    } else if x == y {
-        Equal
-    } else {
-        Greater
-    }
-}
-
 fn local_sort(v: &mut [f64]) {
-    v.sort_by(|x: &f64, y: &f64| local_cmp(*x, *y));
+    v.sort_by(|x: &f64, y: &f64| x.total_cmp(y));
 }
 
 /// Trait that provides simple descriptive statistics on a univariate set of numeric samples.
@@ -31,11 +14,11 @@ pub trait Stats {
     /// Sum of the samples.
     ///
     /// Note: this method sacrifices performance at the altar of accuracy
-    /// Depends on IEEE-754 arithmetic guarantees. See proof of correctness at:
+    /// Depends on IEEE 754 arithmetic guarantees. See proof of correctness at:
     /// ["Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric
     /// Predicates"][paper]
     ///
-    /// [paper]: http://www.cs.cmu.edu/~quake-papers/robust-arithmetic.ps
+    /// [paper]: https://www.cs.cmu.edu/~quake-papers/robust-arithmetic.ps
     fn sum(&self) -> f64;
 
     /// Minimum value of the samples.
@@ -215,7 +198,7 @@ impl Stats for [f64] {
             let mut v: f64 = 0.0;
             for s in self {
                 let x = *s - mean;
-                v = v + x * x;
+                v += x * x;
             }
             // N.B., this is _supposed to be_ len-1, not len. If you
             // change it back to len, you will be calculating a

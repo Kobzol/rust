@@ -4,6 +4,7 @@ use std::fmt;
 
 use serde::{Serialize, Serializer};
 
+use rustc_hir::def::DefKind;
 use rustc_span::hygiene::MacroKind;
 
 use crate::clean;
@@ -13,14 +14,14 @@ use crate::clean;
 /// The search index uses item types encoded as smaller numbers which equal to
 /// discriminants. JavaScript then is used to decode them into the original value.
 /// Consequently, every change to this type should be synchronized to
-/// the `itemTypes` mapping table in `html/static/main.js`.
+/// the `itemTypes` mapping table in `html/static/js/search.js`.
 ///
 /// In addition, code in `html::render` uses this enum to generate CSS classes, page prefixes, and
 /// module headings. If you are adding to this enum and want to ensure that the sidebar also prints
 /// a heading, edit the listing in `html/render.rs`, function `sidebar_module`. This uses an
 /// ordering based on a helper function inside `item_module`, in the same file.
-#[derive(Copy, PartialEq, Eq, Clone, Debug, PartialOrd, Ord)]
-pub enum ItemType {
+#[derive(Copy, PartialEq, Eq, Hash, Clone, Debug, PartialOrd, Ord)]
+pub(crate) enum ItemType {
     Module = 0,
     ExternCrate = 1,
     Import = 2,
@@ -60,14 +61,14 @@ impl Serialize for ItemType {
 
 impl<'a> From<&'a clean::Item> for ItemType {
     fn from(item: &'a clean::Item) -> ItemType {
-        let inner = match item.inner {
+        let kind = match *item.kind {
             clean::StrippedItem(box ref item) => item,
-            ref inner => inner,
+            ref kind => kind,
         };
 
-        match *inner {
+        match *kind {
             clean::ModuleItem(..) => ItemType::Module,
-            clean::ExternCrateItem(..) => ItemType::ExternCrate,
+            clean::ExternCrateItem { .. } => ItemType::ExternCrate,
             clean::ImportItem(..) => ItemType::Import,
             clean::StructItem(..) => ItemType::Struct,
             clean::UnionItem(..) => ItemType::Union,
@@ -87,10 +88,10 @@ impl<'a> From<&'a clean::Item> for ItemType {
             clean::ForeignStaticItem(..) => ItemType::Static,     // no ForeignStatic
             clean::MacroItem(..) => ItemType::Macro,
             clean::PrimitiveItem(..) => ItemType::Primitive,
-            clean::AssocConstItem(..) => ItemType::AssocConst,
-            clean::AssocTypeItem(..) => ItemType::AssocType,
+            clean::TyAssocConstItem(..) | clean::AssocConstItem(..) => ItemType::AssocConst,
+            clean::TyAssocTypeItem(..) | clean::AssocTypeItem(..) => ItemType::AssocType,
             clean::ForeignTypeItem => ItemType::ForeignType,
-            clean::KeywordItem(..) => ItemType::Keyword,
+            clean::KeywordItem => ItemType::Keyword,
             clean::TraitAliasItem(..) => ItemType::TraitAlias,
             clean::ProcMacroItem(ref mac) => match mac.kind {
                 MacroKind::Bang => ItemType::Macro,
@@ -102,29 +103,51 @@ impl<'a> From<&'a clean::Item> for ItemType {
     }
 }
 
-impl From<clean::TypeKind> for ItemType {
-    fn from(kind: clean::TypeKind) -> ItemType {
-        match kind {
-            clean::TypeKind::Struct => ItemType::Struct,
-            clean::TypeKind::Union => ItemType::Union,
-            clean::TypeKind::Enum => ItemType::Enum,
-            clean::TypeKind::Function => ItemType::Function,
-            clean::TypeKind::Trait => ItemType::Trait,
-            clean::TypeKind::Module => ItemType::Module,
-            clean::TypeKind::Static => ItemType::Static,
-            clean::TypeKind::Const => ItemType::Constant,
-            clean::TypeKind::Typedef => ItemType::Typedef,
-            clean::TypeKind::Foreign => ItemType::ForeignType,
-            clean::TypeKind::Macro => ItemType::Macro,
-            clean::TypeKind::Attr => ItemType::ProcAttribute,
-            clean::TypeKind::Derive => ItemType::ProcDerive,
-            clean::TypeKind::TraitAlias => ItemType::TraitAlias,
+impl From<DefKind> for ItemType {
+    fn from(other: DefKind) -> Self {
+        match other {
+            DefKind::Enum => Self::Enum,
+            DefKind::Fn => Self::Function,
+            DefKind::Mod => Self::Module,
+            DefKind::Const => Self::Constant,
+            DefKind::Static(_) => Self::Static,
+            DefKind::Struct => Self::Struct,
+            DefKind::Union => Self::Union,
+            DefKind::Trait => Self::Trait,
+            DefKind::TyAlias => Self::Typedef,
+            DefKind::TraitAlias => Self::TraitAlias,
+            DefKind::Macro(kind) => match kind {
+                MacroKind::Bang => ItemType::Macro,
+                MacroKind::Attr => ItemType::ProcAttribute,
+                MacroKind::Derive => ItemType::ProcDerive,
+            },
+            DefKind::ForeignTy
+            | DefKind::Variant
+            | DefKind::AssocTy
+            | DefKind::TyParam
+            | DefKind::ConstParam
+            | DefKind::Ctor(..)
+            | DefKind::AssocFn
+            | DefKind::AssocConst
+            | DefKind::ExternCrate
+            | DefKind::Use
+            | DefKind::ForeignMod
+            | DefKind::AnonConst
+            | DefKind::InlineConst
+            | DefKind::OpaqueTy
+            | DefKind::ImplTraitPlaceholder
+            | DefKind::Field
+            | DefKind::LifetimeParam
+            | DefKind::GlobalAsm
+            | DefKind::Impl
+            | DefKind::Closure
+            | DefKind::Generator => Self::ForeignType,
         }
     }
 }
 
 impl ItemType {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match *self {
             ItemType::Module => "mod",
             ItemType::ExternCrate => "externcrate",
@@ -158,6 +181,6 @@ impl ItemType {
 
 impl fmt::Display for ItemType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
+        f.write_str(self.as_str())
     }
 }

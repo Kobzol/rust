@@ -1,6 +1,7 @@
 // Test that immediate callers have to change when callee changes, but
 // not callers' callers.
 
+// incremental
 // compile-flags: -Z query-dep-graph
 
 #![feature(rustc_attrs)]

@@ -1,28 +1,59 @@
 #![feature(allocator_api)]
+#![feature(alloc_layout_extra)]
+#![feature(assert_matches)]
 #![feature(box_syntax)]
+#![feature(cow_is_borrowed)]
+#![feature(const_box)]
+#![feature(const_convert)]
+#![feature(const_cow_is_borrowed)]
+#![feature(const_heap)]
+#![feature(const_mut_refs)]
+#![feature(const_nonnull_slice_from_raw_parts)]
+#![feature(const_ptr_write)]
+#![feature(const_try)]
+#![feature(core_intrinsics)]
 #![feature(drain_filter)]
 #![feature(exact_size_is_empty)]
 #![feature(new_uninit)]
 #![feature(pattern)]
-#![feature(str_split_once)]
 #![feature(trusted_len)]
-#![feature(try_reserve)]
+#![feature(try_reserve_kind)]
 #![feature(unboxed_closures)]
 #![feature(associated_type_bounds)]
 #![feature(binary_heap_into_iter_sorted)]
 #![feature(binary_heap_drain_sorted)]
 #![feature(slice_ptr_get)]
-#![feature(split_inclusive)]
 #![feature(binary_heap_retain)]
+#![feature(binary_heap_as_slice)]
+#![feature(inplace_iteration)]
+#![feature(iter_advance_by)]
+#![feature(iter_next_chunk)]
+#![feature(round_char_boundary)]
+#![feature(slice_group_by)]
+#![feature(slice_partition_dedup)]
+#![feature(string_remove_matches)]
+#![feature(const_btree_len)]
+#![feature(const_default_impls)]
+#![feature(const_trait_impl)]
+#![feature(const_str_from_utf8)]
+#![feature(nonnull_slice_from_raw_parts)]
+#![feature(panic_update_hook)]
+#![feature(pointer_is_aligned)]
+#![feature(slice_flatten)]
+#![feature(thin_box)]
+#![feature(strict_provenance)]
+#![feature(once_cell)]
+#![feature(drain_keep_rest)]
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 mod arc;
-mod binary_heap;
 mod borrow;
 mod boxed;
 mod btree_set_hash;
+mod c_str;
+mod const_fns;
 mod cow_str;
 mod fmt;
 mod heap;
@@ -31,6 +62,7 @@ mod rc;
 mod slice;
 mod str;
 mod string;
+mod thin_box;
 mod vec;
 mod vec_deque;
 

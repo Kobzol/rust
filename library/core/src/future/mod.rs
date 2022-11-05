@@ -1,6 +1,13 @@
 #![stable(feature = "futures_api", since = "1.36.0")]
 
-//! Asynchronous values.
+//! Asynchronous basic functionality.
+//!
+//! Please see the fundamental [`async`] and [`await`] keywords and the [async book]
+//! for more information on asynchronous programming in Rust.
+//!
+//! [`async`]: ../../std/keyword.async.html
+//! [`await`]: ../../std/keyword.await.html
+//! [async book]: https://rust-lang.github.io/async-book/
 
 use crate::{
     ops::{Generator, GeneratorState},
@@ -11,6 +18,7 @@ use crate::{
 
 mod future;
 mod into_future;
+mod join;
 mod pending;
 mod poll_fn;
 mod ready;
@@ -18,21 +26,24 @@ mod ready;
 #[stable(feature = "futures_api", since = "1.36.0")]
 pub use self::future::Future;
 
-#[unstable(feature = "into_future", issue = "67644")]
+#[unstable(feature = "future_join", issue = "91642")]
+pub use self::join::join;
+
+#[stable(feature = "into_future", since = "1.64.0")]
 pub use into_future::IntoFuture;
 
-#[unstable(feature = "future_readiness_fns", issue = "70921")]
+#[stable(feature = "future_readiness_fns", since = "1.48.0")]
 pub use pending::{pending, Pending};
-#[unstable(feature = "future_readiness_fns", issue = "70921")]
+#[stable(feature = "future_readiness_fns", since = "1.48.0")]
 pub use ready::{ready, Ready};
 
-#[unstable(feature = "future_poll_fn", issue = "72302")]
+#[stable(feature = "future_poll_fn", since = "1.64.0")]
 pub use poll_fn::{poll_fn, PollFn};
 
 /// This type is needed because:
 ///
 /// a) Generators cannot implement `for<'a, 'b> Generator<&'a mut Context<'b>>`, so we need to pass
-///    a raw pointer (see https://github.com/rust-lang/rust/issues/68923).
+///    a raw pointer (see <https://github.com/rust-lang/rust/issues/68923>).
 /// b) Raw pointers and `NonNull` aren't `Send` or `Sync`, so that would make every single future
 ///    non-Send/Sync as well, and we don't want that.
 ///
@@ -53,9 +64,10 @@ unsafe impl Sync for ResumeTy {}
 /// This function returns a `GenFuture` underneath, but hides it in `impl Trait` to give
 /// better error messages (`impl Future` rather than `GenFuture<[closure.....]>`).
 // This is `const` to avoid extra errors after we recover from `const async fn`
-#[cfg_attr(not(bootstrap), lang = "from_generator")]
+#[lang = "from_generator"]
 #[doc(hidden)]
 #[unstable(feature = "gen_future", issue = "50547")]
+#[rustc_const_unstable(feature = "gen_future", issue = "50547")]
 #[inline]
 pub const fn from_generator<T>(gen: T) -> impl Future<Output = T::Return>
 where
@@ -71,7 +83,7 @@ where
     impl<T: Generator<ResumeTy, Yield = ()>> Future for GenFuture<T> {
         type Output = T::Return;
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            // Safety: Safe because we're !Unpin + !Drop, and this is just a field projection.
+            // SAFETY: Safe because we're !Unpin + !Drop, and this is just a field projection.
             let gen = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.0) };
 
             // Resume the generator, turning the `&mut Context` into a `NonNull` raw pointer. The
@@ -86,9 +98,10 @@ where
     GenFuture(gen)
 }
 
-#[cfg_attr(not(bootstrap), lang = "get_context")]
+#[lang = "get_context"]
 #[doc(hidden)]
 #[unstable(feature = "gen_future", issue = "50547")]
+#[must_use]
 #[inline]
 pub unsafe fn get_context<'a, 'b>(cx: ResumeTy) -> &'a mut Context<'b> {
     // SAFETY: the caller must guarantee that `cx.0` is a valid pointer

@@ -11,7 +11,7 @@
 /// This destructor consists of two components:
 /// - A call to `Drop::drop` for that value, if this special `Drop` trait is implemented for its type.
 /// - The automatically generated "drop glue" which recursively calls the destructors
-///     of the all fields of this value.
+///     of all the fields of this value.
 ///
 /// As Rust automatically calls the destructors of all contained fields,
 /// you don't have to implement `Drop` in most cases. But there are some cases where
@@ -78,7 +78,7 @@
 ///
 /// In other words, if you tried to explicitly call `Drop::drop` in the above example, you'd get a compiler error.
 ///
-/// If you'd like explicitly call the destructor of a value, [`mem::drop`] can be used instead.
+/// If you'd like to explicitly call the destructor of a value, [`mem::drop`] can be used instead.
 ///
 /// [`mem::drop`]: drop
 ///
@@ -134,6 +134,7 @@
 /// these types cannot have destructors.
 #[lang = "drop"]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[const_trait]
 pub trait Drop {
     /// Executes the destructor for this type.
     ///
@@ -156,7 +157,7 @@ pub trait Drop {
     /// handled by the compiler, but when using unsafe code, can sometimes occur
     /// unintentionally, particularly when using [`ptr::drop_in_place`].
     ///
-    /// [E0040]: ../../error-index.html#E0040
+    /// [E0040]: ../../error_codes/E0040.html
     /// [`panic!`]: crate::panic!
     /// [`mem::drop`]: drop
     /// [`ptr::drop_in_place`]: crate::ptr::drop_in_place

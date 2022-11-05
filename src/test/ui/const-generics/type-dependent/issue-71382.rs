@@ -1,6 +1,3 @@
-#![feature(const_generics)]
-//~^ WARN the feature `const_generics` is incomplete
-
 struct Test;
 
 fn pass() -> u8 {

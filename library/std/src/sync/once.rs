@@ -65,7 +65,7 @@
 //       must do so with Release ordering to make the result available.
 //     - `wait` inserts `Waiter` nodes as a pointer in `state_and_queue`, and
 //       needs to make the nodes available with Release ordering. The load in
-//       its `compare_and_swap` can be Relaxed because it only has to compare
+//       its `compare_exchange` can be Relaxed because it only has to compare
 //       the atomic, not to read other data.
 //     - `WaiterQueue::Drop` must see the `Waiter` nodes, so it must load
 //       `state_and_queue` with Acquire ordering.
@@ -84,18 +84,22 @@
 //   processor. Because both use Acquire ordering such a reordering is not
 //   allowed, so no need for SeqCst.
 
+#[cfg(all(test, not(target_os = "emscripten")))]
+mod tests;
+
 use crate::cell::Cell;
 use crate::fmt;
 use crate::marker;
-use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use crate::panic::{RefUnwindSafe, UnwindSafe};
+use crate::ptr;
+use crate::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use crate::thread::{self, Thread};
+
+type Masked = ();
 
 /// A synchronization primitive which can be used to run a one-time global
 /// initialization. Useful for one-time initialization for FFI or related
-/// functionality. This type can only be constructed with the [`Once::new`]
-/// constructor.
-///
-/// [`Once::new`]: struct.Once.html#method.new
+/// functionality. This type can only be constructed with [`Once::new()`].
 ///
 /// # Examples
 ///
@@ -110,9 +114,9 @@ use crate::thread::{self, Thread};
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Once {
-    // `state_and_queue` is actually an a pointer to a `Waiter` with extra state
+    // `state_and_queue` is actually a pointer to a `Waiter` with extra state
     // bits, so we add the `PhantomData` appropriately.
-    state_and_queue: AtomicUsize,
+    state_and_queue: AtomicPtr<Masked>,
     _marker: marker::PhantomData<*const Waiter>,
 }
 
@@ -123,21 +127,22 @@ unsafe impl Sync for Once {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl Send for Once {}
 
-/// State yielded to [`call_once_force`]’s closure parameter. The state can be
-/// used to query the poison status of the [`Once`].
-///
-/// [`call_once_force`]: struct.Once.html#method.call_once_force
-/// [`Once`]: struct.Once.html
-#[unstable(feature = "once_poison", issue = "33577")]
+#[stable(feature = "sync_once_unwind_safe", since = "1.59.0")]
+impl UnwindSafe for Once {}
+
+#[stable(feature = "sync_once_unwind_safe", since = "1.59.0")]
+impl RefUnwindSafe for Once {}
+
+/// State yielded to [`Once::call_once_force()`]’s closure parameter. The state
+/// can be used to query the poison status of the [`Once`].
+#[stable(feature = "once_poison", since = "1.51.0")]
 #[derive(Debug)]
 pub struct OnceState {
     poisoned: bool,
-    set_state_on_drop_to: Cell<usize>,
+    set_state_on_drop_to: Cell<*mut Masked>,
 }
 
 /// Initialization value for static [`Once`] values.
-///
-/// [`Once`]: struct.Once.html
 ///
 /// # Examples
 ///
@@ -147,9 +152,9 @@ pub struct OnceState {
 /// static START: Once = ONCE_INIT;
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
-#[rustc_deprecated(
+#[deprecated(
     since = "1.38.0",
-    reason = "the `new` function is now preferred",
+    note = "the `new` function is now preferred",
     suggestion = "Once::new()"
 )]
 pub const ONCE_INIT: Once = Once::new();
@@ -182,16 +187,21 @@ struct Waiter {
 // Every node is a struct on the stack of a waiting thread.
 // Will wake up the waiters when it gets dropped, i.e. also on panic.
 struct WaiterQueue<'a> {
-    state_and_queue: &'a AtomicUsize,
-    set_state_on_drop_to: usize,
+    state_and_queue: &'a AtomicPtr<Masked>,
+    set_state_on_drop_to: *mut Masked,
 }
 
 impl Once {
     /// Creates a new `Once` value.
+    #[inline]
     #[stable(feature = "once_new", since = "1.2.0")]
     #[rustc_const_stable(feature = "const_once_new", since = "1.32.0")]
+    #[must_use]
     pub const fn new() -> Once {
-        Once { state_and_queue: AtomicUsize::new(INCOMPLETE), _marker: marker::PhantomData }
+        Once {
+            state_and_queue: AtomicPtr::new(ptr::invalid_mut(INCOMPLETE)),
+            _marker: marker::PhantomData,
+        }
     }
 
     /// Performs an initialization routine once and only once. The given closure
@@ -202,13 +212,13 @@ impl Once {
     /// routine is currently running.
     ///
     /// When this function returns, it is guaranteed that some initialization
-    /// has run and completed (it may not be the closure specified). It is also
+    /// has run and completed (it might not be the closure specified). It is also
     /// guaranteed that any memory writes performed by the executed closure can
     /// be reliably observed by other threads at this point (there is a
     /// happens-before relation between the closure and code executing after the
     /// return).
     ///
-    /// If the given closure recursively invokes `call_once` on the same `Once`
+    /// If the given closure recursively invokes `call_once` on the same [`Once`]
     /// instance the exact behavior is not specified, allowed outcomes are
     /// a panic or a deadlock.
     ///
@@ -245,13 +255,14 @@ impl Once {
     ///
     /// The closure `f` will only be executed once if this is called
     /// concurrently amongst many threads. If that closure panics, however, then
-    /// it will *poison* this `Once` instance, causing all future invocations of
+    /// it will *poison* this [`Once`] instance, causing all future invocations of
     /// `call_once` to also panic.
     ///
     /// This is similar to [poisoning with mutexes][poison].
     ///
     /// [poison]: struct.Mutex.html#poisoning
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[track_caller]
     pub fn call_once<F>(&self, f: F)
     where
         F: FnOnce(),
@@ -265,27 +276,25 @@ impl Once {
         self.call_inner(false, &mut |_| f.take().unwrap()());
     }
 
-    /// Performs the same function as [`call_once`] except ignores poisoning.
+    /// Performs the same function as [`call_once()`] except ignores poisoning.
     ///
-    /// Unlike [`call_once`], if this `Once` has been poisoned (i.e., a previous
-    /// call to `call_once` or `call_once_force` caused a panic), calling
-    /// `call_once_force` will still invoke the closure `f` and will _not_
-    /// result in an immediate panic. If `f` panics, the `Once` will remain
-    /// in a poison state. If `f` does _not_ panic, the `Once` will no
-    /// longer be in a poison state and all future calls to `call_once` or
-    /// `call_once_force` will be no-ops.
+    /// Unlike [`call_once()`], if this [`Once`] has been poisoned (i.e., a previous
+    /// call to [`call_once()`] or [`call_once_force()`] caused a panic), calling
+    /// [`call_once_force()`] will still invoke the closure `f` and will _not_
+    /// result in an immediate panic. If `f` panics, the [`Once`] will remain
+    /// in a poison state. If `f` does _not_ panic, the [`Once`] will no
+    /// longer be in a poison state and all future calls to [`call_once()`] or
+    /// [`call_once_force()`] will be no-ops.
     ///
     /// The closure `f` is yielded a [`OnceState`] structure which can be used
-    /// to query the poison status of the `Once`.
+    /// to query the poison status of the [`Once`].
     ///
-    /// [`call_once`]: struct.Once.html#method.call_once
-    /// [`OnceState`]: struct.OnceState.html
+    /// [`call_once()`]: Once::call_once
+    /// [`call_once_force()`]: Once::call_once_force
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(once_poison)]
-    ///
     /// use std::sync::Once;
     /// use std::thread;
     ///
@@ -305,13 +314,13 @@ impl Once {
     ///
     /// // call_once_force will still run and reset the poisoned state
     /// INIT.call_once_force(|state| {
-    ///     assert!(state.poisoned());
+    ///     assert!(state.is_poisoned());
     /// });
     ///
     /// // once any success happens, we stop propagating the poison
     /// INIT.call_once(|| {});
     /// ```
-    #[unstable(feature = "once_poison", issue = "33577")]
+    #[stable(feature = "once_poison", since = "1.51.0")]
     pub fn call_once_force<F>(&self, f: F)
     where
         F: FnOnce(&OnceState),
@@ -325,17 +334,19 @@ impl Once {
         self.call_inner(true, &mut |p| f.take().unwrap()(p));
     }
 
-    /// Returns `true` if some `call_once` call has completed
+    /// Returns `true` if some [`call_once()`] call has completed
     /// successfully. Specifically, `is_completed` will return false in
     /// the following situations:
-    ///   * `call_once` was not called at all,
-    ///   * `call_once` was called, but has not yet completed,
-    ///   * the `Once` instance is poisoned
+    ///   * [`call_once()`] was not called at all,
+    ///   * [`call_once()`] was called, but has not yet completed,
+    ///   * the [`Once`] instance is poisoned
     ///
-    /// This function returning `false` does not mean that `Once` has not been
+    /// This function returning `false` does not mean that [`Once`] has not been
     /// executed. For example, it may have been executed in the time between
     /// when `is_completed` starts executing and when it returns, in which case
     /// the `false` return value would be stale (but still permissible).
+    ///
+    /// [`call_once()`]: Once::call_once
     ///
     /// # Examples
     ///
@@ -371,7 +382,7 @@ impl Once {
         // operations visible to us, and, this being a fast path, weaker
         // ordering helps with performance. This `Acquire` synchronizes with
         // `Release` operations on the slow path.
-        self.state_and_queue.load(Ordering::Acquire) == COMPLETE
+        self.state_and_queue.load(Ordering::Acquire).addr() == COMPLETE
     }
 
     // This is a non-generic function to reduce the monomorphization cost of
@@ -386,10 +397,11 @@ impl Once {
     // currently no way to take an `FnOnce` and call it via virtual dispatch
     // without some allocation overhead.
     #[cold]
+    #[track_caller]
     fn call_inner(&self, ignore_poisoning: bool, init: &mut dyn FnMut(&OnceState)) {
         let mut state_and_queue = self.state_and_queue.load(Ordering::Acquire);
         loop {
-            match state_and_queue {
+            match state_and_queue.addr() {
                 COMPLETE => break,
                 POISONED if !ignore_poisoning => {
                     // Panic to propagate the poison.
@@ -397,12 +409,13 @@ impl Once {
                 }
                 POISONED | INCOMPLETE => {
                     // Try to register this thread as the one RUNNING.
-                    let old = self.state_and_queue.compare_and_swap(
+                    let exchange_result = self.state_and_queue.compare_exchange(
                         state_and_queue,
-                        RUNNING,
+                        ptr::invalid_mut(RUNNING),
+                        Ordering::Acquire,
                         Ordering::Acquire,
                     );
-                    if old != state_and_queue {
+                    if let Err(old) = exchange_result {
                         state_and_queue = old;
                         continue;
                     }
@@ -410,13 +423,13 @@ impl Once {
                     // wake them up on drop.
                     let mut waiter_queue = WaiterQueue {
                         state_and_queue: &self.state_and_queue,
-                        set_state_on_drop_to: POISONED,
+                        set_state_on_drop_to: ptr::invalid_mut(POISONED),
                     };
                     // Run the initialization function, letting it know if we're
                     // poisoned or not.
                     let init_state = OnceState {
-                        poisoned: state_and_queue == POISONED,
-                        set_state_on_drop_to: Cell::new(COMPLETE),
+                        poisoned: state_and_queue.addr() == POISONED,
+                        set_state_on_drop_to: Cell::new(ptr::invalid_mut(COMPLETE)),
                     };
                     init(&init_state);
                     waiter_queue.set_state_on_drop_to = init_state.set_state_on_drop_to.get();
@@ -425,7 +438,7 @@ impl Once {
                 _ => {
                     // All other values must be RUNNING with possibly a
                     // pointer to the waiter queue in the more significant bits.
-                    assert!(state_and_queue & STATE_MASK == RUNNING);
+                    assert!(state_and_queue.addr() & STATE_MASK == RUNNING);
                     wait(&self.state_and_queue, state_and_queue);
                     state_and_queue = self.state_and_queue.load(Ordering::Acquire);
                 }
@@ -434,13 +447,13 @@ impl Once {
     }
 }
 
-fn wait(state_and_queue: &AtomicUsize, mut current_state: usize) {
+fn wait(state_and_queue: &AtomicPtr<Masked>, mut current_state: *mut Masked) {
     // Note: the following code was carefully written to avoid creating a
     // mutable reference to `node` that gets aliased.
     loop {
         // Don't queue this thread if the status is no longer running,
         // otherwise we will not be woken up.
-        if current_state & STATE_MASK != RUNNING {
+        if current_state.addr() & STATE_MASK != RUNNING {
             return;
         }
 
@@ -448,14 +461,19 @@ fn wait(state_and_queue: &AtomicUsize, mut current_state: usize) {
         let node = Waiter {
             thread: Cell::new(Some(thread::current())),
             signaled: AtomicBool::new(false),
-            next: (current_state & !STATE_MASK) as *const Waiter,
+            next: current_state.with_addr(current_state.addr() & !STATE_MASK) as *const Waiter,
         };
-        let me = &node as *const Waiter as usize;
+        let me = &node as *const Waiter as *const Masked as *mut Masked;
 
         // Try to slide in the node at the head of the linked list, making sure
         // that another thread didn't just replace the head of the linked list.
-        let old = state_and_queue.compare_and_swap(current_state, me | RUNNING, Ordering::Release);
-        if old != current_state {
+        let exchange_result = state_and_queue.compare_exchange(
+            current_state,
+            me.with_addr(me.addr() | RUNNING),
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+        if let Err(old) = exchange_result {
             current_state = old;
             continue;
         }
@@ -469,7 +487,7 @@ fn wait(state_and_queue: &AtomicUsize, mut current_state: usize) {
             // If the managing thread happens to signal and unpark us before we
             // can park ourselves, the result could be this thread never gets
             // unparked. Luckily `park` comes with the guarantee that if it got
-            // an `unpark` just before on an unparked thread is does not park.
+            // an `unpark` just before on an unparked thread it does not park.
             thread::park();
         }
         break;
@@ -479,7 +497,7 @@ fn wait(state_and_queue: &AtomicUsize, mut current_state: usize) {
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Once {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("Once { .. }")
+        f.debug_struct("Once").finish_non_exhaustive()
     }
 }
 
@@ -490,7 +508,7 @@ impl Drop for WaiterQueue<'_> {
             self.state_and_queue.swap(self.set_state_on_drop_to, Ordering::AcqRel);
 
         // We should only ever see an old state which was RUNNING.
-        assert_eq!(state_and_queue & STATE_MASK, RUNNING);
+        assert_eq!(state_and_queue.addr() & STATE_MASK, RUNNING);
 
         // Walk the entire linked list of waiters and wake them up (in lifo
         // order, last to register is first to wake up).
@@ -499,7 +517,8 @@ impl Drop for WaiterQueue<'_> {
             // free `node` if there happens to be has a spurious wakeup.
             // So we have to take out the `thread` field and copy the pointer to
             // `next` first.
-            let mut queue = (state_and_queue & !STATE_MASK) as *const Waiter;
+            let mut queue =
+                state_and_queue.with_addr(state_and_queue.addr() & !STATE_MASK) as *const Waiter;
             while !queue.is_null() {
                 let next = (*queue).next;
                 let thread = (*queue).thread.take().unwrap();
@@ -515,18 +534,13 @@ impl Drop for WaiterQueue<'_> {
 
 impl OnceState {
     /// Returns `true` if the associated [`Once`] was poisoned prior to the
-    /// invocation of the closure passed to [`call_once_force`].
-    ///
-    /// [`call_once_force`]: struct.Once.html#method.call_once_force
-    /// [`Once`]: struct.Once.html
+    /// invocation of the closure passed to [`Once::call_once_force()`].
     ///
     /// # Examples
     ///
-    /// A poisoned `Once`:
+    /// A poisoned [`Once`]:
     ///
     /// ```
-    /// #![feature(once_poison)]
-    ///
     /// use std::sync::Once;
     /// use std::thread;
     ///
@@ -539,152 +553,28 @@ impl OnceState {
     /// assert!(handle.join().is_err());
     ///
     /// INIT.call_once_force(|state| {
-    ///     assert!(state.poisoned());
+    ///     assert!(state.is_poisoned());
     /// });
     /// ```
     ///
-    /// An unpoisoned `Once`:
+    /// An unpoisoned [`Once`]:
     ///
     /// ```
-    /// #![feature(once_poison)]
-    ///
     /// use std::sync::Once;
     ///
     /// static INIT: Once = Once::new();
     ///
     /// INIT.call_once_force(|state| {
-    ///     assert!(!state.poisoned());
+    ///     assert!(!state.is_poisoned());
     /// });
-    #[unstable(feature = "once_poison", issue = "33577")]
-    pub fn poisoned(&self) -> bool {
+    #[stable(feature = "once_poison", since = "1.51.0")]
+    pub fn is_poisoned(&self) -> bool {
         self.poisoned
     }
 
     /// Poison the associated [`Once`] without explicitly panicking.
-    ///
-    /// [`Once`]: struct.Once.html
     // NOTE: This is currently only exposed for the `lazy` module
     pub(crate) fn poison(&self) {
-        self.set_state_on_drop_to.set(POISONED);
-    }
-}
-
-#[cfg(all(test, not(target_os = "emscripten")))]
-mod tests {
-    use super::Once;
-    use crate::panic;
-    use crate::sync::mpsc::channel;
-    use crate::thread;
-
-    #[test]
-    fn smoke_once() {
-        static O: Once = Once::new();
-        let mut a = 0;
-        O.call_once(|| a += 1);
-        assert_eq!(a, 1);
-        O.call_once(|| a += 1);
-        assert_eq!(a, 1);
-    }
-
-    #[test]
-    fn stampede_once() {
-        static O: Once = Once::new();
-        static mut RUN: bool = false;
-
-        let (tx, rx) = channel();
-        for _ in 0..10 {
-            let tx = tx.clone();
-            thread::spawn(move || {
-                for _ in 0..4 {
-                    thread::yield_now()
-                }
-                unsafe {
-                    O.call_once(|| {
-                        assert!(!RUN);
-                        RUN = true;
-                    });
-                    assert!(RUN);
-                }
-                tx.send(()).unwrap();
-            });
-        }
-
-        unsafe {
-            O.call_once(|| {
-                assert!(!RUN);
-                RUN = true;
-            });
-            assert!(RUN);
-        }
-
-        for _ in 0..10 {
-            rx.recv().unwrap();
-        }
-    }
-
-    #[test]
-    fn poison_bad() {
-        static O: Once = Once::new();
-
-        // poison the once
-        let t = panic::catch_unwind(|| {
-            O.call_once(|| panic!());
-        });
-        assert!(t.is_err());
-
-        // poisoning propagates
-        let t = panic::catch_unwind(|| {
-            O.call_once(|| {});
-        });
-        assert!(t.is_err());
-
-        // we can subvert poisoning, however
-        let mut called = false;
-        O.call_once_force(|p| {
-            called = true;
-            assert!(p.poisoned())
-        });
-        assert!(called);
-
-        // once any success happens, we stop propagating the poison
-        O.call_once(|| {});
-    }
-
-    #[test]
-    fn wait_for_force_to_finish() {
-        static O: Once = Once::new();
-
-        // poison the once
-        let t = panic::catch_unwind(|| {
-            O.call_once(|| panic!());
-        });
-        assert!(t.is_err());
-
-        // make sure someone's waiting inside the once via a force
-        let (tx1, rx1) = channel();
-        let (tx2, rx2) = channel();
-        let t1 = thread::spawn(move || {
-            O.call_once_force(|p| {
-                assert!(p.poisoned());
-                tx1.send(()).unwrap();
-                rx2.recv().unwrap();
-            });
-        });
-
-        rx1.recv().unwrap();
-
-        // put another waiter on the once
-        let t2 = thread::spawn(|| {
-            let mut called = false;
-            O.call_once(|| {
-                called = true;
-            });
-            assert!(!called);
-        });
-
-        tx2.send(()).unwrap();
-
-        assert!(t1.join().is_ok());
-        assert!(t2.join().is_ok());
+        self.set_state_on_drop_to.set(ptr::invalid_mut(POISONED));
     }
 }

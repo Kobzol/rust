@@ -39,7 +39,7 @@ pub use core::ascii::{escape_default, EscapeDefault};
 ///
 /// [combining character]: https://en.wikipedia.org/wiki/Combining_character
 #[stable(feature = "rust1", since = "1.0.0")]
-#[rustc_deprecated(since = "1.26.0", reason = "use inherent methods instead")]
+#[deprecated(since = "1.26.0", note = "use inherent methods instead")]
 pub trait AsciiExt {
     /// Container type for copied ASCII characters.
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -70,7 +70,6 @@ pub trait AsciiExt {
     /// inherent methods on `u8`, `char`, `[u8]` and `str`.
     ///
     /// [`make_ascii_uppercase`]: AsciiExt::make_ascii_uppercase
-    /// [`str::to_uppercase`]: ../primitive.str.html#method.to_uppercase
     #[stable(feature = "rust1", since = "1.0.0")]
     #[allow(deprecated)]
     fn to_ascii_uppercase(&self) -> Self::Owned;
@@ -91,7 +90,6 @@ pub trait AsciiExt {
     /// inherent methods on `u8`, `char`, `[u8]` and `str`.
     ///
     /// [`make_ascii_lowercase`]: AsciiExt::make_ascii_lowercase
-    /// [`str::to_lowercase`]: ../primitive.str.html#method.to_lowercase
     #[stable(feature = "rust1", since = "1.0.0")]
     #[allow(deprecated)]
     fn to_ascii_lowercase(&self) -> Self::Owned;

@@ -1,6 +1,4 @@
-#![feature(const_generics)]
-//~^ WARN the feature `const_generics` is incomplete
-
+// revisions: full min
 struct R;
 
 impl R {

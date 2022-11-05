@@ -1,5 +1,4 @@
-#![feature(plugin_registrar)]
-#![feature(box_syntax, rustc_private)]
+#![feature(rustc_private)]
 
 extern crate rustc_ast;
 
@@ -30,24 +29,24 @@ declare_tool_lint!(
 declare_lint_pass!(Pass => [TEST_LINT, TEST_GROUP, TEST_RUSTC_TOOL_LINT]);
 
 impl EarlyLintPass for Pass {
-    fn check_item(&mut self, cx: &EarlyContext, it: &ast::Item) {
+    /*fn check_item(&mut self, cx: &EarlyContext, it: &ast::Item) {
         if it.ident.name.as_str() == "lintme" {
             cx.lint(TEST_LINT, |lint| {
-                lint.build("item is named 'lintme'").set_span(it.span).emit()
+                lint.build("item is named 'lintme'").set_span(it.span).emit();
             });
         }
         if it.ident.name.as_str() == "lintmetoo" {
             cx.lint(TEST_GROUP, |lint| {
-                lint.build("item is named 'lintmetoo'").set_span(it.span).emit()
+                lint.build("item is named 'lintmetoo'").set_span(it.span).emit();
             });
         }
-    }
+    }*/
 }
 
-#[plugin_registrar]
-pub fn plugin_registrar(reg: &mut Registry) {
+#[no_mangle]
+fn __rustc_plugin_registrar(reg: &mut Registry) {
     reg.lint_store.register_lints(&[&TEST_RUSTC_TOOL_LINT, &TEST_LINT, &TEST_GROUP]);
-    reg.lint_store.register_early_pass(|| box Pass);
+    reg.lint_store.register_early_pass(|| Box::new(Pass));
     reg.lint_store.register_group(
         true,
         "clippy::group",

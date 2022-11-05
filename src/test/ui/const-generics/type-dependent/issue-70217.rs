@@ -1,6 +1,4 @@
 // check-pass
-#![feature(const_generics)]
-#![allow(incomplete_features)]
 
 struct Struct<const N: usize>;
 

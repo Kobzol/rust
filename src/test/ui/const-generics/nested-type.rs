@@ -1,8 +1,7 @@
 // revisions: full min
 
-#![cfg_attr(full, feature(const_generics))]
+#![cfg_attr(full, feature(adt_const_params))]
 #![cfg_attr(full, allow(incomplete_features))]
-#![cfg_attr(min, feature(min_const_generics))]
 
 struct Foo<const N: [u8; { //[min]~ ERROR `[u8; _]` is forbidden
     struct Foo<const N: usize>;
@@ -14,8 +13,7 @@ struct Foo<const N: [u8; { //[min]~ ERROR `[u8; _]` is forbidden
     }
 
     Foo::<17>::value()
-    //~^ ERROR calls in constants are limited to constant functions
-    //~| ERROR evaluation of constant value failed
+    //[full]~^ ERROR cannot call non-const fn
 }]>;
 
 fn main() {}

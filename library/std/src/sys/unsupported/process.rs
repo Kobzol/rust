@@ -1,10 +1,13 @@
 use crate::ffi::OsStr;
 use crate::fmt;
 use crate::io;
+use crate::marker::PhantomData;
+use crate::num::NonZeroI32;
+use crate::path::Path;
 use crate::sys::fs::File;
 use crate::sys::pipe::AnonPipe;
-use crate::sys::{unsupported, Void};
-use crate::sys_common::process::CommandEnv;
+use crate::sys::unsupported;
+use crate::sys_common::process::{CommandEnv, CommandEnvs};
 
 pub use crate::ffi::OsString as EnvKey;
 
@@ -49,6 +52,22 @@ impl Command {
 
     pub fn stderr(&mut self, _stderr: Stdio) {}
 
+    pub fn get_program(&self) -> &OsStr {
+        panic!("unsupported")
+    }
+
+    pub fn get_args(&self) -> CommandArgs<'_> {
+        CommandArgs { _p: PhantomData }
+    }
+
+    pub fn get_envs(&self) -> CommandEnvs<'_> {
+        self.env.iter()
+    }
+
+    pub fn get_current_dir(&self) -> Option<&Path> {
+        None
+    }
+
     pub fn spawn(
         &mut self,
         _default: Stdio,
@@ -65,8 +84,8 @@ impl From<AnonPipe> for Stdio {
 }
 
 impl From<File> for Stdio {
-    fn from(file: File) -> Stdio {
-        file.diverge()
+    fn from(_file: File) -> Stdio {
+        panic!("unsupported")
     }
 }
 
@@ -76,21 +95,21 @@ impl fmt::Debug for Command {
     }
 }
 
-pub struct ExitStatus(Void);
+pub struct ExitStatus(!);
 
 impl ExitStatus {
-    pub fn success(&self) -> bool {
-        match self.0 {}
+    pub fn exit_ok(&self) -> Result<(), ExitStatusError> {
+        self.0
     }
 
     pub fn code(&self) -> Option<i32> {
-        match self.0 {}
+        self.0
     }
 }
 
 impl Clone for ExitStatus {
     fn clone(&self) -> ExitStatus {
-        match self.0 {}
+        self.0
     }
 }
 
@@ -98,7 +117,7 @@ impl Copy for ExitStatus {}
 
 impl PartialEq for ExitStatus {
     fn eq(&self, _other: &ExitStatus) -> bool {
-        match self.0 {}
+        self.0
     }
 }
 
@@ -106,13 +125,28 @@ impl Eq for ExitStatus {}
 
 impl fmt::Debug for ExitStatus {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {}
+        self.0
     }
 }
 
 impl fmt::Display for ExitStatus {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {}
+        self.0
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub struct ExitStatusError(ExitStatus);
+
+impl Into<ExitStatus> for ExitStatusError {
+    fn into(self) -> ExitStatus {
+        self.0.0
+    }
+}
+
+impl ExitStatusError {
+    pub fn code(self) -> Option<NonZeroI32> {
+        self.0.0
     }
 }
 
@@ -128,22 +162,53 @@ impl ExitCode {
     }
 }
 
-pub struct Process(Void);
+impl From<u8> for ExitCode {
+    fn from(code: u8) -> Self {
+        match code {
+            0 => Self::SUCCESS,
+            1..=255 => Self::FAILURE,
+        }
+    }
+}
+
+pub struct Process(!);
 
 impl Process {
     pub fn id(&self) -> u32 {
-        match self.0 {}
+        self.0
     }
 
     pub fn kill(&mut self) -> io::Result<()> {
-        match self.0 {}
+        self.0
     }
 
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        match self.0 {}
+        self.0
     }
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        match self.0 {}
+        self.0
+    }
+}
+
+pub struct CommandArgs<'a> {
+    _p: PhantomData<&'a ()>,
+}
+
+impl<'a> Iterator for CommandArgs<'a> {
+    type Item = &'a OsStr;
+    fn next(&mut self) -> Option<&'a OsStr> {
+        None
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(0))
+    }
+}
+
+impl<'a> ExactSizeIterator for CommandArgs<'a> {}
+
+impl<'a> fmt::Debug for CommandArgs<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().finish()
     }
 }

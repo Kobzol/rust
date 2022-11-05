@@ -1,4 +1,5 @@
-// compile-flags: -Z mir-opt-level=2
+// unit-test: ConstProp
+// compile-flags: -Z mir-opt-level=3
 
 // Due to a bug in propagating scalar pairs the assertion below used to fail. In the expected
 // outputs below, after ConstProp this is how _2 would look like with the bug:
