@@ -42,6 +42,7 @@ members = [
   "src/tools/suggest-tests",
   "src/tools/generate-windows-sys",
   "src/tools/rustdoc-gui-test",
+  "src/tools/opt-dist",
 ]
 
 exclude = [
