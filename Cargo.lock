@@ -316,6 +316,10 @@ dependencies = [
 [[package]]
 name = "build_helper"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_derive",
+]
 
 [[package]]
 name = "bump-stage0"
@@ -2624,6 +2628,7 @@ name = "opt-dist"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "build_helper",
  "camino",
  "env_logger 0.10.0",
  "fs_extra",

@@ -1,32 +1,7 @@
 use crate::timer::TimerSection;
+use build_helper::metrics::{JsonNode, JsonRoot};
 use camino::Utf8Path;
 use std::time::Duration;
-
-// Sure would be nice to share these data structures with bootstrap!
-#[derive(serde::Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-struct Metrics {
-    invocations: Vec<Invocation>,
-}
-
-#[derive(serde::Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-struct Invocation {
-    duration_including_children_sec: f64,
-    children: Vec<JsonNode>,
-}
-
-#[derive(serde::Deserialize, Debug)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum JsonNode {
-    RustbuildStep {
-        #[serde(rename = "type")]
-        r#type: String,
-        duration_excluding_children_sec: f64,
-        children: Vec<JsonNode>,
-    },
-    Test,
-}
 
 #[derive(Clone, Debug)]
 pub struct BuildStep {
@@ -54,7 +29,7 @@ impl BuildStep {
 /// Loads the metrics of the most recent bootstrap execution from a metrics.json file.
 pub fn load_metrics(path: &Utf8Path) -> anyhow::Result<BuildStep> {
     let content = std::fs::read(path.as_std_path())?;
-    let mut metrics = serde_json::from_slice::<Metrics>(&content)?;
+    let mut metrics = serde_json::from_slice::<JsonRoot>(&content)?;
     let invocation = metrics
         .invocations
         .pop()
@@ -63,7 +38,7 @@ pub fn load_metrics(path: &Utf8Path) -> anyhow::Result<BuildStep> {
     fn parse(node: JsonNode) -> Option<BuildStep> {
         match node {
             JsonNode::RustbuildStep {
-                r#type: kind,
+                type_: kind,
                 children,
                 duration_excluding_children_sec,
                 ..
@@ -77,7 +52,7 @@ pub fn load_metrics(path: &Utf8Path) -> anyhow::Result<BuildStep> {
                         + Duration::from_secs_f64(duration_excluding_children_sec),
                 })
             }
-            JsonNode::Test => None,
+            JsonNode::TestSuite(_) => None,
         }
     }
 
