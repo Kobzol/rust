@@ -82,7 +82,7 @@ ENV RUST_CONFIGURE_ARGS \
       --set rust.use-lld=true \
       --set rust.lto=thin
 
-ENV SCRIPT python3 ../x.py build --set rust.optimize=false --set rust.debug=true opt-dist && \
+ENV SCRIPT python3 ../x.py build --set rust.debug=true opt-dist && \
     ./build/$HOSTS/stage0-tools-bin/opt-dist python3 ../x.py dist \
     --host $HOSTS --target $HOSTS \
     --include-default-paths \

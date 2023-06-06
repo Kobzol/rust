@@ -36,4 +36,15 @@ impl Environment for LinuxEnvironment {
     fn supports_bolt(&self) -> bool {
         true
     }
+
+    fn executable_extension(&self) -> &'static str {
+        ""
+    }
+
+    fn skipped_tests(&self) -> &'static [&'static str] {
+        &[
+            // Fails because of linker errors, as of June 2023.
+            "tests/ui/process/nofile-limit.rs",
+        ]
+    }
 }

@@ -48,6 +48,12 @@ pub trait Environment {
     fn prepare_rustc_perf(&self) -> anyhow::Result<()>;
 
     fn supports_bolt(&self) -> bool;
+
+    /// What is the extension of binary executables in this environment?
+    fn executable_extension(&self) -> &'static str;
+
+    /// List of test paths that should be skipped when testing the optimized artifacts.
+    fn skipped_tests(&self) -> &'static [&'static str];
 }
 
 pub fn create_environment() -> Box<dyn Environment> {

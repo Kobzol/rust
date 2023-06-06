@@ -3,6 +3,7 @@ use log::LevelFilter;
 
 use crate::environment::{create_environment, Environment};
 use crate::exec::Bootstrap;
+use crate::tests::run_tests;
 use crate::timer::Timer;
 use crate::training::{gather_llvm_bolt_profiles, gather_llvm_profiles, gather_rustc_profiles};
 use crate::utils::io::reset_directory;
@@ -11,6 +12,7 @@ use crate::utils::{clear_llvm_files, format_env_variables, print_free_disk_space
 mod environment;
 mod exec;
 mod metrics;
+mod tests;
 mod timer;
 mod training;
 mod utils;
@@ -92,6 +94,11 @@ fn execute_pipeline(
 
     // Stage 4: Build PGO optimized rustc + PGO/BOLT optimized LLVM
     timer.section("Stage 4 (final build)", |stage| Bootstrap::dist(env, &dist_args).run(stage))?;
+
+    // Try builds can be in various broken states, so we don't want to gatekeep them with tests
+    if !is_try_build() {
+        timer.section("Run tests", |_| run_tests(env))?;
+    }
 
     Ok(())
 }

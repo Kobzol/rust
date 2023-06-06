@@ -50,4 +50,15 @@ impl Environment for WindowsEnvironment {
     fn supports_bolt(&self) -> bool {
         false
     }
+
+    fn executable_extension(&self) -> &'static str {
+        ".exe"
+    }
+
+    fn skipped_tests(&self) -> &'static [&'static str] {
+        &[
+            // Fails as of June 2023.
+            "tests\\codegen\\vec-shrink-panik.rs",
+        ]
+    }
 }
