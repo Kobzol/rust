@@ -1,7 +1,7 @@
 use crate::environment::Environment;
 use crate::metrics::{load_metrics, record_metrics};
 use crate::timer::TimerSection;
-use crate::training::{LlvmPGOProfile, RustcPGOProfile};
+use crate::training::{LlvmBoltProfile, LlvmPGOProfile, RustcPGOProfile};
 use camino::{Utf8Path, Utf8PathBuf};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -122,23 +122,34 @@ impl Bootstrap {
         self
     }
 
+    pub fn llvm_pgo_optimize(mut self, profile: &LlvmPGOProfile) -> Self {
+        self.cmd = self.cmd.arg("--llvm-profile-use").arg(profile.0.as_str());
+        self
+    }
+
     pub fn rustc_pgo_instrument(mut self, profile_dir: &Utf8Path) -> Self {
         self.cmd = self.cmd.arg("--rust-profile-generate").arg(profile_dir.as_str());
         self
     }
 
-    pub fn llvm_bolt_instrument(
-        mut self,
-        llvm_pgo: &LlvmPGOProfile,
-        rustc_pgo: &RustcPGOProfile,
-    ) -> Self {
-        self.cmd = self
-            .cmd
-            .arg("--llvm-profile-use")
-            .arg(llvm_pgo.0.as_str())
-            .arg("--llvm-bolt-profile-generate")
-            .arg("--rust-profile-use")
-            .arg(rustc_pgo.0.as_str());
+    pub fn rustc_pgo_optimize(mut self, profile: &RustcPGOProfile) -> Self {
+        self.cmd = self.cmd.arg("--rust-profile-use").arg(profile.0.as_str());
+        self
+    }
+
+    pub fn llvm_bolt_instrument(mut self) -> Self {
+        self.cmd = self.cmd.arg("--llvm-bolt-profile-generate");
+        self
+    }
+
+    pub fn llvm_bolt_optimize(mut self, profile: &LlvmBoltProfile) -> Self {
+        self.cmd = self.cmd.arg("--llvm-bolt-profile-use").arg(profile.0.as_str());
+        self
+    }
+
+    /// Do not rebuild rustc, and use a previously built rustc sysroot instead.
+    pub fn avoid_rustc_rebuild(mut self) -> Self {
+        self.cmd = self.cmd.arg("--keep-stage").arg("0").arg("--keep-stage").arg("1");
         self
     }
 

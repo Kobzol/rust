@@ -24,57 +24,79 @@ fn is_try_build() -> bool {
 fn execute_pipeline(
     env: &dyn Environment,
     timer: &mut Timer,
-    mut dist_args: Vec<String>,
+    dist_args: Vec<String>,
 ) -> anyhow::Result<()> {
     reset_directory(&env.opt_artifacts())?;
     env.prepare_rustc_perf()?;
 
-    // Stage 1: Build rustc + PGO instrumented LLVM
-    let llvm_pgo_profile = timer.section("Stage 1 (LLVM PGO)", |stage| {
-        let llvm_profile_dir_root = env.opt_artifacts().join("llvm-pgo");
-
-        stage.section("Build rustc and LLVM", |section| {
-            Bootstrap::build(env).llvm_pgo_instrument(&llvm_profile_dir_root).run(section)
-        })?;
-
-        let profile = stage
-            .section("Gather profiles", |_| gather_llvm_profiles(env, &llvm_profile_dir_root))?;
-
-        print_free_disk_space()?;
-        clear_llvm_files(env)?;
-
-        Ok(profile)
-    })?;
-
-    // Stage 2: Build PGO instrumented rustc + LLVM
-    let rustc_pgo_profile = timer.section("Stage 2 (rustc PGO)", |stage| {
+    // Stage 1: Build PGO instrumented rustc
+    // We use a normal build of LLVM, because gathering PGO profiles for LLVM and `rustc` at the
+    // same time can cause issues, because the host and in-tre LLVM versions can be diverged.
+    let rustc_pgo_profile = timer.section("Stage 1 (Rustc PGO)", |stage| {
         let rustc_profile_dir_root = env.opt_artifacts().join("rustc-pgo");
 
-        stage.section("Build rustc and LLVM", |section| {
+        stage.section("Build PGO instrumented rustc and LLVM", |section| {
             Bootstrap::build(env).rustc_pgo_instrument(&rustc_profile_dir_root).run(section)
         })?;
 
         let profile = stage
             .section("Gather profiles", |_| gather_rustc_profiles(env, &rustc_profile_dir_root))?;
         print_free_disk_space()?;
+
+        stage.section("Build PGO optimized rustc", |section| {
+            Bootstrap::build(env).rustc_pgo_optimize(&profile).run(section)
+        })?;
+
+        Ok(profile)
+    })?;
+
+    // Stage 2: Gather LLVM PGO profiles
+    // Here we build a PGO instrumented LLVM, reusing the previously PGO optimized rustc.
+    // Then we use the instrumented LLVM to gather LLVM PGO profiles.
+    let llvm_pgo_profile = timer.section("Stage 2 (LLVM PGO)", |stage| {
+        // Remove the previous, uninstrumented build of LLVM.
+        clear_llvm_files(env)?;
+
+        let llvm_profile_dir_root = env.opt_artifacts().join("llvm-pgo");
+
+        stage.section("Build PGO instrumented LLVM", |section| {
+            Bootstrap::build(env)
+                .llvm_pgo_instrument(&llvm_profile_dir_root)
+                .avoid_rustc_rebuild()
+                .run(section)
+        })?;
+
+        let profile = stage
+            .section("Gather profiles", |_| gather_llvm_profiles(env, &llvm_profile_dir_root))?;
+
+        print_free_disk_space()?;
+
+        // Proactively delete the instrumented artifacts, to avoid using them by accident in
+        // follow-up stages.
         clear_llvm_files(env)?;
 
         Ok(profile)
     })?;
 
     let llvm_bolt_profile = if env.supports_bolt() {
-        // Stage 3: Build rustc + BOLT instrumented LLVM
+        // Stage 3: Build BOLT instrumented LLVM
+        // We build a PGO optimized LLVM in this step, then instrument it with BOLT and gather BOLT profiles.
+        // Note that we don't remove LLVM artifacts after this step, so that they are reused in the final dist build.
+        // BOLT instrumentation is performed "on-the-fly" when the LLVM library is copied to the sysroot of rustc,
+        // therefore the LLVM artifacts on disk are not "tainted" with BOLT instrumentation and they can be reused.
         timer.section("Stage 3 (LLVM BOLT)", |stage| {
-            stage.section("Build rustc and LLVM", |stage| {
+            stage.section("Build BOLT instrumented LLVM", |stage| {
                 Bootstrap::build(env)
-                    .llvm_bolt_instrument(&llvm_pgo_profile, &rustc_pgo_profile)
+                    .llvm_bolt_instrument()
+                    .llvm_pgo_optimize(&llvm_pgo_profile)
+                    .avoid_rustc_rebuild()
                     .run(stage)
             })?;
 
             let profile = stage.section("Gather profiles", |_| gather_llvm_bolt_profiles(env))?;
             print_free_disk_space()?;
 
-            // LLVM is not being cleared here, we want to reuse the previous build
+            // LLVM is not being cleared here, we want to reuse the previous PGO-optimized build
 
             Ok(Some(profile))
         })?
@@ -82,20 +104,23 @@ fn execute_pipeline(
         None
     };
 
-    dist_args.extend([
-        "--llvm-profile-use".to_string(),
-        llvm_pgo_profile.0.to_string(),
-        "--rust-profile-use".to_string(),
-        rustc_pgo_profile.0.to_string(),
-    ]);
+    let mut dist = Bootstrap::dist(env, &dist_args)
+        .llvm_pgo_optimize(&llvm_pgo_profile)
+        .rustc_pgo_optimize(&rustc_pgo_profile)
+        .avoid_rustc_rebuild();
+
     if let Some(llvm_bolt_profile) = llvm_bolt_profile {
-        dist_args.extend(["--llvm-bolt-profile-use".to_string(), llvm_bolt_profile.0.to_string()]);
+        dist = dist.llvm_bolt_optimize(&llvm_bolt_profile);
     }
 
-    // Stage 4: Build PGO optimized rustc + PGO/BOLT optimized LLVM
-    timer.section("Stage 4 (final build)", |stage| Bootstrap::dist(env, &dist_args).run(stage))?;
+    // Final stage: Assemble the dist artifacts
+    // The previous PGO optimized rustc build and PGO optimized LLVM builds should be reused.
+    timer.section("Stage 4 (final build)", |stage| dist.run(stage))?;
 
-    // Try builds can be in various broken states, so we don't want to gatekeep them with tests
+    // After dist has finished, run a subset of the test suite on the optimized artifacts to discover
+    // possible regressions.
+    // The tests are not executed for try builds, which can be in various broken states, so we don't
+    // want to gatekeep them with tests.
     if !is_try_build() {
         timer.section("Run tests", |_| run_tests(env))?;
     }
