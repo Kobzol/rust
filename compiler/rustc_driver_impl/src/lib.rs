@@ -7,18 +7,37 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(lazy_cell)]
 #![feature(decl_macro)]
+#![feature(internal_output_capture)]
 #![recursion_limit = "256"]
 #![allow(rustc::potential_query_instability)]
 #![deny(rustc::untranslatable_diagnostic)]
 #![deny(rustc::diagnostic_outside_of_impl)]
 
+pub extern crate rustc_plugin_impl as plugin;
 #[macro_use]
 extern crate tracing;
 
-pub extern crate rustc_plugin_impl as plugin;
+use std::cmp::max;
+use std::collections::BTreeMap;
+use std::env;
+use std::ffi::OsString;
+use std::fs;
+use std::io::{self, Cursor, IsTerminal, Read, Write};
+use std::panic::{self, catch_unwind};
+use std::path::{Path, PathBuf};
+use std::process::{self, Command, Stdio};
+use std::str;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use rustc_ast as ast;
 use rustc_codegen_ssa::{traits::CodegenBackend, CodegenErrors, CodegenResults};
+#[allow(unused_imports)]
+use {do_not_use_print as print, do_not_use_print as println};
+// This import blocks the use of panicking `print` and `println` in all the code
+// below. Please use `safe_print` and `safe_println` to avoid ICE when
+// encountering an I/O error during print.
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::profiling::{
     get_resident_set_size, print_time_passes_entry, TimePassesFormat,
 };
@@ -43,22 +62,15 @@ use rustc_session::lint::{Lint, LintId};
 use rustc_session::{config, Session};
 use rustc_session::{early_error, early_error_no_abort, early_warn};
 use rustc_span::source_map::{FileLoader, FileName};
+use rustc_span::sym::val;
 use rustc_span::symbol::sym;
 use rustc_target::json::ToJson;
 use rustc_target::spec::{Target, TargetTriple};
 
-use std::cmp::max;
-use std::collections::BTreeMap;
-use std::env;
-use std::ffi::OsString;
-use std::fs;
-use std::io::{self, IsTerminal, Read, Write};
-use std::panic::{self, catch_unwind};
-use std::path::PathBuf;
-use std::process::{self, Command, Stdio};
-use std::str;
-use std::sync::OnceLock;
-use std::time::Instant;
+use crate::session_diagnostics::{
+    RLinkEmptyVersionNumber, RLinkEncodingVersionMismatch, RLinkRustcVersionMismatch,
+    RLinkWrongFileType, RlinkNotAFile, RlinkUnableToRead,
+};
 
 #[allow(unused_macros)]
 macro do_not_use_print($($t:tt)*) {
@@ -67,22 +79,11 @@ macro do_not_use_print($($t:tt)*) {
     )
 }
 
-// This import blocks the use of panicking `print` and `println` in all the code
-// below. Please use `safe_print` and `safe_println` to avoid ICE when
-// encountering an I/O error during print.
-#[allow(unused_imports)]
-use {do_not_use_print as print, do_not_use_print as println};
-
 pub mod args;
 pub mod pretty;
 #[macro_use]
 mod print;
 mod session_diagnostics;
-
-use crate::session_diagnostics::{
-    RLinkEmptyVersionNumber, RLinkEncodingVersionMismatch, RLinkRustcVersionMismatch,
-    RLinkWrongFileType, RlinkNotAFile, RlinkUnableToRead,
-};
 
 fluent_messages! { "../messages.ftl" }
 
@@ -1420,6 +1421,12 @@ mod signal_handler {
     pub(super) fn install() {}
 }
 
+struct RemoteCommand {
+    working_dir: Option<String>,
+    env: FxHashMap<String, String>,
+    args: Vec<String>,
+}
+
 pub fn main() -> ! {
     let start_time = Instant::now();
     let start_rss = get_resident_set_size();
@@ -1427,6 +1434,30 @@ pub fn main() -> ! {
     signal_handler::install();
     let mut callbacks = TimePassesCallbacks::default();
     install_ice_hook(DEFAULT_BUG_REPORT_URL, |_| ());
+
+    let is_daemon = env::var("RUSTC_DAEMON").is_ok();
+    let data = Arc::new(Mutex::new(Cursor::new(Vec::<u8>::new())));
+    if is_daemon {
+        let original_env: FxHashMap<String, String> = env::vars().collect();
+        let original_cmd = env::current_dir().unwrap();
+
+        let command: RemoteCommand = RemoteCommand {
+            working_dir: None,
+            env: Default::default(),
+            args: vec!["/projects/personal/rust/rust/test-crate/daemon/a.rs".to_string()],
+        };
+        reset_process_state(&original_env, &original_cmd);
+        init_process_state(&command);
+
+        let command: RemoteCommand = RemoteCommand {
+            working_dir: None,
+            env: Default::default(),
+            args: vec!["/projects/personal/rust/rust/test-crate/daemon/a.rs".to_string()],
+        };
+        reset_process_state(&original_env, &original_cmd);
+        init_process_state(&command);
+    }
+
     let exit_code = catch_with_exit_code(|| {
         let args = env::args_os()
             .enumerate()
@@ -1442,10 +1473,34 @@ pub fn main() -> ! {
         RunCompiler::new(&args, &mut callbacks).run()
     });
 
+    // eprintln!("...");
+    // eprintln!("DATA: {}", String::from_utf8_lossy(&data.lock().unwrap()));
+
     if let Some(format) = callbacks.time_passes {
         let end_rss = get_resident_set_size();
         print_time_passes_entry("total", start_time.elapsed(), start_rss, end_rss, format);
     }
 
     process::exit(exit_code)
+}
+
+fn reset_process_state(orig_env: &FxHashMap<String, String>, orig_workdir: &Path) {
+    env::set_current_dir(orig_workdir).unwrap();
+    for (key, _) in env::vars() {
+        if !orig_env.contains_key(&key) {
+            env::remove_var(&key);
+        }
+    }
+    for (key, value) in orig_env.iter() {
+        env::set_var(key, value);
+    }
+}
+
+fn init_process_state(command: &RemoteCommand) {
+    if let Some(ref workdir) = command.working_dir {
+        env::set_current_dir(&workdir).unwrap();
+    }
+    for (key, value) in command.env.iter() {
+        env::set_var(key, value);
+    }
 }

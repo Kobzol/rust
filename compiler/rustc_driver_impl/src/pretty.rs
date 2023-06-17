@@ -360,6 +360,15 @@ fn get_source(sess: &Session) -> (String, FileName) {
 fn write_or_print(out: &str, sess: &Session) {
     match &sess.io.output_file {
         None | Some(OutFileName::Stdout) => print!("{out}"),
+        Some(OutFileName::InMemory(mem)) => {
+            use std::io::Write;
+            if let Err(e) = mem.lock().unwrap().write(out.as_bytes()) {
+                sess.emit_fatal(UnprettyDumpFail {
+                    path: "memory".to_string(),
+                    err: e.to_string(),
+                });
+            }
+        }
         Some(OutFileName::Real(p)) => {
             if let Err(e) = std::fs::write(p, out) {
                 sess.emit_fatal(UnprettyDumpFail {

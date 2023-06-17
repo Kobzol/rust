@@ -12,7 +12,10 @@ use rustc_session::output::filename_for_metadata;
 use rustc_session::{MetadataKind, Session};
 use tempfile::Builder as TempFileBuilder;
 
+use std::io::Cursor;
+use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::{fs, io};
 
 // FIXME(eddyb) maybe include the crate name in this?
@@ -91,6 +94,9 @@ pub fn encode_and_write_metadata(tcx: TyCtxt<'_>) -> (EncodedMetadata, bool) {
                 }
                 metadata_filename
             }
+            OutFileName::InMemory(_) => {
+                panic!("inmemory metadata");
+            }
         };
         if tcx.sess.opts.json_artifact_notifications {
             tcx.sess
@@ -137,5 +143,13 @@ pub fn copy_to_stdout(from: &Path) -> io::Result<()> {
     let mut reader = io::BufReader::new(file);
     let mut stdout = io::stdout();
     io::copy(&mut reader, &mut stdout)?;
+    Ok(())
+}
+
+pub fn copy_to_memory(from: &Path, mem: Arc<Mutex<Cursor<Vec<u8>>>>) -> io::Result<()> {
+    let file = fs::File::open(from)?;
+    let mut reader = io::BufReader::new(file);
+    let mut output = mem.lock().unwrap();
+    io::copy(&mut reader, output.deref_mut())?;
     Ok(())
 }

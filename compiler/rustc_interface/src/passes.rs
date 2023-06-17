@@ -38,6 +38,7 @@ use rustc_trait_selection::traits;
 use std::any::Any;
 use std::ffi::OsString;
 use std::io::{self, BufWriter, Write};
+use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::{env, fs, iter};
@@ -562,6 +563,10 @@ fn write_out_deps(tcx: TyCtxt<'_>, outputs: &OutputFilenames, out_filenames: &[P
             OutFileName::Real(ref path) => {
                 let mut file = BufWriter::new(fs::File::create(path)?);
                 write_deps_to_file(&mut file)?;
+            }
+            OutFileName::InMemory(ref mem) => {
+                let mut file = mem.lock().unwrap();
+                write_deps_to_file(file.deref_mut())?;
             }
         }
     };

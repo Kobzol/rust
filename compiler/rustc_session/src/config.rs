@@ -10,7 +10,7 @@ use crate::{lint, HashStableContext};
 
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 
-use rustc_data_structures::stable_hasher::{StableOrd, ToStableHashKey};
+use rustc_data_structures::stable_hasher::{HashStable, StableHasher, StableOrd, ToStableHashKey};
 use rustc_target::abi::Align;
 use rustc_target::spec::{LinkerFlavorCli, PanicStrategy, SanitizerSet, SplitDebuginfo};
 use rustc_target::spec::{Target, TargetTriple, TargetWarnings, TARGETS};
@@ -32,11 +32,12 @@ use std::collections::btree_map::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt;
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
+use std::io::Cursor;
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex};
 
 pub mod sigpipe;
 
@@ -679,17 +680,58 @@ impl Input {
     }
 }
 
-#[derive(Clone, Hash, Debug, HashStable_Generic, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum OutFileName {
     Real(PathBuf),
     Stdout,
+    InMemory(Arc<Mutex<Cursor<Vec<u8>>>>),
+}
+
+impl<Ctx> HashStable<Ctx> for OutFileName {
+    fn hash_stable(&self, _hcx: &mut Ctx, hasher: &mut StableHasher) {
+        self.hash(hasher);
+    }
+}
+
+impl PartialEq for OutFileName {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            OutFileName::Real(path) => {
+                matches!(other, OutFileName::Real(p) if p == path)
+            }
+            OutFileName::Stdout => {
+                matches!(other, OutFileName::Stdout)
+            }
+            OutFileName::InMemory(_) => {
+                matches!(other, OutFileName::InMemory(_))
+            }
+        }
+    }
+}
+
+impl Hash for OutFileName {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            OutFileName::Real(path) => {
+                state.write_u8(0);
+                state.write(path.to_str().unwrap().as_bytes());
+            }
+            OutFileName::Stdout => {
+                state.write_u8(1);
+            }
+            OutFileName::InMemory(_) => {
+                state.write_u8(2);
+                state.write(b"inmemory");
+            }
+        }
+    }
 }
 
 impl OutFileName {
     pub fn parent(&self) -> Option<&Path> {
         match *self {
             OutFileName::Real(ref path) => path.parent(),
-            OutFileName::Stdout => None,
+            OutFileName::Stdout | OutFileName::InMemory(_) => None,
         }
     }
 
@@ -697,19 +739,20 @@ impl OutFileName {
         match *self {
             OutFileName::Real(ref path) => path.file_stem(),
             OutFileName::Stdout => Some(OsStr::new("stdout")),
+            OutFileName::InMemory(_) => Some(OsStr::new("memory")),
         }
     }
 
     pub fn is_stdout(&self) -> bool {
         match *self {
             OutFileName::Real(_) => false,
-            OutFileName::Stdout => true,
+            OutFileName::Stdout | OutFileName::InMemory(_) => true,
         }
     }
 
     pub fn is_tty(&self) -> bool {
         match *self {
-            OutFileName::Real(_) => false,
+            OutFileName::Real(_) | OutFileName::InMemory(_) => false,
             OutFileName::Stdout => atty::is(atty::Stream::Stdout),
         }
     }
@@ -718,6 +761,7 @@ impl OutFileName {
         match *self {
             OutFileName::Real(ref path) => path.as_ref(),
             OutFileName::Stdout => &Path::new("stdout"),
+            OutFileName::InMemory(_) => &Path::new("memory"),
         }
     }
 
@@ -734,7 +778,9 @@ impl OutFileName {
     ) -> PathBuf {
         match *self {
             OutFileName::Real(ref path) => path.clone(),
-            OutFileName::Stdout => outputs.temp_path(flavor, codegen_unit_name),
+            OutFileName::Stdout | OutFileName::InMemory(_) => {
+                outputs.temp_path(flavor, codegen_unit_name)
+            }
         }
     }
 }

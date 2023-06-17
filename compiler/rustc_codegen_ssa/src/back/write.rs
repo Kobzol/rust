@@ -23,7 +23,7 @@ use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_incremental::{
     copy_cgu_workproduct_to_incr_comp_cache_dir, in_incr_comp_dir, in_incr_comp_dir_sess,
 };
-use rustc_metadata::fs::copy_to_stdout;
+use rustc_metadata::fs::{copy_to_memory, copy_to_stdout};
 use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
 use rustc_middle::middle::exported_symbols::SymbolExportInfo;
@@ -545,6 +545,11 @@ fn produce_final_output_artifacts(
         OutFileName::Real(path) => {
             if let Err(e) = fs::copy(from, path) {
                 sess.emit_err(errors::CopyPath::new(from, path, e));
+            }
+        }
+        OutFileName::InMemory(mem) => {
+            if let Err(e) = copy_to_memory(from, mem.clone()) {
+                sess.emit_err(errors::CopyPath::new(from, to.as_path(), e));
             }
         }
     };
