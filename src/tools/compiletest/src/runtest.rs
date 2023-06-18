@@ -17,11 +17,13 @@ use crate::util::{add_dylib_path, dylib_env_var, logv, PathBufExt};
 use crate::ColorConfig;
 use regex::{Captures, Regex};
 use rustfix::{apply_suggestions, get_suggestions_from_json, Filter};
+use std::cell::RefCell;
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::{self, create_dir_all, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::prelude::*;
@@ -41,6 +43,7 @@ use crate::extract_gdb_version;
 use crate::is_android_gdb_target;
 
 mod debugger;
+use crate::daemon::RustcDaemon;
 use debugger::{check_debugger_output, DebuggerCommands};
 
 #[cfg(test)]
@@ -920,7 +923,7 @@ impl<'test> TestCx<'test> {
             };
 
             debugger_run_result = ProcRes {
-                status,
+                status: status.into(),
                 stdout: String::from_utf8(stdout).unwrap(),
                 stderr: String::from_utf8(stderr).unwrap(),
                 cmdline,
@@ -1208,7 +1211,7 @@ impl<'test> TestCx<'test> {
         };
 
         self.dump_output(&out, &err);
-        ProcRes { status, stdout: out, stderr: err, cmdline: format!("{:?}", cmd) }
+        ProcRes { status: status.into(), stdout: out, stderr: err, cmdline: format!("{:?}", cmd) }
     }
 
     fn cleanup_debug_info_options(&self, options: &Vec<String>) -> Vec<String> {
@@ -1763,12 +1766,22 @@ impl<'test> TestCx<'test> {
         let aux_dir = self.build_all_auxiliary(&mut rustc);
         self.props.unset_rustc_env.iter().fold(&mut rustc, Command::env_remove);
         rustc.envs(self.props.rustc_env.clone());
-        self.compose_and_run(
-            rustc,
-            self.config.compile_lib_path.to_str().unwrap(),
-            Some(aux_dir.to_str().unwrap()),
-            input,
-        )
+
+        if env::var("COMPILETEST_RUSTC_DAEMON").is_ok() {
+            self.compose_and_run_daemon(
+                rustc,
+                self.config.compile_lib_path.to_str().unwrap(),
+                Some(aux_dir.to_str().unwrap()),
+                input,
+            )
+        } else {
+            self.compose_and_run(
+                rustc,
+                self.config.compile_lib_path.to_str().unwrap(),
+                Some(aux_dir.to_str().unwrap()),
+                input,
+            )
+        }
     }
 
     /// Builds an aux dependency.
@@ -1901,11 +1914,65 @@ impl<'test> TestCx<'test> {
         let Output { status, stdout, stderr } = self.read2_abbreviated(child);
 
         let result = ProcRes {
-            status,
+            status: status.into(),
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             cmdline,
         };
+
+        self.dump_output(&result.stdout, &result.stderr);
+
+        result
+    }
+
+    fn compose_and_run_daemon(
+        &self,
+        mut command: Command,
+        lib_path: &str,
+        aux_path: Option<&str>,
+        input: Option<String>,
+    ) -> ProcRes {
+        let cmdline = {
+            let cmdline = self.make_cmdline(&command, lib_path);
+            logv(self.config, format!("executing {}", cmdline));
+            cmdline
+        };
+
+        // Need to be sure to put both the lib_path and the aux path in the dylib
+        // search path for the child.
+        add_dylib_path(&mut command, iter::once(lib_path).chain(aux_path));
+
+        use std::cell::OnceCell;
+        thread_local! {
+            static DAEMON: OnceCell<RefCell<RustcDaemon>> = OnceCell::new();
+        }
+
+        let result = DAEMON.with(|daemon| {
+            let daemon = daemon.get_or_init(|| {
+                RefCell::new(RustcDaemon::connect(
+                    "/projects/personal/rust/rust/build/x86_64-unknown-linux-gnu/stage1/bin/rustc"
+                        .to_string()
+                        .into(),
+                ))
+            });
+            let mut daemon = daemon.borrow_mut();
+            daemon.run(&command, cmdline)
+        });
+
+        // let mut child = disable_error_reporting(|| command.spawn())
+        //     .unwrap_or_else(|_| panic!("failed to exec `{:?}`", &command));
+        // if let Some(input) = input {
+        //     child.stdin.as_mut().unwrap().write_all(input.as_bytes()).unwrap();
+        // }
+        //
+        // let Output { status, stdout, stderr } = self.read2_abbreviated(child);
+
+        // let result = ProcRes {
+        //     status,
+        //     stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        //     stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        //     cmdline,
+        // };
 
         self.dump_output(&result.stdout, &result.stderr);
 
@@ -3205,7 +3272,7 @@ impl<'test> TestCx<'test> {
         let output = self.read2_abbreviated(cmd.spawn().expect("failed to spawn `make`"));
         if !output.status.success() {
             let res = ProcRes {
-                status: output.status,
+                status: output.status.into(),
                 stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
                 cmdline: format!("{:?}", cmd),
@@ -4049,11 +4116,44 @@ struct ProcArgs {
     args: Vec<String>,
 }
 
+#[derive(Debug)]
+pub struct CustomExitStatus {
+    code: i32,
+}
+
+impl CustomExitStatus {
+    pub fn success(&self) -> bool {
+        self.code == 0
+    }
+
+    pub fn code(&self) -> Option<i32> {
+        Some(self.code)
+    }
+}
+
+impl Display for CustomExitStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.code, f)
+    }
+}
+
+impl From<ExitStatus> for CustomExitStatus {
+    fn from(value: ExitStatus) -> Self {
+        Self { code: value.code().unwrap_or(1) }
+    }
+}
+
+impl From<i32> for CustomExitStatus {
+    fn from(value: i32) -> Self {
+        Self { code: value }
+    }
+}
+
 pub struct ProcRes {
-    status: ExitStatus,
-    stdout: String,
-    stderr: String,
-    cmdline: String,
+    pub status: CustomExitStatus,
+    pub stdout: String,
+    pub stderr: String,
+    pub cmdline: String,
 }
 
 impl ProcRes {

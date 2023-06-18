@@ -674,7 +674,7 @@ impl Write for CapturedOutput {
     }
 }
 
-pub static CAPTURED_MEMORY_IO: OnceLock<CapturedOutput> = OnceLock::new();
+pub static CAPTURED_STDERR: OnceLock<CapturedOutput> = OnceLock::new();
 
 impl EmitterWriter {
     pub fn stderr(
@@ -689,8 +689,8 @@ impl EmitterWriter {
         track_diagnostics: bool,
         terminal_url: TerminalUrl,
     ) -> EmitterWriter {
-        let dst = if std::env::var("RUSTC_DAEMON").is_ok() {
-            Destination::Raw(Box::new(CAPTURED_MEMORY_IO.get().unwrap().clone()), true)
+        let dst = if let Some(captured) = CAPTURED_STDERR.get() {
+            Destination::Raw(Box::new(captured.clone()), true)
         } else {
             Destination::from_stderr(color_config)
         };

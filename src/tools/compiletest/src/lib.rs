@@ -10,6 +10,7 @@ mod tests;
 
 pub mod common;
 pub mod compute_diff;
+pub mod daemon;
 pub mod errors;
 pub mod header;
 mod json;

@@ -42,7 +42,7 @@ use rustc_data_structures::profiling::{
     get_resident_set_size, print_time_passes_entry, TimePassesFormat,
 };
 use rustc_data_structures::sync::SeqCst;
-use rustc_errors::emitter::{CapturedOutput, CAPTURED_MEMORY_IO};
+use rustc_errors::emitter::{CapturedOutput, CAPTURED_STDERR};
 use rustc_errors::registry::{InvalidErrorCode, Registry};
 use rustc_errors::{
     DiagnosticMessage, ErrorGuaranteed, Handler, PResult, SubdiagnosticMessage, TerminalUrl,
@@ -463,13 +463,15 @@ fn run_compiler(
     })
 }
 
+static CAPTURED_STDOUT: OnceLock<CapturedOutput> = OnceLock::new();
+
 // Extract output directory and file from matches.
 fn make_output(matches: &getopts::Matches) -> (Option<PathBuf>, Option<OutFileName>) {
     let odir = matches.opt_str("out-dir").map(|o| PathBuf::from(&o));
     let ofile = matches.opt_str("o").map(|o| match o.as_str() {
         "-" => {
-            if env::var("RUSTC_DAEMON").is_ok() {
-                OutFileName::InMemory(CAPTURED_MEMORY_IO.get().unwrap().clone())
+            if let Some(captured) = CAPTURED_STDOUT.get() {
+                OutFileName::InMemory(captured.clone())
             } else {
                 OutFileName::Stdout
             }
@@ -1437,7 +1439,8 @@ struct RemoteCommand {
 #[derive(Debug, serde::Serialize)]
 struct CommandResult {
     exit_code: i32,
-    output: Vec<u8>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
 struct ProcessContext {
@@ -1449,8 +1452,9 @@ fn run_compiler_session(ctx: &ProcessContext, command: &RemoteCommand) -> Comman
     reset_process_state(ctx);
     init_process_state(&command);
 
-    // Reset I/O buffer
-    CAPTURED_MEMORY_IO.get_or_init(|| CapturedOutput(Arc::new(Mutex::new(Vec::new()))));
+    // Reset I/O buffers
+    CAPTURED_STDOUT.get_or_init(|| CapturedOutput(Arc::new(Mutex::new(Vec::new()))));
+    CAPTURED_STDERR.get_or_init(|| CapturedOutput(Arc::new(Mutex::new(Vec::new()))));
 
     let mut args = vec![];
     args.push(env::current_exe().unwrap().to_str().unwrap().to_string());
@@ -1459,15 +1463,15 @@ fn run_compiler_session(ctx: &ProcessContext, command: &RemoteCommand) -> Comman
     let mut callbacks = TimePassesCallbacks::default();
     let exit_code = catch_with_exit_code(|| RunCompiler::new(&args, &mut callbacks).run());
 
-    let output: Vec<u8> =
-        std::mem::take(CAPTURED_MEMORY_IO.get().unwrap().0.lock().unwrap().as_mut());
+    let stdout: Vec<u8> = std::mem::take(CAPTURED_STDOUT.get().unwrap().0.lock().unwrap().as_mut());
+    let stderr: Vec<u8> = std::mem::take(CAPTURED_STDERR.get().unwrap().0.lock().unwrap().as_mut());
 
-    eprintln!(
-        "Compilation ended. Exit code: {exit_code}\nOutput\n{}",
-        String::from_utf8(output.clone()).unwrap()
-    );
+    // eprintln!(
+    //     "Compilation ended. Exit code: {exit_code}\nOutput\n{}",
+    //     String::from_utf8(stdout.clone()).unwrap()
+    // );
 
-    CommandResult { exit_code, output }
+    CommandResult { exit_code, stdout, stderr }
 }
 
 pub fn main() -> ! {

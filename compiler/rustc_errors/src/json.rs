@@ -11,7 +11,7 @@
 
 use rustc_span::source_map::{FilePathMapping, SourceMap};
 
-use crate::emitter::{Emitter, HumanReadableErrorType};
+use crate::emitter::{Emitter, HumanReadableErrorType, CAPTURED_STDERR};
 use crate::registry::Registry;
 use crate::translation::{to_fluent_args, Translate};
 use crate::DiagnosticId;
@@ -64,8 +64,14 @@ impl JsonEmitter {
         track_diagnostics: bool,
         terminal_url: TerminalUrl,
     ) -> JsonEmitter {
+        let dst: Box<dyn Write + Send> = if let Some(captured) = CAPTURED_STDERR.get() {
+            Box::new(captured.clone())
+        } else {
+            Box::new(io::BufWriter::new(io::stderr()))
+        };
+
         JsonEmitter {
-            dst: Box::new(io::BufWriter::new(io::stderr())),
+            dst,
             registry,
             sm: source_map,
             fluent_bundle,
