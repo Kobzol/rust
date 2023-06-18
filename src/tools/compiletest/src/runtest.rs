@@ -11,10 +11,10 @@ use crate::common::{UI_RUN_STDERR, UI_RUN_STDOUT};
 use crate::compute_diff::{write_diff, write_filtered_diff};
 use crate::errors::{self, Error, ErrorKind};
 use crate::header::TestProps;
-use crate::json;
 use crate::read2::read2_abbreviated;
 use crate::util::{add_dylib_path, dylib_env_var, logv, PathBufExt};
 use crate::ColorConfig;
+use crate::{common, json};
 use regex::{Captures, Regex};
 use rustfix::{apply_suggestions, get_suggestions_from_json, Filter};
 use std::cell::RefCell;
@@ -32,7 +32,7 @@ use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::str;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use glob::glob;
@@ -43,7 +43,7 @@ use crate::extract_gdb_version;
 use crate::is_android_gdb_target;
 
 mod debugger;
-use crate::daemon::RustcDaemon;
+use crate::daemon::RustcDaemonQueue;
 use debugger::{check_debugger_output, DebuggerCommands};
 
 #[cfg(test)]
@@ -1767,7 +1767,7 @@ impl<'test> TestCx<'test> {
         self.props.unset_rustc_env.iter().fold(&mut rustc, Command::env_remove);
         rustc.envs(self.props.rustc_env.clone());
 
-        if env::var("COMPILETEST_RUSTC_DAEMON").is_ok() {
+        if env::var("COMPILETEST_RUSTC_DAEMON").as_deref() == Ok("1") {
             self.compose_and_run_daemon(
                 rustc,
                 self.config.compile_lib_path.to_str().unwrap(),
@@ -1942,22 +1942,17 @@ impl<'test> TestCx<'test> {
         // search path for the child.
         add_dylib_path(&mut command, iter::once(lib_path).chain(aux_path));
 
-        use std::cell::OnceCell;
-        thread_local! {
-            static DAEMON: OnceCell<RefCell<RustcDaemon>> = OnceCell::new();
-        }
+        use std::sync::OnceLock;
+        static DAEMON: OnceLock<Arc<RustcDaemonQueue>> = OnceLock::new();
 
-        let result = DAEMON.with(|daemon| {
-            let daemon = daemon.get_or_init(|| {
-                RefCell::new(RustcDaemon::connect(
-                    "/projects/personal/rust/rust/build/x86_64-unknown-linux-gnu/stage1/bin/rustc"
-                        .to_string()
-                        .into(),
-                ))
-            });
-            let mut daemon = daemon.borrow_mut();
-            daemon.run(&command, cmdline)
+        assert!(input.is_none());
+        let queue = DAEMON.get_or_init(|| {
+            Arc::new(RustcDaemonQueue::new(
+                PathBuf::from(command.get_program().to_os_string()),
+                std::thread::available_parallelism().unwrap().get(),
+            ))
         });
+        let result = queue.run(command, cmdline);
 
         // let mut child = disable_error_reporting(|| command.spawn())
         //     .unwrap_or_else(|_| panic!("failed to exec `{:?}`", &command));
