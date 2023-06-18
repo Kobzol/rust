@@ -1508,6 +1508,7 @@ pub fn main() -> ! {
 
             let response = serde_json::to_string(&result).unwrap();
             client.write_all(format!("{response}\n").as_bytes()).unwrap();
+            client.flush().unwrap();
         }
         process::exit(0);
     } else {

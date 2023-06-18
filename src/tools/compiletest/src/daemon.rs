@@ -65,6 +65,7 @@ impl RustcDaemon {
         let cmd = serde_json::to_string(&cmd).unwrap();
         let mut client = &self.client;
         client.write_all(format!("{cmd}\n").as_bytes()).unwrap();
+        client.flush().unwrap();
 
         self.buffer.clear();
         self.reader.read_line(&mut self.buffer).unwrap();
