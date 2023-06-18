@@ -23,7 +23,7 @@ use rustc_span::symbol::{sym, Symbol};
 use rustc_span::RealFileName;
 use rustc_span::SourceFileHashAlgorithm;
 
-use rustc_errors::emitter::HumanReadableErrorType;
+use rustc_errors::emitter::{CapturedOutput, HumanReadableErrorType};
 use rustc_errors::{ColorConfig, DiagnosticArgValue, HandlerFlags, IntoDiagnosticArg};
 
 use std::collections::btree_map::{
@@ -33,11 +33,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::io::Cursor;
+
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::LazyLock;
 
 pub mod sigpipe;
 
@@ -684,7 +684,7 @@ impl Input {
 pub enum OutFileName {
     Real(PathBuf),
     Stdout,
-    InMemory(Arc<Mutex<Cursor<Vec<u8>>>>),
+    InMemory(CapturedOutput),
 }
 
 impl<Ctx> HashStable<Ctx> for OutFileName {
@@ -721,7 +721,6 @@ impl Hash for OutFileName {
             }
             OutFileName::InMemory(_) => {
                 state.write_u8(2);
-                state.write(b"inmemory");
             }
         }
     }

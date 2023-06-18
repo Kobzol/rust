@@ -12,10 +12,8 @@ use rustc_session::output::filename_for_metadata;
 use rustc_session::{MetadataKind, Session};
 use tempfile::Builder as TempFileBuilder;
 
-use std::io::Cursor;
-use std::ops::DerefMut;
+use rustc_errors::emitter::CapturedOutput;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::{fs, io};
 
 // FIXME(eddyb) maybe include the crate name in this?
@@ -146,10 +144,9 @@ pub fn copy_to_stdout(from: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn copy_to_memory(from: &Path, mem: Arc<Mutex<Cursor<Vec<u8>>>>) -> io::Result<()> {
+pub fn copy_to_memory(from: &Path, mut mem: CapturedOutput) -> io::Result<()> {
     let file = fs::File::open(from)?;
     let mut reader = io::BufReader::new(file);
-    let mut output = mem.lock().unwrap();
-    io::copy(&mut reader, output.deref_mut())?;
+    io::copy(&mut reader, &mut mem)?;
     Ok(())
 }

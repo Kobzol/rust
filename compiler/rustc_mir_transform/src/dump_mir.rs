@@ -2,7 +2,6 @@
 
 use std::fs::File;
 use std::io;
-use std::ops::DerefMut;
 
 use crate::MirPass;
 use rustc_middle::mir::write_mir_pretty;
@@ -30,9 +29,8 @@ pub fn emit_mir(tcx: TyCtxt<'_>) -> io::Result<()> {
             let mut f = io::BufWriter::new(File::create(&path)?);
             write_mir_pretty(tcx, None, &mut f)?;
         }
-        OutFileName::InMemory(mem) => {
-            let mut f = mem.lock().unwrap();
-            write_mir_pretty(tcx, None, f.deref_mut())?;
+        OutFileName::InMemory(mut mem) => {
+            write_mir_pretty(tcx, None, &mut mem)?;
         }
     }
     Ok(())

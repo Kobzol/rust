@@ -35,6 +35,7 @@ use std::io::prelude::*;
 use std::io::{self, IsTerminal};
 use std::iter;
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 use termcolor::{Ansi, BufferWriter, ColorChoice, ColorSpec, StandardStream};
 use termcolor::{Buffer, Color, WriteColor};
 
@@ -661,6 +662,20 @@ pub struct FileWithAnnotatedLines {
     multiline_depth: usize,
 }
 
+#[derive(Default, Clone, Debug)]
+pub struct CapturedOutput(pub Arc<Mutex<Vec<u8>>>);
+
+impl Write for CapturedOutput {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.lock().unwrap().flush()
+    }
+}
+
+pub static CAPTURED_MEMORY_IO: OnceLock<CapturedOutput> = OnceLock::new();
+
 impl EmitterWriter {
     pub fn stderr(
         color_config: ColorConfig,
@@ -674,7 +689,11 @@ impl EmitterWriter {
         track_diagnostics: bool,
         terminal_url: TerminalUrl,
     ) -> EmitterWriter {
-        let dst = Destination::from_stderr(color_config);
+        let dst = if std::env::var("RUSTC_DAEMON").is_ok() {
+            Destination::Raw(Box::new(CAPTURED_MEMORY_IO.get().unwrap().clone()), true)
+        } else {
+            Destination::from_stderr(color_config)
+        };
         EmitterWriter {
             dst,
             sm: source_map,

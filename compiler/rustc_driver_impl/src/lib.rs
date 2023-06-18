@@ -22,9 +22,9 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Cursor, IsTerminal, Read, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::panic::{self, catch_unwind};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 use std::str;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -42,6 +42,7 @@ use rustc_data_structures::profiling::{
     get_resident_set_size, print_time_passes_entry, TimePassesFormat,
 };
 use rustc_data_structures::sync::SeqCst;
+use rustc_errors::emitter::{CapturedOutput, CAPTURED_MEMORY_IO};
 use rustc_errors::registry::{InvalidErrorCode, Registry};
 use rustc_errors::{
     DiagnosticMessage, ErrorGuaranteed, Handler, PResult, SubdiagnosticMessage, TerminalUrl,
@@ -62,7 +63,6 @@ use rustc_session::lint::{Lint, LintId};
 use rustc_session::{config, Session};
 use rustc_session::{early_error, early_error_no_abort, early_warn};
 use rustc_span::source_map::{FileLoader, FileName};
-use rustc_span::sym::val;
 use rustc_span::symbol::sym;
 use rustc_target::json::ToJson;
 use rustc_target::spec::{Target, TargetTriple};
@@ -467,7 +467,13 @@ fn run_compiler(
 fn make_output(matches: &getopts::Matches) -> (Option<PathBuf>, Option<OutFileName>) {
     let odir = matches.opt_str("out-dir").map(|o| PathBuf::from(&o));
     let ofile = matches.opt_str("o").map(|o| match o.as_str() {
-        "-" => OutFileName::Stdout,
+        "-" => {
+            if env::var("RUSTC_DAEMON").is_ok() {
+                OutFileName::InMemory(CAPTURED_MEMORY_IO.get().unwrap().clone())
+            } else {
+                OutFileName::Stdout
+            }
+        }
         path => OutFileName::Real(PathBuf::from(path)),
     });
     (odir, ofile)
@@ -1421,10 +1427,47 @@ mod signal_handler {
     pub(super) fn install() {}
 }
 
+#[derive(serde::Deserialize)]
 struct RemoteCommand {
     working_dir: Option<String>,
     env: FxHashMap<String, String>,
     args: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CommandResult {
+    exit_code: i32,
+    output: Vec<u8>,
+}
+
+struct ProcessContext {
+    workdir: PathBuf,
+    env: FxHashMap<String, String>,
+}
+
+fn run_compiler_session(ctx: &ProcessContext, command: &RemoteCommand) -> CommandResult {
+    reset_process_state(ctx);
+    init_process_state(&command);
+
+    // Reset I/O buffer
+    CAPTURED_MEMORY_IO.get_or_init(|| CapturedOutput(Arc::new(Mutex::new(Vec::new()))));
+
+    let mut args = vec![];
+    args.push(env::current_exe().unwrap().to_str().unwrap().to_string());
+    args.extend(command.args.iter().cloned().collect::<Vec<_>>());
+
+    let mut callbacks = TimePassesCallbacks::default();
+    let exit_code = catch_with_exit_code(|| RunCompiler::new(&args, &mut callbacks).run());
+
+    let output: Vec<u8> =
+        std::mem::take(CAPTURED_MEMORY_IO.get().unwrap().0.lock().unwrap().as_mut());
+
+    eprintln!(
+        "Compilation ended. Exit code: {exit_code}\nOutput\n{}",
+        String::from_utf8(output.clone()).unwrap()
+    );
+
+    CommandResult { exit_code, output }
 }
 
 pub fn main() -> ! {
@@ -1432,66 +1475,71 @@ pub fn main() -> ! {
     let start_rss = get_resident_set_size();
     init_rustc_env_logger();
     signal_handler::install();
-    let mut callbacks = TimePassesCallbacks::default();
     install_ice_hook(DEFAULT_BUG_REPORT_URL, |_| ());
 
-    let is_daemon = env::var("RUSTC_DAEMON").is_ok();
-    let data = Arc::new(Mutex::new(Cursor::new(Vec::<u8>::new())));
-    if is_daemon {
-        let original_env: FxHashMap<String, String> = env::vars().collect();
-        let original_cmd = env::current_dir().unwrap();
+    let daemon_port = env::var("RUSTC_DAEMON")
+        .map(|port| port.parse::<u16>().expect("Daemon port must be a number"));
+    if let Ok(port) = daemon_port {
+        let ctx =
+            ProcessContext { workdir: env::current_dir().unwrap(), env: env::vars().collect() };
 
-        let command: RemoteCommand = RemoteCommand {
-            working_dir: None,
-            env: Default::default(),
-            args: vec!["/projects/personal/rust/rust/test-crate/daemon/a.rs".to_string()],
-        };
-        reset_process_state(&original_env, &original_cmd);
-        init_process_state(&command);
+        let socket = std::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+            .expect("Cannot bind daemon server");
+        let (client, _) = socket.accept().unwrap();
+        let mut client = &client;
+        let mut reader = BufReader::new(client);
 
-        let command: RemoteCommand = RemoteCommand {
-            working_dir: None,
-            env: Default::default(),
-            args: vec!["/projects/personal/rust/rust/test-crate/daemon/a.rs".to_string()],
-        };
-        reset_process_state(&original_env, &original_cmd);
-        init_process_state(&command);
-    }
+        let mut line = String::new();
 
-    let exit_code = catch_with_exit_code(|| {
-        let args = env::args_os()
-            .enumerate()
-            .map(|(i, arg)| {
-                arg.into_string().unwrap_or_else(|arg| {
-                    early_error(
-                        ErrorOutputType::default(),
-                        format!("argument {i} is not valid Unicode: {arg:?}"),
-                    )
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line.is_empty() {
+                break;
+            }
+
+            let cmd: RemoteCommand =
+                serde_json::from_str(&line).expect("Cannot read RemoteCommand");
+            let result = run_compiler_session(&ctx, &cmd);
+
+            let response = serde_json::to_string(&result).unwrap();
+            client.write_all(format!("{response}\n").as_bytes()).unwrap();
+        }
+        process::exit(0);
+    } else {
+        let mut callbacks = TimePassesCallbacks::default();
+        let exit_code = catch_with_exit_code(|| {
+            let args = env::args_os()
+                .enumerate()
+                .map(|(i, arg)| {
+                    arg.into_string().unwrap_or_else(|arg| {
+                        early_error(
+                            ErrorOutputType::default(),
+                            format!("argument {i} is not valid Unicode: {arg:?}"),
+                        )
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-        RunCompiler::new(&args, &mut callbacks).run()
-    });
+                .collect::<Vec<_>>();
+            RunCompiler::new(&args, &mut callbacks).run()
+        });
 
-    // eprintln!("...");
-    // eprintln!("DATA: {}", String::from_utf8_lossy(&data.lock().unwrap()));
+        if let Some(format) = callbacks.time_passes {
+            let end_rss = get_resident_set_size();
+            print_time_passes_entry("total", start_time.elapsed(), start_rss, end_rss, format);
+        }
 
-    if let Some(format) = callbacks.time_passes {
-        let end_rss = get_resident_set_size();
-        print_time_passes_entry("total", start_time.elapsed(), start_rss, end_rss, format);
+        process::exit(exit_code)
     }
-
-    process::exit(exit_code)
 }
 
-fn reset_process_state(orig_env: &FxHashMap<String, String>, orig_workdir: &Path) {
-    env::set_current_dir(orig_workdir).unwrap();
+fn reset_process_state(ctx: &ProcessContext) {
+    env::set_current_dir(&ctx.workdir).unwrap();
     for (key, _) in env::vars() {
-        if !orig_env.contains_key(&key) {
+        if !ctx.env.contains_key(&key) {
             env::remove_var(&key);
         }
     }
-    for (key, value) in orig_env.iter() {
+    for (key, value) in ctx.env.iter() {
         env::set_var(key, value);
     }
 }

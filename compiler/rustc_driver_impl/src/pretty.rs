@@ -362,7 +362,7 @@ fn write_or_print(out: &str, sess: &Session) {
         None | Some(OutFileName::Stdout) => print!("{out}"),
         Some(OutFileName::InMemory(mem)) => {
             use std::io::Write;
-            if let Err(e) = mem.lock().unwrap().write(out.as_bytes()) {
+            if let Err(e) = mem.0.lock().unwrap().write(out.as_bytes()) {
                 sess.emit_fatal(UnprettyDumpFail {
                     path: "memory".to_string(),
                     err: e.to_string(),

@@ -565,8 +565,8 @@ fn write_out_deps(tcx: TyCtxt<'_>, outputs: &OutputFilenames, out_filenames: &[P
                 write_deps_to_file(&mut file)?;
             }
             OutFileName::InMemory(ref mem) => {
-                let mut file = mem.lock().unwrap();
-                write_deps_to_file(file.deref_mut())?;
+                let mut writer = mem.0.lock().unwrap();
+                write_deps_to_file(writer.deref_mut())?;
             }
         }
     };

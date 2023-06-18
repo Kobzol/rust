@@ -3375,6 +3375,7 @@ dependencies = [
  "rustc_target",
  "rustc_trait_selection",
  "rustc_ty_utils",
+ "serde",
  "serde_json",
  "tracing",
  "windows",
