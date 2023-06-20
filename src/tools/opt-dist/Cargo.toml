@@ -14,7 +14,7 @@ psutil = { version = "3", default-features = false, features = ["disk"] }
 fs_extra = "1"
 camino = "1"
 reqwest = { version = "0.11", features = ["blocking"] }
-zip = { version = "0.6", default-features = false, features = ["deflate-zlib"] }
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
 tar = "0.4"
 xz = "0.1"
 serde = { version = "1", features = ["derive"] }
