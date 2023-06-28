@@ -1457,7 +1457,7 @@ fn run_compiler_session(ctx: &ProcessContext, command: &RemoteCommand) -> Comman
     let start_time = Instant::now();
     // let start_rss = get_resident_set_size();
 
-    let mut args = vec![];
+    let mut args = Vec::with_capacity(1 + command.args.len());
     args.push(env::current_exe().unwrap().to_str().unwrap().to_string());
     args.extend(command.args.iter().cloned().collect::<Vec<_>>());
 
@@ -1488,6 +1488,7 @@ pub fn main() -> ! {
         let socket = std::net::TcpListener::bind(format!("127.0.0.1:{port}"))
             .expect("Cannot bind daemon server");
         let (client, _) = socket.accept().unwrap();
+        client.set_nodelay(true).expect("set_nodelay call failed");
         let mut client = &client;
         let mut reader = BufReader::new(client);
 

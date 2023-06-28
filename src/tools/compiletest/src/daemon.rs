@@ -1,12 +1,14 @@
-use crate::runtest::{CustomExitStatus, ProcRes};
-use rand::Rng;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
+
+use rand::Rng;
+
+use crate::runtest::ProcRes;
 
 struct RustcDaemon {
     daemon: Child,
@@ -15,6 +17,7 @@ struct RustcDaemon {
     stdout_reader: ChildStdout,
     stderr_reader: ChildStderr,
     buffer: String,
+    buffer_vec: Vec<u8>,
 }
 
 #[derive(serde::Serialize)]
@@ -49,6 +52,22 @@ impl RustcDaemon {
             Duration::from_secs(5),
         )
         .expect("Cannot connect to daemon");
+        client.set_nodelay(true).expect("set_nodelay call failed");
+
+        // There's a buffer read race condition with stdout/stderr/socket here, we should just use
+        // async.
+        // let mut fake_child = Command::new("sleep")
+        //     .arg("120")
+        //     .stdout(Stdio::piped())
+        //     .stderr(Stdio::piped())
+        //     .spawn()
+        //     .unwrap();
+        // let stdout_reader =
+        //     BufReader::with_capacity(8192 * 1024, fake_child.stdout.take().unwrap());
+        // let stderr_reader =
+        //     BufReader::with_capacity(8192 * 1024, fake_child.stderr.take().unwrap());
+        let stdout_reader = child.stdout.take().unwrap();
+        let stderr_reader = child.stderr.take().unwrap();
 
         let reader = BufReader::new(client.try_clone().unwrap());
         Self {
@@ -63,7 +82,7 @@ impl RustcDaemon {
     }
 
     fn run(&mut self, command: &Command, cmdline: String) -> ProcRes {
-        let mut env: HashMap<String, String> = std::env::vars().collect();
+        let mut env: HashMap<String, String> = Default::default(); //std::env::vars().collect();
         for (key, value) in command.get_envs() {
             env.insert(
                 key.to_str().unwrap().to_string(),
@@ -80,6 +99,7 @@ impl RustcDaemon {
         };
         let cmd = serde_json::to_string(&cmd).unwrap();
         let mut client = &self.client;
+        // eprintln!("Starting");
         client.write_all(format!("{cmd}\n").as_bytes()).unwrap();
         client.flush().unwrap();
 
