@@ -11,7 +11,9 @@ use std::time::Duration;
 struct RustcDaemon {
     daemon: Child,
     client: TcpStream,
-    reader: BufReader<TcpStream>,
+    cmd_reader: BufReader<TcpStream>,
+    stdout_reader: ChildStdout,
+    stderr_reader: ChildStderr,
     buffer: String,
 }
 
@@ -25,15 +27,21 @@ struct RemoteCommand {
 #[derive(Debug, serde::Deserialize)]
 struct CommandResult {
     exit_code: i32,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
 }
 
 impl RustcDaemon {
     fn connect(binary: PathBuf) -> Self {
         let mut rng = rand::thread_rng();
         let port: u16 = rng.gen_range(2000..40000);
-        let child = Command::new(binary).env("RUSTC_DAEMON", port.to_string()).spawn().unwrap();
+        let mut child = Command::new(binary)
+            .env("RUSTC_DAEMON", port.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // .stdout(Stdio::inherit())
+            // .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
 
         std::thread::sleep(Duration::from_secs(1));
         let client = TcpStream::connect_timeout(
@@ -43,7 +51,15 @@ impl RustcDaemon {
         .expect("Cannot connect to daemon");
 
         let reader = BufReader::new(client.try_clone().unwrap());
-        Self { daemon: child, client, reader, buffer: String::new() }
+        Self {
+            daemon: child,
+            client,
+            cmd_reader: reader,
+            buffer: String::new(),
+            stdout_reader,
+            stderr_reader,
+            buffer_vec: vec![0; 8192],
+        }
     }
 
     fn run(&mut self, command: &Command, cmdline: String) -> ProcRes {
@@ -67,15 +83,38 @@ impl RustcDaemon {
         client.write_all(format!("{cmd}\n").as_bytes()).unwrap();
         client.flush().unwrap();
 
+        // eprintln!("Before read_line");
+
+        const TERMINATOR: &[u8] = b"----------------END-SESSION----------------\n";
+
+        let mut stderr = read_stream(&mut self.stderr_reader, &mut self.buffer_vec);
+        let mut stdout = read_stream(&mut self.stdout_reader, &mut self.buffer_vec);
+
         self.buffer.clear();
-        self.reader.read_line(&mut self.buffer).unwrap();
+        self.cmd_reader.read_line(&mut self.buffer).unwrap();
+        // eprintln!("After read_line");
 
         let result: CommandResult = serde_json::from_str(&self.buffer).unwrap();
-        ProcRes {
-            cmdline,
-            status: result.exit_code.into(),
-            stdout: String::from_utf8_lossy(&result.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
+        ProcRes { cmdline, status: result.exit_code.into(), stdout, stderr }
+    }
+}
+
+fn read_stream<T: std::io::Read>(reader: &mut T, buffer: &mut Vec<u8>) -> String {
+    const TERMINATOR: &[u8] = b"----------------END-SESSION----------------";
+
+    let mut stream = Vec::new();
+    loop {
+        let read = reader.read(buffer).unwrap();
+        // eprintln!("Read {read} bytes");
+        if read == 0 {
+            panic!("Daemon ended");
+        }
+        let input = &buffer[0..read];
+        stream.extend_from_slice(&input);
+
+        if stream.ends_with(TERMINATOR) {
+            stream.drain(stream.len() - TERMINATOR.len()..);
+            return String::from_utf8(stream).unwrap();
         }
     }
 }

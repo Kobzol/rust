@@ -1439,8 +1439,6 @@ struct RemoteCommand {
 #[derive(Debug, serde::Serialize)]
 struct CommandResult {
     exit_code: i32,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
 }
 
 struct ProcessContext {
@@ -1453,8 +1451,11 @@ fn run_compiler_session(ctx: &ProcessContext, command: &RemoteCommand) -> Comman
     init_process_state(&command);
 
     // Reset I/O buffers
-    CAPTURED_STDOUT.get_or_init(|| CapturedOutput(Arc::new(Mutex::new(Vec::new()))));
-    CAPTURED_STDERR.get_or_init(|| CapturedOutput(Arc::new(Mutex::new(Vec::new()))));
+    // CAPTURED_STDOUT.get_or_init(|| CapturedOutput(Arc::new(Mutex::new(Vec::new()))));
+    // CAPTURED_STDERR.get_or_init(|| CapturedOutput(Arc::new(Mutex::new(Vec::new()))));
+
+    let start_time = Instant::now();
+    // let start_rss = get_resident_set_size();
 
     let mut args = vec![];
     args.push(env::current_exe().unwrap().to_str().unwrap().to_string());
@@ -1463,15 +1464,12 @@ fn run_compiler_session(ctx: &ProcessContext, command: &RemoteCommand) -> Comman
     let mut callbacks = TimePassesCallbacks::default();
     let exit_code = catch_with_exit_code(|| RunCompiler::new(&args, &mut callbacks).run());
 
-    let stdout: Vec<u8> = std::mem::take(CAPTURED_STDOUT.get().unwrap().0.lock().unwrap().as_mut());
-    let stderr: Vec<u8> = std::mem::take(CAPTURED_STDERR.get().unwrap().0.lock().unwrap().as_mut());
+    // if let Some(format) = callbacks.time_passes {
+    //     let end_rss = get_resident_set_size();
+    //     print_time_passes_entry("total", start_time.elapsed(), start_rss, end_rss, format);
+    // }
 
-    // eprintln!(
-    //     "Compilation ended. Exit code: {exit_code}\nOutput\n{}",
-    //     String::from_utf8(stdout.clone()).unwrap()
-    // );
-
-    CommandResult { exit_code, stdout, stderr }
+    CommandResult { exit_code }
 }
 
 pub fn main() -> ! {
@@ -1504,7 +1502,13 @@ pub fn main() -> ! {
 
             let cmd: RemoteCommand =
                 serde_json::from_str(&line).expect("Cannot read RemoteCommand");
+
             let result = run_compiler_session(&ctx, &cmd);
+
+            io::stdout().write_all(b"----------------END-SESSION----------------").unwrap();
+            io::stdout().flush().unwrap();
+            io::stderr().write_all(b"----------------END-SESSION----------------").unwrap();
+            io::stderr().flush().unwrap();
 
             let response = serde_json::to_string(&result).unwrap();
             client.write_all(format!("{response}\n").as_bytes()).unwrap();
