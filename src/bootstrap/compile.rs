@@ -507,46 +507,50 @@ impl Step for StdLink {
         add_to_sysroot(builder, &libdir, &hostdir, &libstd_stamp(builder, compiler, target));
 
         // Special case for stage0, to make `rustup toolchain link` and `x dist --stage 0`
-        // work for stage0-sysroot. We only do this if the stage0 compiler comes from beta,
-        // and is not set to a custom path.
-        if compiler.stage == 0
-            && builder
-                .build
-                .config
-                .initial_rustc
-                .starts_with(builder.out.join(&compiler.host.triple).join("stage0/bin"))
-        {
-            // Copy bin files from stage0/bin to stage0-sysroot/bin
-            let sysroot = builder.out.join(&compiler.host.triple).join("stage0-sysroot");
-
+        // work for stage0-sysroot.
+        if compiler.stage == 0 {
+            let target_sysroot = builder.out.join(&compiler.host.triple).join("stage0-sysroot");
+            let src_sysroot = builder.build.rustc_snapshot_sysroot();
             let host = compiler.host.triple;
-            let stage0_bin_dir = builder.out.join(&host).join("stage0/bin");
-            let sysroot_bin_dir = sysroot.join("bin");
-            t!(fs::create_dir_all(&sysroot_bin_dir));
-            builder.cp_r(&stage0_bin_dir, &sysroot_bin_dir);
 
-            // Copy all *.so files from stage0/lib to stage0-sysroot/lib
-            let stage0_lib_dir = builder.out.join(&host).join("stage0/lib");
-            if let Ok(files) = fs::read_dir(&stage0_lib_dir) {
+            // Copy bin files from <stage0 compiler sysroot>/bin to stage0-sysroot/bin
+            let target_bin_dir = target_sysroot.join("bin");
+            t!(fs::create_dir_all(&target_bin_dir));
+            builder.cp_r(&src_sysroot.join("bin"), &target_bin_dir);
+
+            // Copy cargo to the bin directory, since it can be specified separately
+            builder.copy(
+                &builder.build.initial_cargo,
+                &target_bin_dir.join(builder.build.initial_cargo.file_name().unwrap()),
+            );
+
+            // Copy all *.so files from <stage0 compiler sysroot>/lib to stage0-sysroot/lib
+            let src_lib_dir = builder.build.rustc_snapshot_libdir();
+            if let Ok(files) = fs::read_dir(&src_lib_dir) {
                 for file in files {
                     let file = t!(file);
                     let path = file.path();
                     if path.is_file() && is_dylib(&file.file_name().into_string().unwrap()) {
-                        builder.copy(&path, &sysroot.join("lib").join(path.file_name().unwrap()));
+                        builder.copy(
+                            &path,
+                            &target_sysroot.join("lib").join(path.file_name().unwrap()),
+                        );
                     }
                 }
             }
 
-            // Copy codegen-backends from stage0
-            let sysroot_codegen_backends = builder.sysroot_codegen_backends(compiler);
-            t!(fs::create_dir_all(&sysroot_codegen_backends));
-            let stage0_codegen_backends = builder
-                .out
-                .join(&host)
-                .join("stage0/lib/rustlib")
-                .join(&host)
-                .join("codegen-backends");
-            builder.cp_r(&stage0_codegen_backends, &sysroot_codegen_backends);
+            // Copy codegen-backends from stage0 compiler
+            let target_codegen_backends = builder.sysroot_codegen_backends(compiler);
+            t!(fs::create_dir_all(&target_codegen_backends));
+            let src_codegen_backends =
+                src_sysroot.join("lib/rustlib").join(&host).join("codegen-backends");
+            builder.cp_r(&src_codegen_backends, &target_codegen_backends);
+
+            // Copy helper binaries (like linkers) from stage0 compiler
+            let target_helper_bindir = target_sysroot.join("lib/rustlib").join(&host).join("bin");
+            t!(fs::create_dir_all(&target_helper_bindir));
+            let src_helper_bindir = src_sysroot.join("lib/rustlib").join(&host).join("bin");
+            builder.cp_r(&src_helper_bindir, &target_helper_bindir);
         }
     }
 }
