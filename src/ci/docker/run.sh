@@ -103,11 +103,8 @@ if [ -f "$docker_dir/$image/Dockerfile" ]; then
         context="$script_dir"
     fi
     echo "::group::Building docker image for $image"
+    echo ${cksum}
 
-    # As of August 2023, Github Actions have updated Docker to 23.X,
-    # which uses the BuildKit by default. It currently throws aways all
-    # intermediate layers, which breaks our usage of S3 layer caching.
-    # Therefore we opt-in to the old build backend for now.
     export DOCKER_BUILDKIT=0
     retry docker \
       build \
@@ -116,26 +113,30 @@ if [ -f "$docker_dir/$image/Dockerfile" ]; then
       -f "$dockerfile" \
       "$context"
     echo "::endgroup::"
+    docker images
+    docket tag rust-ci ghcr.io/rust-lang/rust-ci:${cksum}
+    docker push ghcr.io/rust-lang/rust-ci:${cksum}
 
     if [ "$CI" != "" ]; then
-      s3url="s3://$SCCACHE_BUCKET/docker/$cksum"
-      upload="aws s3 cp - $s3url"
-      digest=$(docker inspect rust-ci --format '{{.Id}}')
-      echo "Built container $digest"
-      if ! grep -q "$digest" <(echo "$loaded_images"); then
-        echo "Uploading finished image $digest to $url"
-        set +e
+#      s3url="s3://$SCCACHE_BUCKET/docker/$cksum"
+#      upload="aws s3 cp - $s3url"
+#      digest=$(docker inspect rust-ci --format '{{.Id}}')
+#      echo "Built container $digest"
+#      if ! grep -q "$digest" <(echo "$loaded_images"); then
+#        echo "Uploading finished image $digest to $url"
+#        set +e
         # Print image history for easier debugging of layer SHAs
-        docker history rust-ci
-        docker history -q rust-ci | \
-          grep -v missing | \
-          xargs docker save | \
-          gzip | \
-          $upload
-        set -e
-      else
-        echo "Looks like docker image is the same as before, not uploading"
-      fi
+#        docker history rust-ci
+#        docker history -q rust-ci | \
+#          grep -v missing | \
+#          xargs docker save | \
+#          gzip | \
+#          $upload
+#        set -e
+#      else
+#        echo "Looks like docker image is the same as before, not uploading"
+#      fi
+      digest=$(docker inspect rust-ci --format '{{.Id}}')
       # Record the container image for reuse, e.g. by rustup.rs builds
       info="$dist/image-$image.txt"
       mkdir -p "$dist"

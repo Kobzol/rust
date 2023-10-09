@@ -317,30 +317,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pr:
-    <<: *base-ci-job
-    name: PR - ${{ matrix.name }}
-    env:
-      <<: [*shared-ci-variables, *public-variables]
-      PR_CI_JOB: 1
-    if: github.event_name == 'pull_request'
-    continue-on-error: ${{ matrix.name == 'mingw-check-tidy' }}
-    strategy:
-      matrix:
-        include:
-          - name: mingw-check
-            <<: *job-linux-4c
-
-          - name: mingw-check-tidy
-            <<: *job-linux-4c
-
-          - name: x86_64-gnu-llvm-16
-            env:
-              ENABLE_GCC_CODEGEN: "1"
-            <<: *job-linux-16c
-
-          - name: x86_64-gnu-tools
-            <<: *job-linux-16c
+#  pr:
+#    <<: *base-ci-job
+#    name: PR - ${{ matrix.name }}
+#    env:
+#      <<: [*shared-ci-variables, *public-variables]
+#      PR_CI_JOB: 1
+#    if: github.event_name == 'pull_request'
+#    continue-on-error: ${{ matrix.name == 'mingw-check-tidy' }}
+#    strategy:
+#      matrix:
+#        include:
+#          - name: mingw-check
+#            <<: *job-linux-16c
+#
+#          - name: mingw-check-tidy
+#            <<: *job-linux-16c
+#
+#          - name: x86_64-gnu-llvm-15
+#            <<: *job-linux-16c
+#
+#          - name: x86_64-gnu-tools
+#            <<: *job-linux-16c
 
   auto:
     <<: *base-ci-job
@@ -724,10 +722,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - &dist-x86_64-linux
-            name: dist-x86_64-linux
-            env:
-              CODEGEN_BACKENDS: llvm,cranelift
+          - name: dist-quick
             <<: *job-linux-16c
 
 
