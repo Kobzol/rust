@@ -84,7 +84,7 @@ x--expand-yaml-anchors--remove:
     <<: *base-job
 
   - &job-linux-16c
-    os: ubuntu-20.04-16core-64gb
+    os: ubuntu-20.04
     <<: *base-job
 
   - &job-macos-xl

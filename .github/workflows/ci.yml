@@ -51,7 +51,7 @@ jobs:
       matrix:
         include:
           - name: dist-quick
-            os: ubuntu-20.04-16core-64gb
+            os: ubuntu-20.04
             env: {}
     timeout-minutes: 600
     runs-on: "${{ matrix.os }}"
@@ -194,7 +194,7 @@ jobs:
             os: ubuntu-20.04-8core-32gb
             env: {}
           - name: dist-arm-linux
-            os: ubuntu-20.04-16core-64gb
+            os: ubuntu-20.04
             env: {}
           - name: dist-armhf-linux
             os: ubuntu-20.04-8core-32gb
@@ -241,12 +241,12 @@ jobs:
           - name: dist-x86_64-linux
             env:
               CODEGEN_BACKENDS: "llvm,cranelift"
-            os: ubuntu-20.04-16core-64gb
+            os: ubuntu-20.04
           - name: dist-x86_64-linux-alt
             env:
               IMAGE: dist-x86_64-linux
               CODEGEN_BACKENDS: "llvm,cranelift"
-            os: ubuntu-20.04-16core-64gb
+            os: ubuntu-20.04
           - name: dist-x86_64-musl
             env:
               CODEGEN_BACKENDS: "llvm,cranelift"
@@ -558,7 +558,7 @@ jobs:
       matrix:
         include:
           - name: dist-quick
-            os: ubuntu-20.04-16core-64gb
+            os: ubuntu-20.04
             env: {}
     timeout-minutes: 600
     runs-on: "${{ matrix.os }}"
