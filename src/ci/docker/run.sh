@@ -114,7 +114,7 @@ if [ -f "$docker_dir/$image/Dockerfile" ]; then
       "$context"
     echo "::endgroup::"
     docker images
-    docket tag rust-ci ghcr.io/kobzol/rust-ci:${cksum}
+    docker tag rust-ci ghcr.io/kobzol/rust-ci:${cksum}
     docker push ghcr.io/kobzol/rust-ci:${cksum}
 
     if [ "$CI" != "" ]; then
