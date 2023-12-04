@@ -114,8 +114,8 @@ if [ -f "$docker_dir/$image/Dockerfile" ]; then
       "$context"
     echo "::endgroup::"
     docker images
-    docket tag rust-ci ghcr.io/rust-lang/rust-ci:${cksum}
-    docker push ghcr.io/rust-lang/rust-ci:${cksum}
+    docket tag rust-ci ghcr.io/kobzol/rust-ci:${cksum}
+    docker push ghcr.io/kobzol/rust-ci:${cksum}
 
     if [ "$CI" != "" ]; then
 #      s3url="s3://$SCCACHE_BUCKET/docker/$cksum"
