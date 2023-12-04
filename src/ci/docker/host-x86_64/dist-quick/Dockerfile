@@ -29,9 +29,6 @@ COPY host-x86_64/dist-x86_64-linux/shared.sh /tmp/
 # rustc-perf version from 2023-05-30
 # Should also be changed in the opt-dist tool for other environments.
 ENV PERF_COMMIT 8b2ac3042e1ff2c0074455a0a3618adef97156b1
-RUN curl -LS -o perf.zip https://github.com/rust-lang/rustc-perf/archive/$PERF_COMMIT.zip
-
-COPY scripts/sccache.sh /scripts/
 
 ENV PGO_HOST=x86_64-unknown-linux-gnu
 

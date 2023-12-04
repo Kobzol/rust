@@ -115,6 +115,8 @@ if [ -f "$docker_dir/$image/Dockerfile" ]; then
     echo "::endgroup::"
     docker images
     docker tag rust-ci ghcr.io/kobzol/rust-ci:${cksum}
+
+    docker login --username kobzol --password ${GITHUB_TOKEN}
     docker push ghcr.io/kobzol/rust-ci:${cksum}
 
     if [ "$CI" != "" ]; then
