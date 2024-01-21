@@ -74,30 +74,6 @@ if [ -f "$docker_dir/$image/Dockerfile" ]; then
 
       cksum=$(sha512sum $hash_key | \
         awk '{print $1}')
-
-#      echo "Looking for ${cksum}"
-      echo ${DOCKER_TOKEN} | docker login ghcr.io --username kobzol --password-stdin
-#      docker manifest inspect tensorflow/tensorflow:latestx 2> /dev/null ; echo $?
-#      docker pull ghcr.io/kobzol/rust-ci:${cksum}
-
-#      url="https://$CACHE_DOMAIN/docker/$cksum"
-
-#      echo "Attempting to download $url"
-#      rm -f /tmp/rustci_docker_cache
-#      set +e
-#      retry curl --max-time 600 -y 30 -Y 10 --connect-timeout 30 -f -L -C - \
-#        -o /tmp/rustci_docker_cache "$url"
-
-#      docker_archive_hash=$(sha512sum /tmp/rustci_docker_cache | awk '{print $1}')
-#      echo "Downloaded archive hash: ${docker_archive_hash}"
-
-#      echo "Loading images into docker"
-      # docker load sometimes hangs in the CI, so time out after 10 minutes with TERM,
-      # KILL after 12 minutes
-#      loaded_images=$(/usr/bin/timeout -k 720 600 docker load -i /tmp/rustci_docker_cache \
-#        | sed 's/.* sha/sha/')
-#      set -e
-#      printf "Downloaded containers:\n$loaded_images\n"
     fi
 
     dockerfile="$docker_dir/$image/Dockerfile"
@@ -110,7 +86,8 @@ if [ -f "$docker_dir/$image/Dockerfile" ]; then
     echo "::group::Building docker image for $image"
     echo ${cksum}
 
-#    export DOCKER_BUILDKIT=0
+    echo ${DOCKER_TOKEN} | docker login ghcr.io --username kobzol --password-stdin
+
     docker buildx create --use --driver docker-container
     retry docker \
       buildx \
@@ -122,30 +99,14 @@ if [ -f "$docker_dir/$image/Dockerfile" ]; then
       --cache-to type=registry,ref=ghcr.io/kobzol/rust-ci:${cksum},compression=zstd \
       --output=type=docker \
       "$context"
+
     echo "::endgroup::"
     docker images
-#    docker tag rust-ci ghcr.io/kobzol/rust-ci:${cksum}
-#    docker push ghcr.io/kobzol/rust-ci:${cksum}
+    docker tag rust-ci ghcr.io/kobzol/rust-ci:${cksum}
+    docker push ghcr.io/kobzol/rust-ci:${cksum}
 
+    # https://lipanski.com/posts/speed-up-your-docker-builds-with-cache-from
     if [ "$CI" != "" ]; then
-#      s3url="s3://$SCCACHE_BUCKET/docker/$cksum"
-#      upload="aws s3 cp - $s3url"
-#      digest=$(docker inspect rust-ci --format '{{.Id}}')
-#      echo "Built container $digest"
-#      if ! grep -q "$digest" <(echo "$loaded_images"); then
-#        echo "Uploading finished image $digest to $url"
-#        set +e
-        # Print image history for easier debugging of layer SHAs
-#        docker history rust-ci
-#        docker history -q rust-ci | \
-#          grep -v missing | \
-#          xargs docker save | \
-#          gzip | \
-#          $upload
-#        set -e
-#      else
-#        echo "Looks like docker image is the same as before, not uploading"
-#      fi
       digest=$(docker inspect rust-ci --format '{{.Id}}')
       # Record the container image for reuse, e.g. by rustup.rs builds
       info="$dist/image-$image.txt"
