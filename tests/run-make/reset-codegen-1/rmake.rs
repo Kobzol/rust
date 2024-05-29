@@ -7,8 +7,7 @@
 
 //@ ignore-cross-compile
 
-use run_make_support::rustc;
-use std::fs;
+use run_make_support::{bin_name, fs_wrapper, rustc};
 
 fn compile(output_file: &str, emit: Option<&str>) {
     let mut rustc = rustc();
@@ -31,8 +30,6 @@ fn main() {
         ("multi-output", Some("asm,obj")),
     ];
     for (output_file, emit) in flags {
-        fs::remove_file(output_file).unwrap_or_default();
-        compile(output_file, emit);
-        fs::remove_file(output_file);
+        compile(&bin_name(output_file), emit);
     }
 }
