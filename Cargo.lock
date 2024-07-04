@@ -1479,6 +1479,8 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
