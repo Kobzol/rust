@@ -1,0 +1,21 @@
+{% match self %}
+{% when Node::Root with { children } %}
+<div><span style="color: red;">root</span>
+    {% for child in children %}
+    {{ child|safe }}
+    {% endfor %}
+</div>
+{% when Node::Directory with { name, children, license } %}
+<div>
+    <div>{{ name }}</div>
+    {% for child in children %}
+    {{ child|safe }}
+    {% endfor %}
+</div>
+{% when Node::File with { name, license } %}
+{{ name }}
+{% when Node::Group with { files, directories, license } %}
+<div>
+    group
+</div>
+{% endmatch %}

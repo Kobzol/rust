@@ -44,7 +44,13 @@ fn main() -> Result<(), Error> {
     }
 
     let template = CopyrightTemplate {
-        in_tree: collected_tree_metadata.files,
+        // in_tree: collected_tree_metadata.files,
+        in_tree: Node::Root {
+            children: vec![Node::File {
+                name: "<script>alert(1)</script>".to_string(),
+                license: License { spdx: "".to_string(), copyright: vec![] },
+            }],
+        },
         dependencies: collected_cargo_metadata,
     };
 
@@ -62,6 +68,8 @@ struct Metadata {
 }
 
 /// Describes one node in our metadata tree
+#[derive(Template)]
+#[template(path = "node.html")]
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub(crate) enum Node {
@@ -81,43 +89,43 @@ where
     Ok(())
 }
 
-impl std::fmt::Display for Node {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Node::Root { children } => {
-                if children.len() > 1 {
-                    with_box(fmt, |f| {
-                        for child in children {
-                            writeln!(f, "{child}")?;
-                        }
-                        Ok(())
-                    })
-                } else {
-                    for child in children {
-                        writeln!(fmt, "{child}")?;
-                    }
-                    Ok(())
-                }
-            }
-            Node::Directory { name, children, license } => with_box(fmt, |f| {
-                render_tree_license(std::iter::once(name), license.as_ref(), f)?;
-                if !children.is_empty() {
-                    writeln!(f, "<p><b>Exceptions:</b></p>")?;
-                    for child in children {
-                        writeln!(f, "{child}")?;
-                    }
-                }
-                Ok(())
-            }),
-            Node::Group { files, directories, license } => with_box(fmt, |f| {
-                render_tree_license(directories.iter().chain(files.iter()), Some(license), f)
-            }),
-            Node::File { name, license } => {
-                with_box(fmt, |f| render_tree_license(std::iter::once(name), Some(license), f))
-            }
-        }
-    }
-}
+// impl std::fmt::Display for Node {
+//     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         match self {
+//             Node::Root { children } => {
+//                 if children.len() > 1 {
+//                     with_box(fmt, |f| {
+//                         for child in children {
+//                             writeln!(f, "{child}")?;
+//                         }
+//                         Ok(())
+//                     })
+//                 } else {
+//                     for child in children {
+//                         writeln!(fmt, "{child}")?;
+//                     }
+//                     Ok(())
+//                 }
+//             }
+//             Node::Directory { name, children, license } => with_box(fmt, |f| {
+//                 render_tree_license(std::iter::once(name), license.as_ref(), f)?;
+//                 if !children.is_empty() {
+//                     writeln!(f, "<p><b>Exceptions:</b></p>")?;
+//                     for child in children {
+//                         writeln!(f, "{child}")?;
+//                     }
+//                 }
+//                 Ok(())
+//             }),
+//             Node::Group { files, directories, license } => with_box(fmt, |f| {
+//                 render_tree_license(directories.iter().chain(files.iter()), Some(license), f)
+//             }),
+//             Node::File { name, license } => {
+//                 with_box(fmt, |f| render_tree_license(std::iter::once(name), Some(license), f))
+//             }
+//         }
+//     }
+// }
 
 /// Draw a series of sibling files/folders, as HTML, into the given formatter.
 fn render_tree_license<'a>(
