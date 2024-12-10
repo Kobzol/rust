@@ -8,13 +8,8 @@
   ],
   "forkProcessing": "enabled",
   "includePaths": [
-    "library/Cargo.toml"
+    "library/**"
   ],
-  "packageRules": [{
-    "matchFileNames": ["library/Cargo.toml"],
-    "enabled": true,
-    "groupName": "library Cargo.lock"
-  }],
   "rangeStrategy": "in-range-only",
   "lockFileMaintenance": {
     "enabled": true,
