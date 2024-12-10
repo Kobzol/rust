@@ -2,14 +2,24 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "schedule": "at any time",
   "dependencyDashboard": true,
-  "branchPrefix": "renovatebot/",
+  "prHourlyLimit": 0,
   "enabledManagers": [
     "cargo"
   ],
   "forkProcessing": "enabled",
   "includePaths": [
-    "library/**"
+    "src/tools/rustbook/Cargo.toml",
+    "src/bootstrap/Cargo.toml"
   ],
+  "packageRules": [{
+    "matchFileNames": ["src/tools/rustbook/Cargo.toml"],
+    "enabled": true,
+    "groupName": "rustbook Cargo.lock"
+  }, {
+    "matchFileNames": ["src/bootstrap/Cargo.toml"],
+    "enabled": true,
+    "groupName": "bootstrap Cargo.lock"
+  }],
   "rangeStrategy": "in-range-only",
   "lockFileMaintenance": {
     "enabled": true,
