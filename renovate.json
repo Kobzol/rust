@@ -8,7 +8,6 @@
   ],
   "forkProcessing": "enabled",
   "includePaths": [
-    "src/bootstrap/Cargo.toml",
     "library/Cargo.toml"
   ],
   "packageRules": [{
