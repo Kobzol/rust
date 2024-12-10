@@ -12,10 +12,6 @@
     "library/Cargo.toml"
   ],
   "packageRules": [{
-    "matchFileNames": ["src/bootstrap/Cargo.toml"],
-    "enabled": true,
-    "groupName": "bootstrap Cargo.lock"
-  }, {
     "matchFileNames": ["library/Cargo.toml"],
     "enabled": true,
     "groupName": "library Cargo.lock"
