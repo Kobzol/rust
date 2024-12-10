@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "schedule": "at any time",
+  "dependencyDashboard": true,
+  "branchPrefix": "renovatebot/",
+  "enabledManagers": [
+    "cargo"
+  ],
+  "forkProcessing": "enabled",
+  "includePaths": [
+    "src/bootstrap/Cargo.toml",
+    "library/Cargo.toml"
+  ],
+  "packageRules": [{
+    "matchFileNames": ["src/bootstrap/Cargo.toml"],
+    "enabled": true,
+    "groupName": "bootstrap Cargo.lock"
+  }, {
+    "matchFileNames": ["library/Cargo.toml"],
+    "enabled": true,
+    "groupName": "library Cargo.lock"
+  }],
+  "rangeStrategy": "in-range-only",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": "at any time"
+  }
+}
