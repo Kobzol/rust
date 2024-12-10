@@ -3,7 +3,7 @@
   "schedule": "at any time",
   "dependencyDashboard": true,
   "prHourlyLimit": 0,
-  "customEnvVariables": {
+  "env": {
     "RUSTC_BOOTSTRAP": "1"
   },
   "enabledManagers": [
