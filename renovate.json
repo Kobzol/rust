@@ -3,19 +3,21 @@
   "schedule": "at any time",
   "dependencyDashboard": true,
   "prHourlyLimit": 0,
-  "cloneSubmodules": true,
+  "customEnvVariables": {
+    "RUSTC_BOOTSTRAP": "1"
+  },
   "enabledManagers": [
     "cargo"
   ],
   "forkProcessing": "enabled",
   "includePaths": [
-    "src/tools/rustbook/Cargo.toml",
+    "library/**",
     "src/bootstrap/Cargo.toml"
   ],
   "packageRules": [{
-    "matchFileNames": ["src/tools/rustbook/Cargo.toml"],
+    "matchFileNames": ["library/Cargo.toml", "library/**/Cargo.toml"],
     "enabled": true,
-    "groupName": "rustbook Cargo.lock"
+    "groupName": "library Cargo.lock"
   }, {
     "matchFileNames": ["src/bootstrap/Cargo.toml"],
     "enabled": true,
