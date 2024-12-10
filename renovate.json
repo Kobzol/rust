@@ -3,6 +3,7 @@
   "schedule": "at any time",
   "dependencyDashboard": true,
   "prHourlyLimit": 0,
+  "cloneSubmodules": true,
   "enabledManagers": [
     "cargo"
   ],
