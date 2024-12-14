@@ -1,10 +1,10 @@
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasherDefault, DefaultHasher};
 
 use rustc_hash::FxHasher;
 pub use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-pub type IndexMap<K, V> = indexmap::IndexMap<K, V, BuildHasherDefault<FxHasher>>;
-pub type IndexSet<V> = indexmap::IndexSet<V, BuildHasherDefault<FxHasher>>;
+pub type IndexMap<K, V> = indexmap::IndexMap<K, V, BuildHasherDefault<DefaultHasher>>;
+pub type IndexSet<V> = indexmap::IndexSet<V, BuildHasherDefault<DefaultHasher>>;
 
 mod delayed_map;
 
