@@ -9,10 +9,16 @@
   "enabledManagers": [
     "cargo"
   ],
+  "cloneSubmodules": true,
+  "cloneSubmodulesFilter": [
+    "!src/llvm-project",
+    "!src/gcc"
+  ],
   "forkProcessing": "enabled",
   "includePaths": [
     "library/**",
-    "src/bootstrap/Cargo.toml"
+    "src/bootstrap/Cargo.toml",
+    "src/tools/rustbook/Cargo.toml"
   ],
   "packageRules": [{
     "matchFileNames": ["library/Cargo.toml", "library/**/Cargo.toml"],
@@ -22,6 +28,10 @@
     "matchFileNames": ["src/bootstrap/Cargo.toml"],
     "enabled": true,
     "groupName": "bootstrap Cargo.lock"
+  }, {
+    "matchFileNames": ["src/tools/rustbook/Cargo.toml"],
+    "enabled": true,
+    "groupName": "rustbook Cargo.lock"
   }],
   "rangeStrategy": "in-range-only",
   "lockFileMaintenance": {
