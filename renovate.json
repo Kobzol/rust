@@ -3,9 +3,6 @@
   "schedule": "at any time",
   "dependencyDashboard": true,
   "prHourlyLimit": 0,
-  "env": {
-    "RUSTC_BOOTSTRAP": "1"
-  },
   "enabledManagers": [
     "cargo"
   ],
