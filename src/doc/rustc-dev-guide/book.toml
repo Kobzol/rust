@@ -62,3 +62,5 @@ warning-policy = "error"
 "/miri.html" = "const-eval/interpret.html"
 "/tests/integration.html" = "ecosystem.html"
 "/tests/headers.html" = "directives.html"
+
+# FOO BAR
