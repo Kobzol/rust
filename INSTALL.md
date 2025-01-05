@@ -3,7 +3,7 @@
 **Note: This document describes _building_ Rust _from source_.
 This is _not recommended_ if you don't know what you're doing.
 If you just want to install Rust, check out the [README.md](README.md) instead.**
-
+Foo
 The Rust build system uses a Python script called `x.py` to build the compiler,
 which manages the bootstrapping process. It lives at the root of the project.
 It also uses a file named `config.toml` to determine various configuration
