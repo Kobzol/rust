@@ -9,7 +9,7 @@ use xshell::{cmd, Shell};
 /// Used for rustc syncs.
 const JOSH_FILTER: &str = ":/src/doc/rustc-dev-guide";
 const JOSH_PORT: u16 = 42042;
-const UPSTREAM_REPO: &str = "rust-lang/rust";
+const UPSTREAM_REPO: &str = "kobzol/rust";
 
 pub struct GitSync {
     dir: PathBuf,
