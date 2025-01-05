@@ -81,7 +81,7 @@ This repository is linked to `rust-lang/rust` as a [josh](https://josh-project.g
     $ cargo run --manifest-path josh-sync/Cargo.toml rustc-pull
     ```
 3) Push the branch to your fork and create a PR into `rustc-dev-guide`
-
+FOO
 ### Push changes from this repository into `rust-lang/rust`
 1) Run the push command to create a branch named `<branch-name>` in a `rustc` fork under the `<gh-username>` account
     ```
