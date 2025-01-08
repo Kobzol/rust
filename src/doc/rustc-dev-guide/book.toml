@@ -9,7 +9,7 @@ create-missing = false
 [preprocessor.toc]
 command = "mdbook-toc"
 renderer = ["html"]
-
+# WIP
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
 
