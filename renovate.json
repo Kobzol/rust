@@ -17,9 +17,7 @@
     "forkProcessing": "enabled",
     "includePaths": [
         "Cargo.toml",
-        "compiler/**",
-        "src/**",
-        "library/**",
+        "library/Cargo.toml",
         "src/bootstrap/Cargo.toml",
         "src/tools/rustbook/Cargo.toml"
     ],
