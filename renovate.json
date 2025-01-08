@@ -16,11 +16,21 @@
     ],
     "forkProcessing": "enabled",
     "includePaths": [
+        "Cargo.toml",
+        "compiler/**",
+        "src/**",
         "library/**",
         "src/bootstrap/Cargo.toml",
         "src/tools/rustbook/Cargo.toml"
     ],
     "packageRules": [
+        {
+            "matchFileNames": [
+                "Cargo.toml"
+            ],
+            "enabled": true,
+            "groupName": "compiler Cargo.lock"
+        },
         {
             "matchFileNames": [
                 "library/Cargo.toml"
