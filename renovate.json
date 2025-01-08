@@ -1,10 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  // Let Renovatebot keep an opened issue that tracks our dependencies
   "dependencyDashboard": true,
-  // Disable "normal" package updates
   "enabledManagers": [],
-  // Update lockfiles once per week
+  "forkProcessing": "enabled",
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": [
