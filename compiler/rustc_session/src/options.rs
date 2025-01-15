@@ -1394,12 +1394,13 @@ pub mod parse {
 
     pub(crate) fn parse_split_debuginfo(
         slot: &mut Option<SplitDebuginfo>,
-        v: Option<&str>,
+        _v: Option<&str>,
     ) -> bool {
-        match v.and_then(|s| SplitDebuginfo::from_str(s).ok()) {
-            Some(e) => *slot = Some(e),
-            _ => return false,
-        }
+        *slot = Some(SplitDebuginfo::Unpacked);
+        // match v.and_then(|s| SplitDebuginfo::from_str(s).ok()) {
+        //     Some(e) => *slot = Some(e),
+        //     _ => return false,
+        // }
         true
     }
 
