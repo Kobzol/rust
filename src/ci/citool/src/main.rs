@@ -21,9 +21,12 @@ struct Job {
     /// Should the job be only executed on a specific channel?
     #[serde(default)]
     only_on_channel: Option<String>,
-    /// Rest of attributes that will be passed through to GitHub actions
-    #[serde(flatten)]
-    extra_keys: BTreeMap<String, Value>,
+    /// Do not cancel the whole workflow if this job fails.
+    #[serde(default)]
+    continue_on_error: Option<bool>,
+    /// Free additional disk space in the job, by removing unused packages.
+    #[serde(default)]
+    free_disk: Option<bool>,
 }
 
 impl Job {
@@ -93,8 +96,10 @@ struct GithubActionsJob {
     full_name: String,
     os: String,
     env: BTreeMap<String, String>,
-    #[serde(flatten)]
-    extra_keys: BTreeMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    continue_on_error: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    free_disk: Option<bool>,
 }
 
 /// Type of workflow that is being executed on CI
@@ -231,17 +236,8 @@ fn calculate_jobs(
                 full_name,
                 os: job.os,
                 env,
-                extra_keys: job
-                    .extra_keys
-                    .into_iter()
-                    .map(|(key, value)| {
-                        (
-                            key,
-                            serde_json::to_value(&value)
-                                .expect("Cannot convert extra key value from YAML to JSON"),
-                        )
-                    })
-                    .collect(),
+                free_disk: job.free_disk,
+                continue_on_error: job.continue_on_error,
             }
         })
         .collect();
