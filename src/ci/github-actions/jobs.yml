@@ -226,17 +226,15 @@ auto:
 
   # The i686-gnu job is split into multiple jobs to run tests in parallel.
   # i686-gnu-1 skips tests that run in i686-gnu-2.
-  - name: i686-gnu-1
+  - name: i686-gnu
     env:
       IMAGE: i686-gnu
       DOCKER_SCRIPT: stage_2_test_set1.sh
-    <<: *job-linux-4c
-
-  # Skip tests that run in i686-gnu-1
-  - name: i686-gnu-2
-    env:
-      IMAGE: i686-gnu
-      DOCKER_SCRIPT: stage_2_test_set2.sh
+    split:
+      - env:
+          DOCKER_SCRIPT: stage_2_test_set1.sh
+      - env:
+          DOCKER_SCRIPT: stage_2_test_set2.sh
     <<: *job-linux-4c
 
   # The i686-gnu-nopt job is split into multiple jobs to run tests in parallel.

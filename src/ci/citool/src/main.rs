@@ -27,6 +27,9 @@ struct Job {
     /// Free additional disk space in the job, by removing unused packages.
     #[serde(default)]
     free_disk: Option<bool>,
+    /// Split this job into multiple parts, named `<name>-1`, `<name>-2` etc.
+    #[serde(default)]
+    split: Vec<JobFragment>,
 }
 
 impl Job {
@@ -42,6 +45,13 @@ impl Job {
             .map(|v| v.as_str().expect("IMAGE value should be a string").to_string())
             .unwrap_or_else(|| self.name.clone())
     }
+}
+
+/// A fragment of job information that can be used to override the configuration
+/// of a job.
+#[derive(serde::Deserialize, Debug, Clone)]
+struct JobFragment {
+    env: BTreeMap<String, Value>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -87,7 +97,7 @@ fn load_job_db(path: &Path) -> anyhow::Result<JobDatabase> {
 }
 
 /// Representation of a job outputted to a GitHub Actions workflow.
-#[derive(serde::Serialize, Debug)]
+#[derive(serde::Serialize, Debug, PartialEq)]
 struct GithubActionsJob {
     /// The main identifier of the job, used by CI scripts to determine what should be executed.
     name: String,
@@ -184,7 +194,7 @@ fn to_string_map(map: &BTreeMap<String, Value>) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn calculate_jobs(
+fn expand_jobs(
     run_type: &RunType,
     db: &JobDatabase,
     channel: &str,
@@ -255,7 +265,7 @@ fn calculate_job_matrix(
     })?;
     eprintln!("Run type: {run_type:?}");
 
-    let jobs = calculate_jobs(&run_type, &db, channel)?;
+    let jobs = expand_jobs(&run_type, &db, channel)?;
     if jobs.is_empty() {
         return Err(anyhow::anyhow!("Computed job list is empty"));
     }
