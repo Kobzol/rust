@@ -17,17 +17,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Make sure that we have enough commits to find the parent merge commit
-          # In theory, a single merge can contains a large number of commits,
-          # so we fetch everything.
+          # Make sure that we have enough commits to find the parent merge commit.
+          # Since all merges should be through merge commits, fetching two commits
+          # should be enough to get the parent bors merge commit.
           fetch-depth: 2
       - name: Perform analysis and send PR
         run: |
-          git rev-parse HEAD
-          git log -n 10
-          
           # Get closest bors merge commit
-          PARENT_COMMIT=`git rev-list --author='bors <bors@rust-lang.org>' -n1 --first-parent HEAD~1`
+          PARENT_COMMIT=`git rev-list --author='bors <bors@rust-lang.org>' -n1 --first-parent HEAD^1`
           echo "Parent: ${PARENT_COMMIT}"
 
           # Find PR for the current commit
