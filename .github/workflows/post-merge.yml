@@ -20,7 +20,7 @@ jobs:
           # Make sure that we have enough commits to find the parent merge commit.
           # Since all merges should be through merge commits, fetching two commits
           # should be enough to get the parent bors merge commit. W
-          fetch-depth: 20
+          fetch-depth: 10
       - name: Perform analysis and send PR
         run: |
           # Get closest bors merge commit
