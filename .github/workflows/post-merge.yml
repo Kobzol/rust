@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: '10'
+          fetch-depth: 10
       - name: Perform analysis and send PR
         run: |
           # Get closest bors merge commit
@@ -31,7 +31,7 @@ jobs:
           cd src/ci/citool
 
           echo "Post-merge analysis result" > output.log
-#          cargo run --release post-merge-analysis ${PARENT_COMMIT} ${{ github.sha }} >> output.log
+          # cargo run --release post-merge-analysis ${PARENT_COMMIT} ${{ github.sha }} >> output.log
           echo "foo" >> output.log
           cat output.log
 
