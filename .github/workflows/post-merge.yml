@@ -11,7 +11,7 @@ on:
 jobs:
   analysis:
     runs-on: ubuntu-24.04
-    if: github.repository == 'rust-lang/rust'
+#    if: github.repository == 'rust-lang/rust'
     permissions:
       pull-requests: write
     steps:
