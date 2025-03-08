@@ -10,6 +10,10 @@
 [Website][Rust] | [Getting started] | [Learn] | [Documentation] | [Contributing]
 </div>
 
+WIP
+WIP
+WIP
+
 This is the main source code repository for [Rust]. It contains the compiler,
 standard library, and documentation.
 
