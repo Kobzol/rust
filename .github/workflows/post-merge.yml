@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 10
+          fetch-depth: '10'
       - name: Perform analysis and send PR
         run: |
           # Get closest bors merge commit
