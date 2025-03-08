@@ -19,6 +19,8 @@ jobs:
         with:
           fetch-depth: 10
       - name: Perform analysis and send PR
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Get closest bors merge commit
           PARENT_COMMIT=`git rev-list --author='bors <bors@rust-lang.org>' -n1 --first-parent HEAD^1`
