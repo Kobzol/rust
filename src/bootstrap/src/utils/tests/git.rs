@@ -100,7 +100,7 @@ impl GitCtx {
     }
 
     pub fn commit(&self) -> String {
-        self.run_git(&["add", "."]);
+        self.run_git(&["add", "--all", "."]);
         self.run_git(&["commit", "-m", "commit message"]);
         self.get_current_commit()
     }
@@ -130,6 +130,10 @@ impl GitCtx {
     fn git_cmd(&self) -> Command {
         let mut cmd = Command::new("git");
         cmd.current_dir(&self.dir);
+        // Ignore any global configs that the user might have set to ensure a more
+        // reproducible behavior.
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+        cmd.env("GIT_CONFIG_SYSTEM", "/tmp/non-existent-config");
         cmd
     }
 
