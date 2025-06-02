@@ -22,6 +22,19 @@ features! {
     ///
     /// [ISA manual]: https://riscv.org/specifications/ratified/
     ///
+    /// # Platform-specific/agnostic Behavior and Availability
+    ///
+    /// Runtime detection depends on the platform-specific feature detection
+    /// facility and its availability per feature is
+    /// highly platform/version-specific.
+    ///
+    /// Still, a best-effort attempt is performed to enable subset/dependent
+    /// features if a superset feature is enabled regardless of the platform.
+    /// For instance, if the A extension (`"a"`) is enabled, its subsets (the
+    /// Zalrsc and Zaamo extensions; `"zalrsc"` and `"zaamo"`) are also enabled.
+    /// Likewise, if the F extension (`"f"`) is enabled, one of its dependencies
+    /// (the Zicsr extension `"zicsr"`) is also enabled.
+    ///
     /// # Unprivileged Specification
     ///
     /// The supported ratified RISC-V instruction sets are as follows:
@@ -50,6 +63,7 @@ features! {
     ///   * Zve64x: `"zve64x"`
     ///   * Zve64f: `"zve64f"`
     ///   * Zve64d: `"zve64d"`
+    /// * Zicbom: `"zicbom"`
     /// * Zicboz: `"zicboz"`
     /// * Zicntr: `"zicntr"`
     /// * Zicond: `"zicond"`
@@ -62,6 +76,7 @@ features! {
     /// * Zacas: `"zacas"`
     /// * Zawrs: `"zawrs"`
     /// * Zfa: `"zfa"`
+    /// * Zfbfmin: `"zfbfmin"`
     /// * Zfh: `"zfh"`
     ///   * Zfhmin: `"zfhmin"`
     /// * Zfinx: `"zfinx"`
@@ -86,6 +101,8 @@ features! {
     /// * Zkt: `"zkt"`
     /// * Zvbb: `"zvbb"`
     /// * Zvbc: `"zvbc"`
+    /// * Zvfbfmin: `"zvfbfmin"`
+    /// * Zvfbfwma: `"zvfbfwma"`
     /// * Zvfh: `"zvfh"`
     ///   * Zvfhmin: `"zvfhmin"`
     /// * Zvkb: `"zvkb"`
@@ -122,7 +139,9 @@ features! {
     /// corresponding unaligned memory access is reasonably fast.
     ///
     /// * `"unaligned-scalar-mem"`
+    ///   * Runtime detection requires Linux kernel version 6.4 or later.
     /// * `"unaligned-vector-mem"`
+    ///   * Runtime detection requires Linux kernel version 6.13 or later.
     #[stable(feature = "riscv_ratified", since = "1.78.0")]
 
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] rv32i: "rv32i";
@@ -144,32 +163,25 @@ features! {
     /// Has reasonably performant unaligned vector
 
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zicsr: "zicsr";
-    without cfg check: true;
     /// "Zicsr" Extension for Control and Status Register (CSR) Instructions
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zicntr: "zicntr";
-    without cfg check: true;
     /// "Zicntr" Extension for Base Counters and Timers
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zihpm: "zihpm";
-    without cfg check: true;
     /// "Zihpm" Extension for Hardware Performance Counters
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zifencei: "zifencei";
-    without cfg check: true;
     /// "Zifencei" Extension for Instruction-Fetch Fence
 
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zihintntl: "zihintntl";
-    without cfg check: true;
     /// "Zihintntl" Extension for Non-Temporal Locality Hints
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zihintpause: "zihintpause";
-    without cfg check: true;
     /// "Zihintpause" Extension for Pause Hint
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zimop: "zimop";
-    without cfg check: true;
     /// "Zimop" Extension for May-Be-Operations
+    @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zicbom: "zicbom";
+    /// "Zicbom" Extension for Cache-Block Management Instructions
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zicboz: "zicboz";
-    without cfg check: true;
     /// "Zicboz" Extension for Cache-Block Zero Instruction
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zicond: "zicond";
-    without cfg check: true;
     /// "Zicond" Extension for Integer Conditional Operations
 
     @FEATURE: #[stable(feature = "riscv_ratified", since = "1.78.0")] m: "m";
@@ -189,7 +201,6 @@ features! {
     without cfg check: true;
     /// "Zam" Extension for Misaligned Atomics
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] ztso: "ztso";
-    without cfg check: true;
     /// "Ztso" Extension for Total Store Ordering
 
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] f: "f";
@@ -204,8 +215,9 @@ features! {
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zfhmin: "zfhmin";
     /// "Zfhmin" Extension for Minimal Half-Precision Floating-Point
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zfa: "zfa";
-    without cfg check: true;
     /// "Zfa" Extension for Additional Floating-Point Instructions
+    @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zfbfmin: "zfbfmin";
+    /// "Zfbfmin" Extension for Scalar BF16 Converts
 
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zfinx: "zfinx";
     /// "Zfinx" Extension for Single-Precision Floating-Point in Integer Registers
@@ -219,7 +231,6 @@ features! {
     @FEATURE: #[stable(feature = "riscv_ratified", since = "1.78.0")] c: "c";
     /// "C" Extension for Compressed Instructions
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zca: "zca";
-    without cfg check: true;
     /// "Zca" Compressed Instructions excluding Floating-Point Loads/Stores
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zcf: "zcf";
     without cfg check: true;
@@ -228,14 +239,11 @@ features! {
     without cfg check: true;
     /// "Zcd" Compressed Instructions for Double-Precision Floating-Point Loads/Stores
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zcb: "zcb";
-    without cfg check: true;
     /// "Zcb" Simple Code-size Saving Compressed Instructions
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zcmop: "zcmop";
-    without cfg check: true;
     /// "Zcmop" Extension for Compressed May-Be-Operations
 
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] b: "b";
-    without cfg check: true;
     /// "B" Extension for Bit Manipulation
     @FEATURE: #[stable(feature = "riscv_ratified", since = "1.78.0")] zba: "zba";
     /// "Zba" Extension for Address Generation
@@ -289,6 +297,10 @@ features! {
     /// "Zvfh" Vector Extension for Half-Precision Floating-Point
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zvfhmin: "zvfhmin";
     /// "Zvfhmin" Vector Extension for Minimal Half-Precision Floating-Point
+    @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zvfbfmin: "zvfbfmin";
+    /// "Zvfbfmin" Vector Extension for BF16 Converts
+    @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zvfbfwma: "zvfbfwma";
+    /// "Zvfbfwma" Vector Extension for BF16 Widening Multiply-Add
 
     @FEATURE: #[unstable(feature = "stdarch_riscv_feature_detection", issue = "111192")] zvbb: "zvbb";
     /// "Zvbb" Extension for Vector Basic Bit-Manipulation

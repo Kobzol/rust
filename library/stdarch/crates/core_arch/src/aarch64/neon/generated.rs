@@ -21417,14 +21417,7 @@ pub fn vrax1q_u64(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
 #[stable(feature = "neon_intrinsics", since = "1.59.0")]
 #[cfg_attr(test, assert_instr(rbit))]
 pub fn vrbit_s8(a: int8x8_t) -> int8x8_t {
-    unsafe extern "unadjusted" {
-        #[cfg_attr(
-            any(target_arch = "aarch64", target_arch = "arm64ec"),
-            link_name = "llvm.aarch64.neon.rbit.v8i8"
-        )]
-        fn _vrbit_s8(a: int8x8_t) -> int8x8_t;
-    }
-    unsafe { _vrbit_s8(a) }
+    unsafe { simd_bitreverse(a) }
 }
 #[doc = "Reverse bit order"]
 #[doc = "[Arm's documentation](https://developer.arm.com/architectures/instruction-sets/intrinsics/vrbitq_s8)"]
@@ -21433,14 +21426,7 @@ pub fn vrbit_s8(a: int8x8_t) -> int8x8_t {
 #[stable(feature = "neon_intrinsics", since = "1.59.0")]
 #[cfg_attr(test, assert_instr(rbit))]
 pub fn vrbitq_s8(a: int8x16_t) -> int8x16_t {
-    unsafe extern "unadjusted" {
-        #[cfg_attr(
-            any(target_arch = "aarch64", target_arch = "arm64ec"),
-            link_name = "llvm.aarch64.neon.rbit.v16i8"
-        )]
-        fn _vrbitq_s8(a: int8x16_t) -> int8x16_t;
-    }
-    unsafe { _vrbitq_s8(a) }
+    unsafe { simd_bitreverse(a) }
 }
 #[doc = "Reverse bit order"]
 #[doc = "[Arm's documentation](https://developer.arm.com/architectures/instruction-sets/intrinsics/vrbit_u8)"]
@@ -23871,7 +23857,7 @@ pub fn vrndn_f64(a: float64x1_t) -> float64x1_t {
     unsafe extern "unadjusted" {
         #[cfg_attr(
             any(target_arch = "aarch64", target_arch = "arm64ec"),
-            link_name = "llvm.aarch64.neon.frintn.v1f64"
+            link_name = "llvm.roundeven.v1f64"
         )]
         fn _vrndn_f64(a: float64x1_t) -> float64x1_t;
     }
@@ -23887,7 +23873,7 @@ pub fn vrndnq_f64(a: float64x2_t) -> float64x2_t {
     unsafe extern "unadjusted" {
         #[cfg_attr(
             any(target_arch = "aarch64", target_arch = "arm64ec"),
-            link_name = "llvm.aarch64.neon.frintn.v2f64"
+            link_name = "llvm.roundeven.v2f64"
         )]
         fn _vrndnq_f64(a: float64x2_t) -> float64x2_t;
     }
