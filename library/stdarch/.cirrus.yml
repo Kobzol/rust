@@ -14,3 +14,4 @@ task:
   test_script:
     - . $HOME/.cargo/env
     - cargo build --all
+# FOO
