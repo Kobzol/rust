@@ -10,6 +10,8 @@ Longer version:
 Copyrights in the Rust project are retained by their contributors. No
 copyright assignment is required to contribute to the Rust project.
 
+FOO
+
 Some files include explicit copyright notices and/or license notices.
 For full authorship information, see the version control history or
 <https://thanks.rust-lang.org>
