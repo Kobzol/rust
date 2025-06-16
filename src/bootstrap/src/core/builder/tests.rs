@@ -1244,23 +1244,18 @@ mod staging {
         insta::assert_snapshot!(get_steps("compiler", "build", None), @r"
         [build] llvm <target1>
         [build] rustc 0 <target1> -> rustc 1 <target1>
-        [build] rustc 0 <target1> -> rustc 1 <target1>
         ");
     }
 
     #[test]
     fn build_compiler_stage_0() {
-        insta::assert_snapshot!(get_steps("compiler", "build", Some(0)), @r"
-        [build] llvm <target1>
-        [build] rustc 0 <target1> -> rustc 1 <target1>
-        ");
+        insta::assert_snapshot!(get_steps("compiler", "build", Some(0)), @"");
     }
 
     #[test]
     fn build_compiler_stage_1() {
         insta::assert_snapshot!(get_steps("compiler", "build", Some(1)), @r"
         [build] llvm <target1>
-        [build] rustc 0 <target1> -> rustc 1 <target1>
         [build] rustc 0 <target1> -> rustc 1 <target1>
         ");
     }
@@ -1272,12 +1267,11 @@ mod staging {
         [build] rustc 0 <target1> -> rustc 1 <target1>
         [build] rustc 1 <target1> -> std 1 <target1>
         [build] rustc 1 <target1> -> rustc 2 <target1>
-        [build] rustc 1 <target1> -> rustc 2 <target1>
         ");
     }
 
     fn get_steps(path: &str, kind: &str, stage: Option<u32>) -> String {
-        let mut args = vec![kind];
+        let mut args = vec![kind, path];
         let stage_str = stage.map(|v| v.to_string()).unwrap_or_default();
         if let Some(stage) = stage {
             args.push("--stage");
