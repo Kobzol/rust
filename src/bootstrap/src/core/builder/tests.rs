@@ -1240,18 +1240,54 @@ mod staging {
     };
 
     #[test]
-    fn build_compiler_stage_1() {
-        let mut cache = run_build(
-            &["compiler".into()],
-            configure_with_args(&["build", "--stage", "1"], &[TEST_TRIPLE_1], &[TEST_TRIPLE_1]),
-        );
-        let steps = cache.into_executed_steps();
-        insta::assert_snapshot!(render_steps(&steps), @r"
-        [build] rustc 0 <target1> -> std 0 <target1>
+    fn build_compiler_no_stage() {
+        insta::assert_snapshot!(get_steps("compiler", "build", None), @r"
         [build] llvm <target1>
         [build] rustc 0 <target1> -> rustc 1 <target1>
         [build] rustc 0 <target1> -> rustc 1 <target1>
         ");
+    }
+
+    #[test]
+    fn build_compiler_stage_0() {
+        insta::assert_snapshot!(get_steps("compiler", "build", Some(0)), @r"
+        [build] llvm <target1>
+        [build] rustc 0 <target1> -> rustc 1 <target1>
+        ");
+    }
+
+    #[test]
+    fn build_compiler_stage_1() {
+        insta::assert_snapshot!(get_steps("compiler", "build", Some(1)), @r"
+        [build] llvm <target1>
+        [build] rustc 0 <target1> -> rustc 1 <target1>
+        [build] rustc 0 <target1> -> rustc 1 <target1>
+        ");
+    }
+
+    #[test]
+    fn build_compiler_stage_2() {
+        insta::assert_snapshot!(get_steps("compiler", "build", Some(2)), @r"
+        [build] llvm <target1>
+        [build] rustc 0 <target1> -> rustc 1 <target1>
+        [build] rustc 1 <target1> -> std 1 <target1>
+        [build] rustc 1 <target1> -> rustc 2 <target1>
+        [build] rustc 1 <target1> -> rustc 2 <target1>
+        ");
+    }
+
+    fn get_steps(path: &str, kind: &str, stage: Option<u32>) -> String {
+        let mut args = vec![kind];
+        let stage_str = stage.map(|v| v.to_string()).unwrap_or_default();
+        if let Some(stage) = stage {
+            args.push("--stage");
+            args.push(&stage_str);
+        }
+        let mut cache = run_build(
+            &[path.into()],
+            configure_with_args(&args, &[TEST_TRIPLE_1], &[TEST_TRIPLE_1]),
+        );
+        render_steps(&cache.into_executed_steps())
     }
 }
 
