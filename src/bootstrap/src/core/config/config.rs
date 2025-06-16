@@ -980,7 +980,7 @@ impl Config {
             || install_stage.is_some()
             || check_stage.is_some()
             || bench_stage.is_some();
-        // See https://github.com/rust-lang/compiler-team/issues/326
+
         config.stage = match config.cmd {
             Subcommand::Check { .. } => flags.stage.or(check_stage).unwrap_or(0),
             Subcommand::Clippy { .. } | Subcommand::Fix => flags.stage.or(check_stage).unwrap_or(1),
@@ -1007,6 +1007,15 @@ impl Config {
             | Subcommand::Suggest { .. }
             | Subcommand::Vendor { .. } => flags.stage.unwrap_or(0),
         };
+
+        // Now check that the selected stage makes sense, and if not, print a warning and end
+        match (config.stage, &config.cmd) {
+            (0, Subcommand::Build) => {
+                eprintln!("WARNING: cannot build anything on stage 0. Use at least stage 1.");
+                exit!(1)
+            }
+            _ => {}
+        }
 
         // CI should always run stage 2 builds, unless it specifically states otherwise
         #[cfg(not(test))]
