@@ -122,7 +122,7 @@ impl Step for ToolBuild {
             Mode::ToolRustc => {
                 // If compiler was forced, its artifacts should be prepared earlier.
                 if !self.compiler.is_forced_compiler() {
-                    builder.ensure(compile::Std::new(self.compiler, self.compiler.host));
+                    builder.std(self.compiler, self.compiler.host);
                     builder.ensure(compile::Rustc::new(self.compiler, target));
                 }
             }
