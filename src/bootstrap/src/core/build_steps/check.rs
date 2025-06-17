@@ -9,7 +9,7 @@ use crate::core::builder::{
 };
 use crate::core::config::TargetSelection;
 use crate::utils::build_stamp::{self, BuildStamp};
-use crate::{Mode, Subcommand};
+use crate::{Compiler, Mode, Subcommand};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Std {
@@ -225,26 +225,18 @@ impl Step for Rustc {
         run.builder.ensure(Rustc { target: run.target, crates });
     }
 
-    /// Builds the compiler.
+    /// Check the compiler.
     ///
-    /// This will build the compiler for a particular stage of the build using
+    /// This will check the compiler for a particular stage of the build using
     /// the `compiler` targeting the `target` architecture. The artifacts
     /// created will also be linked into the sysroot directory.
     fn run(self, builder: &Builder<'_>) {
-        let compiler = builder.compiler(builder.top_stage, builder.config.host_target);
+        // When checking the stage N compiler, we want to do it with the stage N-1 compiler,
+        let compiler = builder.compiler(builder.top_stage - 1, builder.config.host_target);
         let target = self.target;
 
-        if compiler.stage != 0 {
-            // If we're not in stage 0, then we won't have a std from the beta
-            // compiler around. That means we need to make sure there's one in
-            // the sysroot for the compiler to find. Otherwise, we're going to
-            // fail when building crates that need to generate code (e.g., build
-            // scripts and their dependencies).
-            builder.std(compiler, compiler.host);
-            builder.std(compiler, target);
-        } else {
-            builder.ensure(Std::new(target));
-        }
+        // Make sure that we have a std for host code (build scripts, etc.)
+        builder.std(compiler, compiler.host);
 
         let mut cargo = builder::Cargo::new(
             builder,
