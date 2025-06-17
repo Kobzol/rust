@@ -406,14 +406,9 @@ impl Step for RustAnalyzer {
 
         cargo.allow_features(crate::core::build_steps::tool::RustAnalyzer::ALLOW_FEATURES);
 
-        // For ./x.py clippy, don't check those targets because
-        // linting tests and benchmarks can produce very noisy results
-        if builder.kind != Kind::Clippy {
-            // can't use `--all-targets` because `--examples` doesn't work well
-            cargo.arg("--bins");
-            cargo.arg("--tests");
-            cargo.arg("--benches");
-        }
+        cargo.arg("--bins");
+        cargo.arg("--tests");
+        cargo.arg("--benches");
 
         // Cargo's output path in a given stage, compiled by a particular
         // compiler for the specified target.
