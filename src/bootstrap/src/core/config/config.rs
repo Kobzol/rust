@@ -1009,12 +1009,9 @@ impl Config {
         };
 
         // Now check that the selected stage makes sense, and if not, print a warning and end
-        match (config.stage, &config.cmd) {
-            (0, Subcommand::Build) => {
-                eprintln!("WARNING: cannot build anything on stage 0. Use at least stage 1.");
-                exit!(1)
-            }
-            _ => {}
+        if let (0, Subcommand::Build) = (config.stage, &config.cmd) {
+            eprintln!("WARNING: cannot build anything on stage 0. Use at least stage 1.");
+            exit!(1);
         }
 
         // CI should always run stage 2 builds, unless it specifically states otherwise
