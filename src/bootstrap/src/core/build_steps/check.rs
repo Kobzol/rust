@@ -20,13 +20,6 @@ pub struct Std {
     ///
     /// [`compile::Rustc`]: crate::core::build_steps::compile::Rustc
     crates: Vec<String>,
-    /// Override `Builder::kind` on cargo invocations.
-    ///
-    /// By default, `Builder::kind` is propagated as the subcommand to the cargo invocations.
-    /// However, there are cases when this is not desirable. For example, when running `x clippy $tool_name`,
-    /// passing `Builder::kind` to cargo invocations would run clippy on the entire compiler and library,
-    /// which is not useful if we only want to lint a few crates with specific rules.
-    override_build_kind: Option<Kind>,
     /// Never use this from outside calls. It is intended for internal use only within `check::Std::make_run`
     /// and `check::Std::run`.
     custom_stage: Option<u32>,
@@ -36,12 +29,7 @@ impl Std {
     const CRATE_OR_DEPS: &[&str] = &["sysroot", "coretests", "alloctests"];
 
     pub fn new(target: TargetSelection) -> Self {
-        Self { target, crates: vec![], override_build_kind: None, custom_stage: None }
-    }
-
-    pub fn build_kind(mut self, kind: Option<Kind>) -> Self {
-        self.override_build_kind = kind;
-        self
+        Self { target, crates: vec![], custom_stage: None }
     }
 }
 
@@ -67,12 +55,7 @@ impl Step for Std {
             1
         };
 
-        run.builder.ensure(Std {
-            target: run.target,
-            crates,
-            override_build_kind: None,
-            custom_stage: Some(stage),
-        });
+        run.builder.ensure(Std { target: run.target, crates, custom_stage: Some(stage) });
     }
 
     fn run(self, builder: &Builder<'_>) {
@@ -115,7 +98,7 @@ impl Step for Std {
             Mode::Std,
             SourceType::InTree,
             target,
-            self.override_build_kind.unwrap_or(builder.kind),
+            Kind::Check,
         );
 
         std_cargo(builder, target, compiler.stage, &mut cargo);
@@ -146,9 +129,8 @@ impl Step for Std {
         }
         drop(_guard);
 
-        // don't run on std twice with x.py clippy
         // don't check test dependencies if we haven't built libtest
-        if builder.kind == Kind::Clippy || !self.crates.iter().any(|krate| krate == "test") {
+        if !self.crates.iter().any(|krate| krate == "test") {
             return;
         }
 
@@ -164,7 +146,7 @@ impl Step for Std {
             Mode::Std,
             SourceType::InTree,
             target,
-            self.override_build_kind.unwrap_or(builder.kind),
+            Kind::Check,
         );
 
         // If we're not in stage 0, tests and examples will fail to compile
@@ -333,11 +315,9 @@ impl Step for CodegenBackend {
             return;
         }
 
-        let compiler = builder.compiler(builder.top_stage, builder.config.host_target);
+        let compiler = builder.ensure(PrepareRustcPrivateCheck { target: self.target });
         let target = self.target;
         let backend = self.backend;
-
-        builder.ensure(Rustc::new(target, builder));
 
         let mut cargo = builder::Cargo::new(
             builder,
@@ -388,10 +368,8 @@ impl Step for RustAnalyzer {
     }
 
     fn run(self, builder: &Builder<'_>) {
-        let compiler = builder.compiler(builder.top_stage, builder.config.host_target);
+        let compiler = builder.ensure(PrepareRustcPrivateCheck { target: self.target });
         let target = self.target;
-
-        builder.ensure(Rustc::new(target, builder));
 
         let mut cargo = prepare_tool_cargo(
             builder,
@@ -469,11 +447,7 @@ impl Step for Compiletest {
 
         cargo.allow_features(COMPILETEST_ALLOW_FEATURES);
 
-        // For ./x.py clippy, don't run with --all-targets because
-        // linting tests and benchmarks can produce very noisy results
-        if builder.kind != Kind::Clippy {
-            cargo.arg("--all-targets");
-        }
+        cargo.arg("--all-targets");
 
         let stamp = BuildStamp::new(&builder.cargo_out(compiler, mode, self.target))
             .with_prefix("compiletest-check");
@@ -547,11 +521,7 @@ fn run_tool_check_step(
         &[],
     );
 
-    // For ./x.py clippy, don't run with --all-targets because
-    // linting tests and benchmarks can produce very noisy results
-    if builder.kind != Kind::Clippy {
-        cargo.arg("--all-targets");
-    }
+    cargo.arg("--all-targets");
 
     let stamp = BuildStamp::new(&builder.cargo_out(compiler, Mode::ToolRustc, target))
         .with_prefix(&format!("{}-check", step_type_name.to_lowercase()));

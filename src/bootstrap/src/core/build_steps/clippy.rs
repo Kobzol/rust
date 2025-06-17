@@ -217,7 +217,7 @@ impl Step for Rustc {
                 builder.std(compiler, compiler.host);
                 builder.std(compiler, target);
             } else {
-                builder.ensure(check::Std::new(target).build_kind(Some(Kind::Check)));
+                builder.ensure(check::Std::new(target));
             }
         }
 
