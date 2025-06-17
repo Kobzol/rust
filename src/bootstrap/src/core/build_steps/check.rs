@@ -20,16 +20,13 @@ pub struct Std {
     ///
     /// [`compile::Rustc`]: crate::core::build_steps::compile::Rustc
     crates: Vec<String>,
-    /// Never use this from outside calls. It is intended for internal use only within `check::Std::make_run`
-    /// and `check::Std::run`.
-    custom_stage: Option<u32>,
 }
 
 impl Std {
     const CRATE_OR_DEPS: &[&str] = &["sysroot", "coretests", "alloctests"];
 
     pub fn new(target: TargetSelection) -> Self {
-        Self { target, crates: vec![], custom_stage: None }
+        Self { target, crates: vec![] }
     }
 }
 
@@ -48,14 +45,7 @@ impl Step for Std {
 
     fn make_run(run: RunConfig<'_>) {
         let crates = std_crates_for_run_make(&run);
-
-        let stage = if run.builder.config.is_explicit_stage() || run.builder.top_stage >= 1 {
-            run.builder.top_stage
-        } else {
-            1
-        };
-
-        run.builder.ensure(Std { target: run.target, crates, custom_stage: Some(stage) });
+        run.builder.ensure(Std { target: run.target, crates });
     }
 
     fn run(self, builder: &Builder<'_>) {
@@ -68,29 +58,9 @@ impl Step for Std {
 
         builder.require_submodule("library/stdarch", None);
 
-        let stage = self.custom_stage.unwrap_or(builder.top_stage);
-
+        let stage = builder.top_stage;
         let target = self.target;
         let compiler = builder.compiler(stage, builder.config.host_target);
-
-        if stage == 0 {
-            let mut is_explicitly_called =
-                builder.paths.iter().any(|p| p.starts_with("library") || p.starts_with("std"));
-
-            if !is_explicitly_called {
-                for c in Std::CRATE_OR_DEPS {
-                    is_explicitly_called = builder.paths.iter().any(|p| p.starts_with(c));
-                }
-            }
-
-            if is_explicitly_called {
-                eprintln!("WARNING: stage 0 std is precompiled and does nothing during `x check`.");
-            }
-
-            // Reuse the stage0 libstd
-            builder.std(compiler, target);
-            return;
-        }
 
         let mut cargo = builder::Cargo::new(
             builder,
@@ -120,13 +90,6 @@ impl Step for Std {
         let stamp = build_stamp::libstd_stamp(builder, compiler, target).with_prefix("check");
         run_cargo(builder, cargo, builder.config.free_args.clone(), &stamp, vec![], true, false);
 
-        // We skip populating the sysroot in non-zero stage because that'll lead
-        // to rlib/rmeta conflicts if std gets built during this session.
-        if compiler.stage == 0 {
-            let libdir = builder.sysroot_target_libdir(compiler, target);
-            let hostdir = builder.sysroot_target_libdir(compiler, compiler.host);
-            add_to_sysroot(builder, &libdir, &hostdir, &stamp);
-        }
         drop(_guard);
 
         // don't check test dependencies if we haven't built libtest
@@ -149,12 +112,7 @@ impl Step for Std {
             Kind::Check,
         );
 
-        // If we're not in stage 0, tests and examples will fail to compile
-        // from `core` definitions being loaded from two different `libcore`
-        // .rmeta and .rlib files.
-        if compiler.stage == 0 {
-            cargo.arg("--all-targets");
-        }
+        cargo.arg("--all-targets");
 
         std_cargo(builder, target, compiler.stage, &mut cargo);
 
