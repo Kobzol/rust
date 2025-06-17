@@ -272,6 +272,39 @@ impl Step for Rustc {
     }
 }
 
+/// Step that prepares the passed `compiler` so that it can check
+/// something that depends on rustc_private (e.g. a codegen backend,
+/// rust analyzer, miri, etc.).
+///
+/// Returns the compiler that should be used to check the tool that
+/// uses rustc_private.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct PrepareRustcPrivateCheck {
+    target: TargetSelection,
+}
+
+impl Step for PrepareRustcPrivateCheck {
+    type Output = Compiler;
+
+    fn run(self, builder: &Builder<'_>) -> Self::Output {
+        // If we're checking tool at stage N, we want to check it with compiler at stage N - 1
+        let compiler = builder.compiler(builder.top_stage - 1, builder.config.host_target);
+        let target = self.target;
+
+        // Ensure that we have a stdlib for compiling build scripts
+        builder.std(compiler, builder.config.host_target);
+
+        // Ensure that we *check* a compiler at the same stage as the tool we're checking,
+        // so that its .rmeta files are available for rustc_private
+        builder.ensure(Rustc::new(target, builder));
+        compiler
+    }
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.never()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CodegenBackend {
     pub target: TargetSelection,
