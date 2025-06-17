@@ -198,13 +198,6 @@ pub struct Rustc {
     ///
     /// [`compile::Rustc`]: crate::core::build_steps::compile::Rustc
     crates: Vec<String>,
-    /// Override `Builder::kind` on cargo invocations.
-    ///
-    /// By default, `Builder::kind` is propagated as the subcommand to the cargo invocations.
-    /// However, there are cases when this is not desirable. For example, when running `x clippy $tool_name`,
-    /// passing `Builder::kind` to cargo invocations would run clippy on the entire compiler and library,
-    /// which is not useful if we only want to lint a few crates with specific rules.
-    override_build_kind: Option<Kind>,
 }
 
 impl Rustc {
@@ -214,12 +207,7 @@ impl Rustc {
             .into_iter()
             .map(|krate| krate.name.to_string())
             .collect();
-        Self { target, crates, override_build_kind: None }
-    }
-
-    pub fn build_kind(mut self, build_kind: Option<Kind>) -> Self {
-        self.override_build_kind = build_kind;
-        self
+        Self { target, crates }
     }
 }
 
@@ -234,7 +222,7 @@ impl Step for Rustc {
 
     fn make_run(run: RunConfig<'_>) {
         let crates = run.make_run_crates(Alias::Compiler);
-        run.builder.ensure(Rustc { target: run.target, crates, override_build_kind: None });
+        run.builder.ensure(Rustc { target: run.target, crates });
     }
 
     /// Builds the compiler.
@@ -255,7 +243,7 @@ impl Step for Rustc {
             builder.std(compiler, compiler.host);
             builder.std(compiler, target);
         } else {
-            builder.ensure(Std::new(target).build_kind(self.override_build_kind));
+            builder.ensure(Std::new(target));
         }
 
         let mut cargo = builder::Cargo::new(
@@ -264,16 +252,10 @@ impl Step for Rustc {
             Mode::Rustc,
             SourceType::InTree,
             target,
-            self.override_build_kind.unwrap_or(builder.kind),
+            Kind::Check,
         );
 
         rustc_cargo(builder, &mut cargo, target, &compiler, &self.crates);
-
-        // For ./x.py clippy, don't run with --all-targets because
-        // linting tests and benchmarks can produce very noisy results
-        if builder.kind != Kind::Clippy {
-            cargo.arg("--all-targets");
-        }
 
         // Explicitly pass -p for all compiler crates -- this will force cargo
         // to also check the tests/benches/examples for these crates, rather
