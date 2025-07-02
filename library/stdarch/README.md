@@ -16,3 +16,4 @@ This repository contains two main crates:
 
 The `std::simd` component now lives in the
 [`packed_simd_2`](https://github.com/rust-lang/packed_simd) crate.
+foo
