@@ -7,3 +7,4 @@ crates/stdarch-gen-loongarch/lasx.c
 crates/stdarch-gen-loongarch/lsx.c
 c_programs/*
 rust_programs/*
+foo
