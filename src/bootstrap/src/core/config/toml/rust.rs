@@ -436,7 +436,7 @@ pub fn with_lld_opt_in_targets<R>(targets: Vec<String>, f: impl FnOnce() -> R) -
 }
 
 impl Config {
-    pub fn apply_rust_config(&mut self, toml_rust: Option<Rust>, warnings: Warnings) {
+    pub fn apply_rust_config(&mut self, toml_rust: Option<Rust>) {
         let mut debug = None;
         let mut rustc_debug_assertions = None;
         let mut std_debug_assertions = None;
@@ -591,14 +591,6 @@ impl Config {
             self.rustc_default_linker = default_linker;
             self.musl_root = musl_root.map(PathBuf::from);
             self.save_toolstates = save_toolstates.map(PathBuf::from);
-            set(
-                &mut self.deny_warnings,
-                match warnings {
-                    Warnings::Deny => Some(true),
-                    Warnings::Warn => Some(false),
-                    Warnings::Default => deny_warnings,
-                },
-            );
             set(&mut self.backtrace_on_ice, backtrace_on_ice);
             set(&mut self.rust_verify_llvm_ir, verify_llvm_ir);
             self.rust_thin_lto_import_instr_limit = thin_lto_import_instr_limit;
