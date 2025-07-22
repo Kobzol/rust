@@ -449,9 +449,26 @@ impl Config {
             config.src = src;
         }
 
+        let get_toml = |toml_path| {
+            toml_path.unwrap_or_else(|e| {
+                eprintln!("ERROR: Failed to parse '{}': {e}", toml_path.display());
+                exit!(2);
+            })
+        };
+
         // Now load the TOML config, as soon as possible
         let (mut toml, toml_path) = load_toml_config(&config.src, flags_config, &get_toml);
         config.config = toml_path.clone();
+
+        // Now postprocess the TOML by applying profiles, includes and `--set` overrides from flags
+        postprocess_toml(
+            &mut toml,
+            &config.src,
+            toml_path,
+            config.exec_ctx(),
+            &flags_set,
+            get_toml,
+        );
 
         // Set flags.
         config.paths = std::mem::take(&mut flags_paths);
@@ -518,105 +535,6 @@ impl Config {
             build.rustc = build.rustc.take().or(std::env::var_os("RUSTC").map(|p| p.into()));
             build.cargo = build.cargo.take().or(std::env::var_os("CARGO").map(|p| p.into()));
         }
-
-        if config.git_info(false, &config.src).is_from_tarball() && toml.profile.is_none() {
-            toml.profile = Some("dist".into());
-        }
-
-        // Reverse the list to ensure the last added config extension remains the most dominant.
-        // For example, given ["a.toml", "b.toml"], "b.toml" should take precedence over "a.toml".
-        //
-        // This must be handled before applying the `profile` since `include`s should always take
-        // precedence over `profile`s.
-        for include_path in toml.include.clone().unwrap_or_default().iter().rev() {
-            let include_path = toml_path
-                .as_ref()
-                .expect("include found in default TOML config")
-                .parent()
-                .unwrap()
-                .join(include_path);
-
-            let included_toml = get_toml(&include_path).unwrap_or_else(|e| {
-                eprintln!("ERROR: Failed to parse '{}': {e}", include_path.display());
-                exit!(2);
-            });
-            toml.merge(
-                Some(include_path),
-                &mut Default::default(),
-                included_toml,
-                ReplaceOpt::IgnoreDuplicate,
-            );
-        }
-
-        if let Some(include) = &toml.profile {
-            // Allows creating alias for profile names, allowing
-            // profiles to be renamed while maintaining back compatibility
-            // Keep in sync with `profile_aliases` in bootstrap.py
-            let profile_aliases = HashMap::from([("user", "dist")]);
-            let include = match profile_aliases.get(include.as_str()) {
-                Some(alias) => alias,
-                None => include.as_str(),
-            };
-            let mut include_path = config.src.clone();
-            include_path.push("src");
-            include_path.push("bootstrap");
-            include_path.push("defaults");
-            include_path.push(format!("bootstrap.{include}.toml"));
-            let included_toml = get_toml(&include_path).unwrap_or_else(|e| {
-                eprintln!(
-                    "ERROR: Failed to parse default config profile at '{}': {e}",
-                    include_path.display()
-                );
-                exit!(2);
-            });
-            toml.merge(
-                Some(include_path),
-                &mut Default::default(),
-                included_toml,
-                ReplaceOpt::IgnoreDuplicate,
-            );
-        }
-
-        let mut override_toml = TomlConfig::default();
-        for option in flags_set.iter() {
-            fn get_table(option: &str) -> Result<TomlConfig, toml::de::Error> {
-                toml::from_str(option).and_then(|table: toml::Value| TomlConfig::deserialize(table))
-            }
-
-            let mut err = match get_table(option) {
-                Ok(v) => {
-                    override_toml.merge(
-                        None,
-                        &mut Default::default(),
-                        v,
-                        ReplaceOpt::ErrorOnDuplicate,
-                    );
-                    continue;
-                }
-                Err(e) => e,
-            };
-            // We want to be able to set string values without quotes,
-            // like in `configure.py`. Try adding quotes around the right hand side
-            if let Some((key, value)) = option.split_once('=')
-                && !value.contains('"')
-            {
-                match get_table(&format!(r#"{key}="{value}""#)) {
-                    Ok(v) => {
-                        override_toml.merge(
-                            None,
-                            &mut Default::default(),
-                            v,
-                            ReplaceOpt::ErrorOnDuplicate,
-                        );
-                        continue;
-                    }
-                    Err(e) => err = e,
-                }
-            }
-            eprintln!("failed to parse override `{option}`: `{err}");
-            exit!(2)
-        }
-        toml.merge(None, &mut Default::default(), override_toml, ReplaceOpt::Override);
 
         config.change_id = toml.change_id.inner;
 
@@ -1744,6 +1662,104 @@ impl Config {
     }
 }
 
+/// Applies includes and profiles to the TOML config, and also overrides defaults from `--set`
+/// flags.
+fn postprocess_toml(
+    toml: &mut TomlConfig,
+    src_dir: &Path,
+    toml_path: Option<PathBuf>,
+    exec_ctx: &ExecutionContext,
+    override_set: &[String],
+    get_toml: &impl Fn(&Path) -> TomlConfig,
+) {
+    let git_info = GitInfo::new(false, src_dir, exec_ctx);
+
+    if git_info.is_from_tarball() && toml.profile.is_none() {
+        toml.profile = Some("dist".into());
+    }
+
+    // Reverse the list to ensure the last added config extension remains the most dominant.
+    // For example, given ["a.toml", "b.toml"], "b.toml" should take precedence over "a.toml".
+    //
+    // This must be handled before applying the `profile` since `include`s should always take
+    // precedence over `profile`s.
+    for include_path in toml.include.clone().unwrap_or_default().iter().rev() {
+        let include_path = toml_path
+            .as_ref()
+            .expect("include found in default TOML config")
+            .parent()
+            .unwrap()
+            .join(include_path);
+
+        let included_toml = get_toml(&include_path);
+        toml.merge(
+            Some(include_path),
+            &mut Default::default(),
+            included_toml,
+            ReplaceOpt::IgnoreDuplicate,
+        );
+    }
+
+    if let Some(include) = &toml.profile {
+        // Allows creating alias for profile names, allowing
+        // profiles to be renamed while maintaining back compatibility
+        // Keep in sync with `profile_aliases` in bootstrap.py
+        let profile_aliases = HashMap::from([("user", "dist")]);
+        let include = match profile_aliases.get(include.as_str()) {
+            Some(alias) => alias,
+            None => include.as_str(),
+        };
+        let mut include_path = src_dir;
+        include_path.push("src");
+        include_path.push("bootstrap");
+        include_path.push("defaults");
+        include_path.push(format!("bootstrap.{include}.toml"));
+        let included_toml = get_toml(&include_path);
+        toml.merge(
+            Some(include_path),
+            &mut Default::default(),
+            included_toml,
+            ReplaceOpt::IgnoreDuplicate,
+        );
+    }
+
+    let mut override_toml = TomlConfig::default();
+    for option in override_set.iter() {
+        fn get_table(option: &str) -> Result<TomlConfig, toml::de::Error> {
+            toml::from_str(option).and_then(|table: toml::Value| TomlConfig::deserialize(table))
+        }
+
+        let mut err = match get_table(option) {
+            Ok(v) => {
+                override_toml.merge(None, &mut Default::default(), v, ReplaceOpt::ErrorOnDuplicate);
+                continue;
+            }
+            Err(e) => e,
+        };
+        // We want to be able to set string values without quotes,
+        // like in `configure.py`. Try adding quotes around the right hand side
+        if let Some((key, value)) = option.split_once('=')
+            && !value.contains('"')
+        {
+            match get_table(&format!(r#"{key}="{value}""#)) {
+                Ok(v) => {
+                    override_toml.merge(
+                        None,
+                        &mut Default::default(),
+                        v,
+                        ReplaceOpt::ErrorOnDuplicate,
+                    );
+                    continue;
+                }
+                Err(e) => err = e,
+            }
+        }
+        eprintln!("failed to parse override `{option}`: `{err}");
+        exit!(2)
+    }
+    toml.merge(None, &mut Default::default(), override_toml, ReplaceOpt::Override);
+}
+
 impl AsRef<ExecutionContext> for Config {
     fn as_ref(&self) -> &ExecutionContext {
         &self.exec_ctx
@@ -1807,7 +1823,7 @@ fn compute_src_directory(src_dir: Option<PathBuf>, exec_ctx: &ExecutionContext) 
 fn load_toml_config(
     src: &Path,
     config_path: Option<PathBuf>,
-    get_toml: &impl Fn(&Path) -> Result<TomlConfig, toml::de::Error>,
+    get_toml: &impl Fn(&Path) -> TomlConfig,
 ) -> (TomlConfig, Option<PathBuf>) {
     // Locate the configuration file using the following priority (first match wins):
     // 1. `--config <path>` (explicit flag)
