@@ -470,8 +470,92 @@ impl Config {
             get_toml,
         );
 
-        // Set flags.
-        config.paths = std::mem::take(&mut flags_paths);
+        // Now override TOML values with flags, to make sure that we won't later override flags with
+        // TOML values by accident instead, because flags have higher priority.
+        let Build {
+            description,
+            mut build,
+            mut host,
+            mut target,
+            mut build_dir,
+            cargo,
+            rustc,
+            rustfmt,
+            cargo_clippy,
+            docs,
+            compiler_docs,
+            library_docs_private_items,
+            docs_minification,
+            submodules,
+            gdb,
+            lldb,
+            nodejs,
+            npm,
+            python,
+            reuse,
+            locked_deps,
+            vendor,
+            full_bootstrap,
+            bootstrap_cache_path,
+            extended,
+            tools,
+            tool,
+            verbose,
+            sanitizers,
+            profiler,
+            cargo_native_static,
+            low_priority,
+            configure_args,
+            local_rebuild,
+            print_step_timings,
+            print_step_rusage,
+            check_stage,
+            doc_stage,
+            build_stage,
+            test_stage,
+            install_stage,
+            dist_stage,
+            bench_stage,
+            patch_binaries_for_nix,
+            // This field is only used by bootstrap.py
+            metrics: _,
+            android_ndk,
+            optimized_compiler_builtins,
+            mut jobs,
+            compiletest_diff_tool,
+            compiletest_use_stage0_libtest,
+            tidy_extra_checks,
+            ccache,
+            exclude,
+        } = toml.build.unwrap_or_default();
+        jobs = flags_jobs.or(jobs);
+        build = flags_build.or(build);
+        build_dir = flags_build_dir.or(build_dir.map(PathBuf::from));
+        host = if let Some(TargetSelectionList(hosts)) = flags_host {
+            hosts
+        } else if let Some(file_host) = host {
+            file_host.iter().map(|h| TargetSelection::from_user(h)).collect()
+        } else {
+            None
+        };
+        target = if let Some(TargetSelectionList(targets)) = flags_target {
+            targets
+        } else if let Some(file_target) = target {
+            file_target.iter().map(|h| TargetSelection::from_user(h)).collect()
+        } else {
+            None
+        };
+
+        if let Some(rustc) = &rustc {
+            if !flags_skip_stage0_validation {
+                check_stage0_version(&rustc, "rustc", &config.src, config.exec_ctx());
+            }
+        }
+        if let Some(cargo) = &cargo {
+            if !flags_skip_stage0_validation {
+                check_stage0_version(&cargo, "cargo", &config.src, config.exec_ctx());
+            }
+        }
 
         #[cfg(feature = "tracing")]
         span!(
@@ -491,6 +575,8 @@ impl Config {
             "config.skip" = ?config.skip,
         );
 
+        // Set flags.
+        config.paths = std::mem::take(&mut flags_paths);
         config.include_default_paths = flags_include_default_paths;
         config.rustc_error_format = flags_rustc_error_format;
         config.json_output = flags_json_output;
@@ -538,63 +624,6 @@ impl Config {
 
         config.change_id = toml.change_id.inner;
 
-        let Build {
-            description,
-            build,
-            host,
-            target,
-            build_dir,
-            cargo,
-            rustc,
-            rustfmt,
-            cargo_clippy,
-            docs,
-            compiler_docs,
-            library_docs_private_items,
-            docs_minification,
-            submodules,
-            gdb,
-            lldb,
-            nodejs,
-            npm,
-            python,
-            reuse,
-            locked_deps,
-            vendor,
-            full_bootstrap,
-            bootstrap_cache_path,
-            extended,
-            tools,
-            tool,
-            verbose,
-            sanitizers,
-            profiler,
-            cargo_native_static,
-            low_priority,
-            configure_args,
-            local_rebuild,
-            print_step_timings,
-            print_step_rusage,
-            check_stage,
-            doc_stage,
-            build_stage,
-            test_stage,
-            install_stage,
-            dist_stage,
-            bench_stage,
-            patch_binaries_for_nix,
-            // This field is only used by bootstrap.py
-            metrics: _,
-            android_ndk,
-            optimized_compiler_builtins,
-            jobs,
-            compiletest_diff_tool,
-            compiletest_use_stage0_libtest,
-            tidy_extra_checks,
-            ccache,
-            exclude,
-        } = toml.build.unwrap_or_default();
-
         let mut paths: Vec<PathBuf> = flags_skip.into_iter().chain(flags_exclude).collect();
 
         if let Some(exclude) = exclude {
@@ -615,15 +644,12 @@ impl Config {
             })
             .collect();
 
-        config.jobs = Some(threads_from_config(flags_jobs.unwrap_or(jobs.unwrap_or(0))));
+        config.jobs = Some(threads_from_config(jobs.unwrap_or(0)));
+        if let Some(build) = build {
+            config.host_target = TargetSelection::from_user(&build);
+        }
 
-        if let Some(flags_build) = flags_build {
-            config.host_target = TargetSelection::from_user(&flags_build);
-        } else if let Some(file_build) = build {
-            config.host_target = TargetSelection::from_user(&file_build);
-        };
-
-        set(&mut config.out, flags_build_dir.or_else(|| build_dir.map(PathBuf::from)));
+        set(&mut config.out, build_dir);
         // NOTE: Bootstrap spawns various commands with different working directories.
         // To avoid writing to random places on the file system, `config.out` needs to be an absolute path.
         if !config.out.is_absolute() {
@@ -638,9 +664,6 @@ impl Config {
         }
 
         config.initial_rustc = if let Some(rustc) = rustc {
-            if !flags_skip_stage0_validation {
-                config.check_stage0_version(&rustc, "rustc");
-            }
             rustc
         } else {
             config.download_beta_toolchain();
@@ -664,9 +687,6 @@ impl Config {
         config.initial_cargo_clippy = cargo_clippy;
 
         config.initial_cargo = if let Some(cargo) = cargo {
-            if !flags_skip_stage0_validation {
-                config.check_stage0_version(&cargo, "cargo");
-            }
             cargo
         } else {
             config.download_beta_toolchain();
@@ -680,17 +700,9 @@ impl Config {
             config.out = dir;
         }
 
-        config.hosts = if let Some(TargetSelectionList(arg_host)) = flags_host {
-            arg_host
-        } else if let Some(file_host) = host {
-            file_host.iter().map(|h| TargetSelection::from_user(h)).collect()
-        } else {
-            vec![config.host_target]
-        };
-        config.targets = if let Some(TargetSelectionList(arg_target)) = flags_target {
-            arg_target
-        } else if let Some(file_target) = target {
-            file_target.iter().map(|h| TargetSelection::from_user(h)).collect()
+        config.hosts = if let Some(hosts) = host { hosts } else { vec![config.host_target] };
+        config.targets = if let Some(targets) = target {
+            targets
         } else {
             // If target is *not* configured, then default to the host
             // toolchains.
@@ -1333,49 +1345,6 @@ impl Config {
         }
     }
 
-    #[cfg(test)]
-    pub fn check_stage0_version(&self, _program_path: &Path, _component_name: &'static str) {}
-
-    /// check rustc/cargo version is same or lower with 1 apart from the building one
-    #[cfg(not(test))]
-    pub fn check_stage0_version(&self, program_path: &Path, component_name: &'static str) {
-        use build_helper::util::fail;
-
-        if self.dry_run() {
-            return;
-        }
-
-        let stage0_output =
-            command(program_path).arg("--version").run_capture_stdout(self).stdout();
-        let mut stage0_output = stage0_output.lines().next().unwrap().split(' ');
-
-        let stage0_name = stage0_output.next().unwrap();
-        if stage0_name != component_name {
-            fail(&format!(
-                "Expected to find {component_name} at {} but it claims to be {stage0_name}",
-                program_path.display()
-            ));
-        }
-
-        let stage0_version =
-            semver::Version::parse(stage0_output.next().unwrap().split('-').next().unwrap().trim())
-                .unwrap();
-        let source_version = semver::Version::parse(
-            fs::read_to_string(self.src.join("src/version")).unwrap().trim(),
-        )
-        .unwrap();
-        if !(source_version == stage0_version
-            || (source_version.major == stage0_version.major
-                && (source_version.minor == stage0_version.minor
-                    || source_version.minor == stage0_version.minor + 1)))
-        {
-            let prev_version = format!("{}.{}.x", source_version.major, source_version.minor - 1);
-            fail(&format!(
-                "Unexpected {component_name} version: {stage0_version}, we should use {prev_version}/{source_version} to build source with {source_version}"
-            ));
-        }
-    }
-
     /// Returns the commit to download, or `None` if we shouldn't download CI artifacts.
     pub fn download_ci_rustc_commit(
         &self,
@@ -1864,5 +1833,58 @@ fn load_toml_config(
         )
     } else {
         (TomlConfig::default(), None)
+    }
+}
+
+#[cfg(test)]
+pub fn check_stage0_version(
+    _program_path: &Path,
+    _component_name: &'static str,
+    _src_dir: &Path,
+    _exec_ctx: &ExecutionContext,
+) {
+}
+
+/// check rustc/cargo version is same or lower with 1 apart from the building one
+#[cfg(not(test))]
+pub fn check_stage0_version(
+    program_path: &Path,
+    component_name: &'static str,
+    src_dir: &Path,
+    exec_ctx: &ExecutionContext,
+) {
+    use build_helper::util::fail;
+
+    if exec_ctx.dry_run() {
+        return;
+    }
+
+    let stage0_output =
+        command(program_path).arg("--version").run_capture_stdout(exec_ctx).stdout();
+    let mut stage0_output = stage0_output.lines().next().unwrap().split(' ');
+
+    let stage0_name = stage0_output.next().unwrap();
+    if stage0_name != component_name {
+        fail(&format!(
+            "Expected to find {component_name} at {} but it claims to be {stage0_name}",
+            program_path.display()
+        ));
+    }
+
+    let stage0_version =
+        semver::Version::parse(stage0_output.next().unwrap().split('-').next().unwrap().trim())
+            .unwrap();
+    let source_version =
+        semver::Version::parse(fs::read_to_string(src_dir.join("src/version")).unwrap().trim())
+            .unwrap();
+    if !(source_version == stage0_version
+        || (source_version.major == stage0_version.major
+            && (source_version.minor == stage0_version.minor
+                || source_version.minor == stage0_version.minor + 1)))
+    {
+        let prev_version = format!("{}.{}.x", source_version.major, source_version.minor - 1);
+        fail(&format!(
+            "Unexpected {component_name} version: {stage0_version}, we should use {prev_version}/{source_version} to build source with {source_version}"
+        ));
     }
 }
