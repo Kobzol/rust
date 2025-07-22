@@ -640,7 +640,7 @@ impl ExecutionContext {
         self.dry_run = value;
     }
 
-    pub fn set_verbose(&mut self, value: u8) {
+    pub fn set_verbosity(&mut self, value: u8) {
         self.verbosity = value;
     }
 

@@ -32,7 +32,7 @@ use tracing::{instrument, span};
 use crate::core::build_steps::llvm;
 use crate::core::build_steps::llvm::LLVM_INVALIDATION_PATHS;
 pub use crate::core::config::flags::Subcommand;
-use crate::core::config::flags::{Color, Flags};
+use crate::core::config::flags::{Color, Flags, Warnings};
 use crate::core::config::target_selection::TargetSelectionList;
 use crate::core::config::toml::TomlConfig;
 use crate::core::config::toml::build::{Build, Tool};
@@ -87,7 +87,6 @@ pub struct Config {
     pub ccache: Option<String>,
     /// Call Build::ninja() instead of this.
     pub ninja_in_file: bool,
-    pub verbose: usize,
     pub submodules: Option<bool>,
     pub compiler_docs: bool,
     pub library_docs_private_items: bool,
@@ -566,6 +565,11 @@ impl Config {
                 check_stage0_version(&cargo, "cargo", &config.src, config.exec_ctx());
             }
         }
+        // Prefer CLI verbosity flags if set (`flags_verbose` > 0), otherwise take the value from
+        // TOML.
+        config.exec_ctx.set_verbosity(
+            (flags_verbose > 0).then(|| Some(flags_verbose)).or(verbose).unwrap_or(0),
+        );
 
         let mut paths: Vec<PathBuf> = flags_skip.into_iter().chain(flags_exclude).collect();
         if let Some(exclude) = exclude {
@@ -724,7 +728,6 @@ impl Config {
         set(&mut config.extended, extended);
         config.tools = tools;
         set(&mut config.tool, tool);
-        set(&mut config.verbose, verbose);
         set(&mut config.sanitizers, sanitizers);
         set(&mut config.profiler, profiler);
         set(&mut config.cargo_native_static, cargo_native_static);
@@ -733,8 +736,6 @@ impl Config {
         set(&mut config.print_step_timings, print_step_timings);
         set(&mut config.print_step_rusage, print_step_rusage);
         config.patch_binaries_for_nix = patch_binaries_for_nix;
-
-        config.verbose = cmp::max(config.verbose, flags_verbose as usize);
 
         // Verbose flag is a good default for `rust.verbose-tests`.
         config.verbose_tests = config.is_verbose();
