@@ -214,7 +214,6 @@ impl Step for Std {
             lint_args(builder, &self.config, IGNORED_RULES_FOR_STD_AND_RUSTC),
             &build_stamp::libstd_stamp(builder, build_compiler, target),
             vec![],
-            true,
             false,
         );
     }
@@ -309,7 +308,6 @@ impl Step for Rustc {
             lint_args(builder, &self.config, IGNORED_RULES_FOR_STD_AND_RUSTC),
             &build_stamp::librustc_stamp(builder, build_compiler, target),
             vec![],
-            true,
             false,
         );
     }
@@ -396,7 +394,7 @@ impl Step for CodegenGcc {
         self.build_compiler.configure_cargo(&mut cargo);
         println!("Now running clippy on `rustc_codegen_gcc` with `--no-default-features`");
         cargo.arg("--no-default-features");
-        run_cargo(builder, cargo, args, &stamp, vec![], true, false);
+        run_cargo(builder, cargo, args, &stamp, vec![], false);
     }
 
     fn metadata(&self) -> Option<StepMetadata> {
@@ -478,7 +476,6 @@ macro_rules! lint_any {
                     lint_args(builder, &self.config, &[]),
                     &stamp,
                     vec![],
-                    true,
                     false,
                 );
             }
