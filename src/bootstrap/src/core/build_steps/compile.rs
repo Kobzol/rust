@@ -290,14 +290,7 @@ impl Step for Std {
         );
 
         let stamp = build_stamp::libstd_stamp(builder, build_compiler, target);
-        run_cargo(
-            builder,
-            cargo,
-            vec![],
-            &stamp,
-            target_deps,
-            false,
-        );
+        run_cargo(builder, cargo, vec![], &stamp, target_deps, false);
 
         builder.ensure(StdLink::from_std(
             self,
