@@ -1,5 +1,4 @@
 use rustc_ast::tokenstream::TokenStream;
-use rustc_data_structures::svh::Svh;
 use rustc_errors::ErrorGuaranteed;
 use rustc_middle::ty::{self, TyCtxt};
 use rustc_parse::parser::{ForceCollect, Parser};
@@ -140,16 +139,8 @@ impl MultiItemModifier for DeriveProcMacro {
             && ecx.sess.opts.unstable_opts.cache_derive_macros
         {
             ty::tls::with(|tcx| {
-                // FIXME(pr-time): Just using the crate hash to notice when the proc-macro code has
-                // changed. How to *correctly* depend on exactly the macro definition?
-                // I.e., depending on the crate hash is just a HACK, and ideally the dependency would be
-                // more narrow.
-                let invoc_expn_data = invoc_id.expn_data();
-                let macro_def_id = invoc_expn_data.macro_def_id.unwrap();
-                let proc_macro_crate_hash = tcx.crate_hash(macro_def_id.krate);
-
                 let input = tcx.arena.alloc(input) as &TokenStream;
-                let key = (invoc_id, proc_macro_crate_hash, input);
+                let key = (invoc_id, input);
 
                 QueryDeriveExpandCtx::enter(ecx, self.client, move || {
                     tcx.derive_macro_expansion(key).cloned()
@@ -197,9 +188,12 @@ impl MultiItemModifier for DeriveProcMacro {
 /// Provide a query for computing the output of a derive macro.
 pub(super) fn provide_derive_macro_expansion<'tcx>(
     tcx: TyCtxt<'tcx>,
-    key: (LocalExpnId, Svh, &'tcx TokenStream),
+    key: (LocalExpnId, &'tcx TokenStream),
 ) -> Result<&'tcx TokenStream, ()> {
-    let (invoc_id, _macro_crate_hash, input) = key;
+    let (invoc_id, input) = key;
+
+    // Make sure that we invalidate the query when the crate defining the proc macro changes
+    let _ = tcx.crate_hash(invoc_id.expn_data().macro_def_id.unwrap().krate);
 
     QueryDeriveExpandCtx::with(|ecx, client| {
         expand_derive_macro(invoc_id, input.clone(), ecx, client)
