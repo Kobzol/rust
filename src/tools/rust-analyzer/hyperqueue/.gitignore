@@ -1,0 +1,6 @@
+/target
+.idea
+__pycache__
+*.so
+*snap
+/venv

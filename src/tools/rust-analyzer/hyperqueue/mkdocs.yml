@@ -1,0 +1,122 @@
+site_name: HyperQueue
+
+site_url: https://it4innovations.github.io/hyperqueue/
+repo_url: https://github.com/It4innovations/hyperqueue
+edit_uri: blob/main/docs/
+
+site_description: Documentation of HyperQueue.
+site_author: Ada Böhm, Jakub Beránek
+
+validation:
+  links:
+    # FIXME: we ignore the warning because of apidoc and cli-reference
+    unrecognized_links: info
+    anchors: warn
+  nav:
+    not_found: ignore
+
+nav:
+  - Overview: README.md
+  - Installation: installation.md
+  - Getting Started:
+      - Quickstart: quickstart.md
+      - Cheatsheet: cheatsheet.md
+  - Examples:
+      - examples/README.md
+      - Processing data arrays: examples/data-arrays/README.md
+      - Iterative computation: examples/iterative-computation/README.md
+  - Deployment:
+      - deployment/index.md
+      - Server: deployment/server.md
+      - Workers: deployment/worker.md
+      - Automatic Allocation: deployment/allocation.md
+      - Without Shared Filesystem: deployment/cloud.md
+  - Task computation:
+      - Jobs and Tasks: jobs/jobs.md
+      - Task Arrays: jobs/arrays.md
+      - Resources: jobs/resources.md
+      - CPU Resources: jobs/cresources.md
+      - Handling Failure: jobs/failure.md
+      - Output Streaming: jobs/streaming.md
+      - Directives: jobs/directives.md
+      - Job Definition File: jobs/jobfile.md
+      - Open jobs: jobs/openjobs.md
+      - Multinode Tasks: jobs/multinode.md
+      - Explain command: jobs/explain.md
+      - Task Notifications: jobs/notify.md
+  - CLI:
+      - Dashboard: cli/dashboard.md
+      - Shortcuts: cli/shortcuts.md
+      - Output mode: cli/output-mode.md
+      - Documentation: cli/documentation.md
+      - Shell completion: cli/shell-completion.md
+      - CLI reference: cli-reference/
+  - Python API:
+      - Getting started: python/index.md
+      - Client: python/client.md
+      - Submitting jobs: python/submit.md
+      - Dependencies: python/dependencies.md
+      - API reference: python/apidoc/
+  - Changelog: changelog.md
+  - FAQ: faq.md
+  - Comparison With Other Tools: other-tools.md
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  features:
+    - header.autohide
+    - navigation.instant
+    - navigation.top
+    - navigation.footer
+    - content.action.edit
+    - content.code.copy
+  #    - navigation.sections
+  #    - navigation.tabs
+  #    - navigation.indexes
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - toc:
+      permalink: "#"
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      base_path: .
+  - footnotes
+  - admonition
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+      minify_js: true
+      minify_css: true
+      htmlmin_opts:
+        remove_comments: true
+  - git-revision-date-localized:
+      type: date
+      fallback_to_build_date: true
+      enable_creation_date: true
+  - mike:
+      canonical_version: stable
+      alias_type: copy
+
+hooks:
+  - scripts/docs/build_cli_reference.py
+  - scripts/docs/postprocess_cli_links.py
+  - scripts/docs/postprocess_nedoc.py
+
+extra:
+  analytics:
+    provider: google
+    property: G-TM8J8R5GJ9
+  version:
+    provider: mike
+    default: stable
+
+extra_css:
+  - stylesheets/extra.css

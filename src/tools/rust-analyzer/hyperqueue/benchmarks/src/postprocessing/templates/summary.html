@@ -1,0 +1,57 @@
+<html>
+<header>
+    <style>
+        p, table {
+            margin: auto;
+            max-width: max-content;
+        }
+
+        table {
+            width: 50%;
+            display: block;
+        }
+
+        th, tr {
+            width: 1%;
+        }
+
+        .benchmark_klikatko:hover {
+            text-decoration: underline;
+        }
+
+        .benchmark_klikatko:active {
+            text-decoration: underline;
+        }
+
+        .benchmark_klikatko:visited {
+            text-decoration: none;
+            color: black;
+        }
+
+    </style>
+</header>
+<body>
+{% for group in keys %}
+    <p style="font-size: 20px"><b>{{ group|e }}</b></p>
+    <p>
+        {% for x in data[group] %}
+            {{ x|e }}<br>
+        {% endfor %}
+    </p>
+{% endfor %}
+<p style="font-size: 20px"><b>Grouped by benchmark:</b></p>
+{% for name,group in data["Grouped by benchmark:"] %}
+    <p class="benchmark_klikatko" onclick="hello('{{ name|e }}')">{{ name|e }}</p>
+    {{ group }}<br>
+
+{% endfor %}
+<p></p>
+</body>
+<script>
+
+    function hello(key) {
+        self.location = "monitoring/" + key;
+    }
+
+</script>
+</html>

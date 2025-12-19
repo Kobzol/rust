@@ -1,0 +1,57 @@
+[package]
+name = "tako"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["highs"]
+highs = ["dep:highs"]
+microlp = ["dep:microlp"]
+
+[dependencies]
+anyhow = { workspace = true }
+derive_builder = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true, features = ["codec"] }
+bytes = { workspace = true }
+smallvec = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_bytes = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+orion = { workspace = true }
+bincode = { workspace = true }
+log = { workspace = true }
+rand = { workspace = true, features = ["small_rng"] }
+tracing = { workspace = true }
+nix = { workspace = true }
+bstr = { workspace = true }
+psutil = { workspace = true }
+thin-vec = { workspace = true }
+bitflags = { workspace = true }
+tempfile = { workspace = true }
+highs = { version = "1.12", optional = true }
+microlp = { version = "0.2", optional = true }
+
+hashbrown = { version = "0.16", features = ["serde", "inline-more"], default-features = false }
+priority-queue = "2"
+fxhash = "0.2"
+derive_more = { version = "2", features = ["add", "add_assign", "sum"] }
+
+[dev-dependencies]
+env_logger = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "benchmark"
+harness = false
+
+# Workaround for Criterion (https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options)
+[lib]
+bench = false
+
+[lints]
+workspace = true

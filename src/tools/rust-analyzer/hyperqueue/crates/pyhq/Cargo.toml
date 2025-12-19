@@ -1,0 +1,38 @@
+[package]
+name = "pyhq"
+version = "0.24.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "hyperqueue"
+# "cdylib" is necessary to produce a shared library for Python to import from.
+#
+# Downstream Rust code (including code in `bin/`, `examples/`, and `tests/`) will not be able
+# to `use string_sum;` unless the "rlib" or "lib" crate type is also included, e.g.:
+# crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
+
+[dependencies]
+hyperqueue = { path = "../hyperqueue" }
+tako = { path = "../tako" }
+
+serde = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+tempfile = { workspace = true }
+
+pyo3 = { version = "0.25", features = ["extension-module", "abi3", "abi3-py39", "anyhow", "serde"] }
+pyo3-async-runtimes = { version = "0.25", features = ["tokio-runtime"] }
+pythonize = "0.25"
+termcolor = "1.1"
+
+[package.metadata.maturin]
+python-source = "python"
+
+[lints]
+workspace = true

@@ -1,0 +1,60 @@
+[workspace]
+members = [
+    "crates/hyperqueue",
+    "crates/tako",
+    "crates/pyhq"
+]
+default-members = [
+    "crates/hyperqueue",
+    "crates/tako"
+]
+resolver = "2"
+
+[workspace.package]
+rust-version = "1.88.0"
+edition = "2024"
+authors = ["Ada Böhm <ada@kreatrix.org>", "Jakub Beránek <berykubik@gmail.com>"]
+
+[workspace.dependencies]
+tokio = "1"
+log = "0.4"
+env_logger = { version = "0.11", features = ["color"] }
+clap = "4"
+criterion = { version = "0.6", features = ["html_reports"] }
+derive_builder = "0.20"
+serde = { version = "1", features = ["rc"] }
+serde_json = "1"
+serde_bytes = "0.11"
+bytes = "1"
+chrono = "0.4"
+orion = "0.17"
+smallvec = "1"
+bincode = "1"
+futures = "0.3"
+tokio-util = "0.7"
+hex = "0.4"
+rand = "0.9"
+gethostname = "1.0"
+thiserror = "2"
+tempfile = "3.12.0"
+tracing = "0.1"
+anyhow = "1"
+nix = { version = "0.30", features = ["process", "signal"] }
+bstr = { version = "1", features = ["serde"] }
+psutil = "3"
+thin-vec = { version = "0.2", features = ["serde"] }
+bitflags = { version = "2", features = ["serde"] }
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+
+[profile.release]
+panic = "abort"
+
+# Profile designed for the most optimized release build that is distributed
+# to users.
+[profile.dist]
+inherits = "release"
+lto = true
+codegen-units = 1
+debug = "line-tables-only"

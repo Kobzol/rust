@@ -1,0 +1,114 @@
+import time
+from typing import List, Union
+
+import psutil
+
+DEFAULT_TIMEOUT = 10
+
+
+class TimeoutException(BaseException):
+    pass
+
+
+def wait_until(fn, sleep_s=0.2, on_timeout=None, timeout_s=DEFAULT_TIMEOUT):
+    end = time.time() + timeout_s
+
+    while time.time() < end:
+        value = fn()
+        if value is not None and value is not False:
+            return value
+        time.sleep(sleep_s)
+    extra_info = None
+    if on_timeout is not None:
+        extra_info = on_timeout()
+    if extra_info is None:
+        extra_info = ""
+    raise TimeoutException(f"Wait timeouted after {timeout_s} seconds\n{extra_info}")
+
+
+TERMINAL_STATES = ["failed", "cancelled", "finished"]
+
+
+def wait_for_state(
+    env,
+    ids: Union[int, List[int]],
+    target_states: Union[str, List[str]],
+    commands: List[str],
+    state_index: int,
+    check_running_processes=True,
+    **kwargs,
+):
+    if isinstance(ids, int):
+        ids = {str(ids)}
+    else:
+        ids = set(str(id) for id in ids)
+
+    if isinstance(target_states, str):
+        target_states = {target_states.lower()}
+    else:
+        target_states = set(state.lower() for state in target_states)
+
+    last_table = None
+
+    def check():
+        nonlocal last_table
+        if check_running_processes:
+            env.check_running_processes()
+        table = env.command(commands, as_table=True)
+        last_table = table
+        items = [row[state_index].lower() for row in table if row[0].lstrip("*") in ids]
+        if len(items) < len(ids):
+            return False
+        r = all(s in target_states for s in items)
+        if not r:
+            if all(s in TERMINAL_STATES for s in items):
+                raise Exception(f"Waiting for {target_states} but job(s) are already in terminal states: {items}")
+        return r
+
+    def on_timeout():
+        if last_table is not None:
+            return f"most recent table:\n{last_table}"
+
+    wait_until(check, on_timeout=on_timeout, **kwargs)
+
+
+def wait_for_job_state(env, ids: Union[int, List[int]], target_states: Union[str, List[str]], **kwargs):
+    wait_for_state(env, ids, target_states, ["job", "list", "--all"], 2, **kwargs)
+
+
+def wait_for_worker_state(env, ids: Union[int, List[int]], target_states: Union[str, List[str]], **kwargs):
+    wait_for_state(env, ids, target_states, ["worker", "list", "--all"], 1, **kwargs)
+
+
+def wait_for_task_state(env, job_id: int, task_ids: Union[int, List[int]], states: Union[str, List[str]], **kwargs):
+    if isinstance(task_ids, int):
+        task_ids = [task_ids]
+
+    if isinstance(states, str):
+        states = [states]
+    assert len(task_ids) == len(states)
+
+    ids = ",".join(str(t) for t in task_ids)
+    states = [s.lower() for s in states]
+    result = None
+
+    def check():
+        nonlocal result
+        result = env.command(["--output-mode=json", "task", "info", str(job_id), ids], as_json=True)
+        return [r["state"] for r in result] == states
+
+    def on_timeout():
+        return f"most recent output:\n{result}"
+
+    wait_until(check, on_timeout=on_timeout, **kwargs)
+
+
+def wait_for_pid_exit(pid: int):
+    """
+    Waits until the given `pid` does not represent any process anymore.
+    """
+    wait_until(lambda: not psutil.pid_exists(pid))
+
+
+def wait_for_job_list_count(env, count: int):
+    wait_until(lambda: len(env.command(["job", "list", "--all"], as_table=True)) == count)
