@@ -1,0 +1,2 @@
+repo = "rustc_codegen_gcc"
+filter = ":rev(02f889aec5dc9b4e51d4cfd86c67ce5e4a0bbf72:prefix=compiler/rustc_codegen_gcc):/compiler/rustc_codegen_gcc"
