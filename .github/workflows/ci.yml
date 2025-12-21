@@ -1,159 +1,334 @@
-name: CI
+# This file defines our primary CI workflow that runs on pull requests
+# and also on pushes to special branches (auto, try).
+#
+# The actual definition of the executed jobs is calculated by the
+# `src/ci/citool` crate, which
+# uses job definition data from src/ci/github-actions/jobs.yml.
+# You should primarily modify the `jobs.yml` file if you want to modify
+# what jobs are executed in CI.
 
+name: CI
 on:
   push:
     branches:
-      - master
+      - auto
+      - try
+      - try-perf
+      - automation/bors/try
   pull_request:
+    branches:
+      - "**"
 
 permissions:
   contents: read
+  packages: write
 
+defaults:
+  run:
+    # On Linux, macOS, and Windows, use the system-provided bash as the default
+    # shell. (This should only make a difference on Windows, where the default
+    # shell is PowerShell.)
+    shell: bash
+
+concurrency:
+  # For a given workflow, if we push to the same branch, cancel all previous builds on that branch.
+  # We add an exception for try builds (try branch) and unrolled rollup builds (try-perf), which
+  # are all triggered on the same branch, but which should be able to run concurrently.
+  group: ${{ github.workflow }}-${{ ((github.ref == 'refs/heads/try' || github.ref == 'refs/heads/try-perf' || github.ref == 'refs/heads/automation/bors/try') && github.sha) || github.ref }}
+  cancel-in-progress: true
 env:
-  # Enable backtraces for easier debugging
-  RUST_BACKTRACE: 1
-  # For the run-make tests.
-  LLVM_BIN_DIR: /usr/bin
-
+  TOOLSTATE_REPO: "https://github.com/rust-lang-nursery/rust-toolstate"
+  # This will be empty in PR jobs.
+  TOOLSTATE_REPO_ACCESS_TOKEN: ${{ secrets.TOOLSTATE_REPO_ACCESS_TOKEN }}
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-
+  # The job matrix for `calculate_matrix` is defined in src/ci/github-actions/jobs.yml.
+  # It calculates which jobs should be executed, based on the data of the ${{ github }} context.
+  # If you want to modify CI jobs, take a look at src/ci/github-actions/jobs.yml.
+  calculate_matrix:
+    name: Calculate job matrix
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      jobs: ${{ steps.jobs.outputs.jobs }}
+      run_type: ${{ steps.jobs.outputs.run_type }}
+    steps:
+      - name: Checkout the source code
+        uses: actions/checkout@v5
+      - name: Test citool
+        # Only test citool on the auto branch, to reduce latency of the calculate matrix job
+        # on PR/try builds.
+        if: ${{ github.ref == 'refs/heads/auto' }}
+        run: |
+          cd src/ci/citool
+          CARGO_INCREMENTAL=0 cargo test
+      - name: Calculate the CI job matrix
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          cd src/ci/citool
+          CARGO_INCREMENTAL=0 cargo run calculate-job-matrix >> $GITHUB_OUTPUT
+        id: jobs
+  job:
+    name: ${{ matrix.full_name }}
+    needs: [ calculate_matrix ]
+    runs-on: "${{ matrix.os }}"
+    timeout-minutes: 360
+    # The bors environment contains secrets required for elevated workflows (try and auto builds),
+    # which need to access e.g. S3 and upload artifacts. We want to provide access to that
+    # environment only on the try/auto branches, which are only accessible to bors.
+    # This also ensures that PR CI (which doesn't get write access to S3) works, as it cannot
+    # access the environment.
+    #
+    # We only enable the environment for the rust-lang/rust repository, so that CI works on forks.
+    environment: ${{ ((github.repository == 'rust-lang/rust' && (github.ref == 'refs/heads/try' || github.ref == 'refs/heads/try-perf' || github.ref == 'refs/heads/automation/bors/try' || github.ref == 'refs/heads/auto')) && 'bors') || '' }}
+    env:
+      CI_JOB_NAME: ${{ matrix.name }}
+      CI_JOB_DOC_URL: ${{ matrix.doc_url }}
+      GITHUB_WORKFLOW_RUN_ID: ${{ github.run_id }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+      # commit of PR sha or commit sha. `GITHUB_SHA` is not accurate for PRs.
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      DOCKER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SCCACHE_BUCKET: rust-lang-ci-sccache2
+      SCCACHE_REGION: us-west-1
+      CACHE_DOMAIN: ci-caches.rust-lang.org
+    continue-on-error: ${{ matrix.continue_on_error || false }}
     strategy:
-      fail-fast: false
       matrix:
-        libgccjit_version:
-          - { gcc: "gcc-15.deb" }
-          - { gcc: "gcc-15-without-int128.deb" }
-        commands: [
-          "--std-tests",
-          # FIXME: re-enable asm tests when GCC can emit in the right syntax.
-          # "--asm-tests",
-          "--test-libcore",
-          "--extended-rand-tests",
-          "--extended-regex-example-tests",
-          "--extended-regex-tests",
-          "--test-successful-rustc --nb-parts 2 --current-part 0",
-          "--test-successful-rustc --nb-parts 2 --current-part 1",
-          "--projects",
-        ]
-
+        # Check the `calculate_matrix` job to see how is the matrix defined.
+        include: ${{ fromJSON(needs.calculate_matrix.outputs.jobs) }}
     steps:
-    - uses: actions/checkout@v4
-
-    # `rustup show` installs from rust-toolchain.toml
-    - name: Setup rust toolchain
-      run: rustup show
-
-    - name: Setup rust cache
-      uses: Swatinem/rust-cache@v2
-
-    - name: Install packages
-      # `llvm-14-tools` is needed to install the `FileCheck` binary which is used for asm tests.
-      run: sudo apt-get install ninja-build ripgrep llvm-14-tools llvm
-
-    - name: Install rustfmt & clippy
-      run: rustup component add rustfmt clippy
-
-    - name: Download artifact
-      run: curl -LO https://github.com/rust-lang/gcc/releases/latest/download/${{ matrix.libgccjit_version.gcc }}
-
-    - name: Setup path to libgccjit
-      run: |
-          sudo dpkg --force-overwrite -i ${{ matrix.libgccjit_version.gcc }}
-          echo 'gcc-path = "/usr/lib/"' > config.toml
-
-    # Some run-make tests fail if we use our forked GCC because it doesn't
-    # bundle libstdc++, so we switch to gcc-14 to have a GCC that has
-    # libstdc++.
-    - name: Set default GCC to gcc-14
-      run: sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 30
-
-    - name: Set env
-      run: |
-        echo "workspace="$GITHUB_WORKSPACE >> $GITHUB_ENV
-
-    #- name: Cache rust repository
-      ## We only clone the rust repository for rustc tests
-      #if: ${{ contains(matrix.commands, 'rustc') }}
-      #uses: actions/cache@v3
-      #id: cache-rust-repository
-      #with:
-        #path: rust
-        #key: ${{ runner.os }}-packages-${{ hashFiles('rust/.git/HEAD') }}
-
-    - name: Prepare
-      run: ./y.sh prepare --only-libcore
-
-    - name: Check formatting
-      run: ./y.sh fmt --check
-
-    - name: clippy
-      run: |
-        cargo clippy --all-targets -- -D warnings
-        cargo clippy --all-targets --no-default-features -- -D warnings
-        cargo clippy --manifest-path build_system/Cargo.toml --all-targets -- -D warnings
-
-    - name: Build
-      run: |
-        ./y.sh build --sysroot
-        ./y.sh test --cargo-tests
-
-    - name: Run y.sh cargo build
-      run: |
-        ./y.sh cargo build --manifest-path tests/hello-world/Cargo.toml
-
-    - name: Clean
-      run: |
-        ./y.sh clean all
-
-    - name: Prepare dependencies
-      run: |
-        git config --global user.email "user@example.com"
-        git config --global user.name "User"
-        ./y.sh prepare
-
-    - name: Run tests
-      run: |
-        ./y.sh test --release --clean --build-sysroot ${{ matrix.commands }}
-
-  duplicates:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - run: python tools/check_intrinsics_duplicates.py
-
-  spell_check:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: crate-ci/typos@v1.32.0
-      - uses: streetsidesoftware/cspell-action@v7
-
-  build_system:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Test build system
+      - name: Install cargo in AWS CodeBuild
+        if: matrix.codebuild
         run: |
-          cd build_system
-          cargo test
+          # Check if cargo is installed
+          if ! command -v cargo &> /dev/null; then
+            echo "Cargo not found, installing Rust..."
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal
+            # Make cargo available in PATH
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          fi
 
-  # Summary job for the merge queue.
-  # ALL THE PREVIOUS JOBS NEED TO BE ADDED TO THE `needs` SECTION OF THIS JOB!
-  success:
-    needs: [build, duplicates, build_system]
-    # We need to ensure this job does *not* get skipped if its dependencies fail,
-    # because a skipped job is considered a success by GitHub. So we have to
-    # overwrite `if:`. We use `!cancelled()` to ensure the job does still not get run
-    # when the workflow is canceled manually.
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    steps:
-      # Manually check the status of all dependencies. `if: failure()` does not work.
-      - name: Conclusion
+      - name: disable git crlf conversion
+        run: git config --global core.autocrlf false
+
+      - name: checkout the source code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+
+      # Free up disk space on Linux by removing preinstalled components that
+      # we do not need. We do this to enable some of the less resource
+      # intensive jobs to run on free runners, which however also have
+      # less disk space.
+      - name: free up disk space
+        run: src/ci/scripts/free-disk-space-linux.sh
+        if: matrix.free_disk
+
+      # If we don't need to free up disk space then just report how much space we have
+      - name: print disk usage
         run: |
-          # Print the dependent jobs to see them in the CI log
-          jq -C <<< '${{ toJson(needs) }}'
-          # Check if all jobs that we depend on (in the needs array) were successful.
-          jq --exit-status 'all(.result == "success")' <<< '${{ toJson(needs) }}'
+          echo "disk usage:"
+          df -h
+        if: matrix.free_disk == false
+
+      # Rust Log Analyzer can't currently detect the PR number of a GitHub
+      # Actions build on its own, so a hint in the log message is needed to
+      # point it in the right direction.
+      - name: configure the PR in which the error message will be posted
+        run: echo "[CI_PR_NUMBER=$num]"
+        env:
+          num: ${{ github.event.number }}
+        if: needs.calculate_matrix.outputs.run_type == 'pr'
+
+      - name: add extra environment variables
+        run: src/ci/scripts/setup-environment.sh
+        env:
+          # Since it's not possible to merge `${{ matrix.env }}` with the other
+          # variables in `job.<name>.env`, the variables defined in the matrix
+          # are passed to the `setup-environment.sh` script encoded in JSON,
+          # which then uses log commands to actually set them.
+          EXTRA_VARIABLES: ${{ toJson(matrix.env) }}
+
+      - name: ensure the channel matches the target branch
+        run: src/ci/scripts/verify-channel.sh
+
+      - name: collect CPU statistics
+        run: src/ci/scripts/collect-cpu-stats.sh
+
+      - name: show the current environment
+        run: src/ci/scripts/dump-environment.sh
+
+      - name: install awscli
+        run: src/ci/scripts/install-awscli.sh
+
+      - name: install sccache
+        run: src/ci/scripts/install-sccache.sh
+
+      - name: select Xcode
+        run: src/ci/scripts/select-xcode.sh
+
+      - name: install clang
+        run: src/ci/scripts/install-clang.sh
+
+      - name: install tidy
+        run: src/ci/scripts/install-tidy.sh
+
+      - name: install WIX
+        run: src/ci/scripts/install-wix.sh
+
+      - name: disable git crlf conversion
+        run: src/ci/scripts/disable-git-crlf-conversion.sh
+
+      - name: checkout submodules
+        run: src/ci/scripts/checkout-submodules.sh
+
+      - name: install MinGW
+        run: src/ci/scripts/install-mingw.sh
+
+      - name: install ninja
+        run: src/ci/scripts/install-ninja.sh
+
+      - name: enable ipv6 on Docker
+        # Don't run on codebuild because systemctl is not available
+        if: ${{ !matrix.codebuild }}
+        run: src/ci/scripts/enable-docker-ipv6.sh
+
+      # Disable automatic line ending conversion (again). On Windows, when we're
+      # installing dependencies, something switches the git configuration directory or
+      # re-enables autocrlf. We've not tracked down the exact cause -- and there may
+      # be multiple -- but this should ensure submodules are checked out with the
+      # appropriate line endings.
+      - name: disable git crlf conversion
+        run: src/ci/scripts/disable-git-crlf-conversion.sh
+
+      - name: ensure line endings are correct
+        run: src/ci/scripts/verify-line-endings.sh
+
+      - name: ensure backported commits are in upstream branches
+        run: src/ci/scripts/verify-backported-commits.sh
+
+      - name: ensure the stable version number is correct
+        run: src/ci/scripts/verify-stable-version-number.sh
+
+      # Show the environment just before we run the build
+      # This makes it easier to diagnose problems with the above install scripts.
+      - name: show the current environment
+        run: src/ci/scripts/dump-environment.sh
+
+      # Pre-build citool before the following step uninstalls rustup
+      # Build it into the build directory, to avoid modifying sources
+      - name: build citool
+        run: |
+          cd src/ci/citool
+          CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=../../../build/citool cargo build
+
+      - name: run the build
+        run: |
+          set +e
+          # Redirect stderr to stdout to avoid reordering the two streams in the GHA logs.
+          src/ci/scripts/run-build-from-ci.sh 2>&1
+          STATUS=$?
+          set -e
+
+          if [[ "$STATUS" -ne 0 && -n "$CI_JOB_DOC_URL" ]]; then
+            echo "****************************************************************************"
+            echo "To find more information about this job, visit the following URL:"
+            echo "$CI_JOB_DOC_URL"
+            echo "****************************************************************************"
+          fi
+          exit ${STATUS}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CACHES_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CACHES_AWS_SECRET_ACCESS_KEY }}
+
+      - name: create github artifacts
+        run: src/ci/scripts/create-doc-artifacts.sh
+
+      - name: print disk usage
+        # We also want to know the disk usage when the job fails.
+        if: always()
+        run: |
+          echo "disk usage:"
+          df -h
+
+      - name: upload artifacts to github
+        uses: actions/upload-artifact@v4
+        with:
+          # name is set in previous step
+          name: ${{ env.DOC_ARTIFACT_NAME }}
+          path: obj/artifacts/doc
+          if-no-files-found: ignore
+          retention-days: 5
+
+      - name: upload artifacts to S3
+        run: src/ci/scripts/upload-artifacts.sh
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.ARTIFACTS_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.ARTIFACTS_AWS_SECRET_ACCESS_KEY }}
+        # Adding a condition on DEPLOY=1 or DEPLOY_ALT=1 is not needed as all deploy
+        # builders *should* have the AWS credentials available. Still, explicitly
+        # adding the condition is helpful as this way CI will not silently skip
+        # deploying artifacts from a dist builder if the variables are misconfigured,
+        # erroring about invalid credentials instead.
+        if: github.event_name == 'push' || env.DEPLOY == '1' || env.DEPLOY_ALT == '1'
+
+      - name: postprocess metrics into the summary
+        # This step is not critical, and if some I/O problem happens, we don't want
+        # to cancel the build.
+        continue-on-error: true
+        run: |
+          if [ -f build/metrics.json ]; then
+            METRICS=build/metrics.json
+          elif [ -f obj/build/metrics.json ]; then
+            METRICS=obj/build/metrics.json
+          else
+            echo "No metrics.json found"
+            exit 0
+          fi
+
+          # Get closest bors merge commit
+          PARENT_COMMIT=`git rev-list --author='bors <bors@rust-lang.org>' -n1 --first-parent HEAD^1`
+
+          ./build/citool/debug/citool postprocess-metrics \
+              --job-name ${CI_JOB_NAME} \
+              --parent ${PARENT_COMMIT} \
+              ${METRICS} >> ${GITHUB_STEP_SUMMARY}
+
+      - name: upload job metrics to DataDog
+        # This step is not critical, and if some I/O problem happens, we don't want
+        # to cancel the build.
+        continue-on-error: true
+        if: needs.calculate_matrix.outputs.run_type != 'pr'
+        env:
+          DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
+          DD_GITHUB_JOB_NAME: ${{ matrix.full_name }}
+        run: ./build/citool/debug/citool upload-build-metrics build/cpu-usage.csv
+
+  # This job isused to tell bors the final status of the build, as there is no practical way to detect
+  # when a workflow is successful listening to webhooks only in our current bors implementation (homu).
+  outcome:
+    name: bors build finished
+    runs-on: ubuntu-24.04
+    needs: [ calculate_matrix, job ]
+    # !cancelled() executes the job regardless of whether the previous jobs passed or failed
+    if: ${{ !cancelled() && contains(fromJSON('["auto", "try"]'), needs.calculate_matrix.outputs.run_type) }}
+    environment: ${{ ((github.repository == 'rust-lang/rust' && (github.ref == 'refs/heads/try' || github.ref == 'refs/heads/try-perf' || github.ref == 'refs/heads/automation/bors/try' || github.ref == 'refs/heads/auto')) && 'bors') || '' }}
+    steps:
+      - name: checkout the source code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      # Calculate the exit status of the whole CI workflow.
+      # If all dependent jobs were successful, this exits with 0 (and the outcome job continues successfully).
+      # If a some dependent job has failed, this exits with 1.
+      - name: calculate the correct exit status
+        run: jq --exit-status 'all(.result == "success" or .result == "skipped")' <<< '${{ toJson(needs) }}'
+      # Publish the toolstate if an auto build succeeds (just before push to the default branch)
+      - name: publish toolstate
+        run: src/ci/publish_toolstate.sh
+        shell: bash
+        if: needs.calculate_matrix.outputs.run_type == 'auto'
+        env:
+          TOOLSTATE_ISSUES_API_URL: https://api.github.com/repos/rust-lang/rust/issues
+          TOOLSTATE_PUBLISH: 1
