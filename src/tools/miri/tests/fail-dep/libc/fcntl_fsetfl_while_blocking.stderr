@@ -1,0 +1,10 @@
+error: the evaluated program deadlocked
+  --> tests/fail-dep/libc/fcntl_fsetfl_while_blocking.rs:LL:CC
+   |
+LL |     let _res = unsafe { libc::read(fds[0], buf.as_mut_ptr().cast(), buf.len() as libc::size_t) };
+   |                                                                                              ^ thread `main` got stuck here
+
+note: some details are omitted, run with `MIRIFLAGS=-Zmiri-backtrace=full` for a verbose backtrace
+
+error: aborting due to 1 previous error
+
