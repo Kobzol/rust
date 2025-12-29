@@ -1,5 +1,7 @@
 # Cranelift codegen backend for rust
 
+FOO
+
 The goal of this project is to create an alternative codegen backend for the rust compiler based on [Cranelift](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift).
 This has the potential to improve compilation times in debug mode.
 If your project doesn't use any of the things listed under "Not yet supported", it should work fine.
