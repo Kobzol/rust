@@ -1,0 +1,27 @@
+error[E0539]: malformed `doc` attribute input
+  --> $DIR/doc-attr.rs:3:1
+   |
+LL | #[doc(123)]
+   | ^^^^^^---^^
+   |       |
+   |       expected this to be of the form `... = "..."`
+
+error[E0539]: malformed `doc` attribute input
+  --> $DIR/doc-attr.rs:5:1
+   |
+LL | #[doc("hello", "bar")]
+   | ^^^^^^-------^^^^^^^^^
+   |       |
+   |       expected this to be of the form `... = "..."`
+
+error[E0539]: malformed `doc` attribute input
+  --> $DIR/doc-attr.rs:5:1
+   |
+LL | #[doc("hello", "bar")]
+   | ^^^^^^^^^^^^^^^-----^^
+   |                |
+   |                expected this to be of the form `... = "..."`
+
+error: aborting due to 3 previous errors
+
+For more information about this error, try `rustc --explain E0539`.
