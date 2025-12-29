@@ -7,6 +7,8 @@
          width="50%">
   </picture>
 
+Update
+
 [Website][Rust] | [Getting started] | [Learn] | [Documentation] | [Contributing]
 </div>
 
