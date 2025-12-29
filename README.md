@@ -9,6 +9,8 @@
 
 Update
 
+Update 2
+
 [Website][Rust] | [Getting started] | [Learn] | [Documentation] | [Contributing]
 </div>
 

@@ -7,6 +7,8 @@ This has the potential to improve compilation times in debug mode.
 If your project doesn't use any of the things listed under "Not yet supported", it should work fine.
 If not please open an issue.
 
+Update readme
+
 ## Download using Rustup
 
 The Cranelift codegen backend is distributed in nightly builds on Linux, macOS and x86_64 Windows. If you want to
