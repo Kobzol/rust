@@ -124,10 +124,20 @@ impl Rustc {
             "crate name cannot contain whitespace or path separators"
         );
 
-        let path = path.as_ref().to_string_lossy();
+        let path = path.as_ref();
+	let mut actual_path = path.to_owned();
+
+	if path.extension().and_then(|s| s.to_str()) == Some("rlib") {
+	    let rmeta_path = path.with_extension("rmeta");
+	    if rmeta_path.exists() {
+		actual_path = rmeta_path;
+	    }
+	}
+
+	let path_str = actual_path.to_string_lossy();
 
         self.cmd.arg("--extern");
-        self.cmd.arg(format!("{crate_name}={path}"));
+        self.cmd.arg(format!("{crate_name}={path_str}"));
 
         self
     }
