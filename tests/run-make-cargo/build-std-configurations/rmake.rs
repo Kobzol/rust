@@ -102,7 +102,8 @@ fn main() {
 fn test(task: Task) {
     let dir = TempDir::new().unwrap();
 
-    rfs::write(dir.path().join("Cargo.toml"), manifest(&task));
+    let manifest = manifest(&task);
+    rfs::write(dir.path().join("Cargo.toml"), &manifest);
     rfs::write(dir.path().join("lib.rs"), "#![no_std]");
 
     cargo()
@@ -120,5 +121,9 @@ fn test(task: Task) {
         // Visual Studio 2022 requires that the LIB env var be set so it can
         // find the Windows SDK.
         .env("LIB", std::env::var("LIB").unwrap_or_default())
+        .context(&format!(
+            "build-std for target `{}` failed with the following Cargo.toml:\n\n{manifest}",
+            task.target
+        ))
         .run();
 }
