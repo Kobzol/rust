@@ -990,7 +990,8 @@ impl<'a> Builder<'a> {
                 dist::PlainSourceTarballGpl,
                 dist::BuildManifest,
                 dist::ReproducibleArtifacts,
-                dist::CiGcc
+                dist::CiGcc,
+                dist::Gcc
             ),
             Kind::Install => describe!(
                 install::Docs,
