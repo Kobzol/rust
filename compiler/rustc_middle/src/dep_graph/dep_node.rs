@@ -176,6 +176,11 @@ impl DepNodeExt for DepNode {
     }
 }
 
+/// Maps a query label to its DepKind, if it exists.
+pub fn dep_kind_from_label(label: &str) -> Option<DepKind> {
+    dep_kind_from_label_string(label).ok()
+}
+
 impl<'tcx> DepNodeParams<TyCtxt<'tcx>> for () {
     #[inline(always)]
     fn fingerprint_style() -> FingerprintStyle {

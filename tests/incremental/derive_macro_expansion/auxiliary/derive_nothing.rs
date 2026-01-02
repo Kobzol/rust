@@ -8,7 +8,13 @@ use proc_macro::TokenStream;
 
 #[proc_macro_derive(Nothing)]
 pub fn derive(_input: TokenStream) -> TokenStream {
-    eprintln!("invoked");
-
-    TokenStream::new()
+    return r#"
+        pub mod nothing_mod {
+            pub fn nothing() {
+                eprintln!("nothing");
+            }
+        }
+    "#
+    .parse()
+    .unwrap();
 }

@@ -26,9 +26,10 @@ use rustc_hir::def_id::LocalDefId;
 use rustc_hir::{
     Attribute, ImplItemKind, ItemKind as HirItem, Node as HirNode, TraitItemKind, intravisit,
 };
-use rustc_middle::dep_graph::{DepNode, DepNodeExt, label_strs};
+use rustc_middle::dep_graph::{DepKind, DepNode, DepNodeExt, dep_kind_from_label, label_strs};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::TyCtxt;
+use rustc_span::def_id::DefPathHash;
 use rustc_span::{Span, Symbol, sym};
 use thin_vec::ThinVec;
 use tracing::debug;
@@ -357,14 +358,26 @@ impl<'tcx> DirtyCleanVisitor<'tcx> {
         }
     }
 
-    fn assert_loaded_from_disk(&self, item_span: Span, dep_node: DepNode) {
-        debug!("assert_loaded_from_disk({:?})", dep_node);
+    fn assert_loaded_from_disk(&self, item_span: Span, dep_item: DepItem) {
+        debug!("assert_loaded_from_disk({:?})", dep_item);
 
-        if !self.tcx.dep_graph.debug_was_loaded_from_disk(dep_node) {
-            let dep_node_str = self.dep_node_str(&dep_node);
-            self.tcx
-                .dcx()
-                .emit_err(errors::NotLoaded { span: item_span, dep_node_str: &dep_node_str });
+        match dep_item {
+            DepItem::DepNode(dep_node) => {
+                if !self.tcx.dep_graph.debug_was_loaded_from_disk(dep_node) {
+                    let dep_node_str = self.dep_node_str(&dep_node);
+                    self.tcx.dcx().emit_err(errors::NotLoaded {
+                        span: item_span,
+                        dep_node_str: &dep_node_str,
+                    });
+                }
+            }
+            DepItem::DepKind { kind, label } => {
+                if !self.tcx.dep_graph.debug_dep_kind_was_loaded_from_disk(kind) {
+                    self.tcx
+                        .dcx()
+                        .emit_err(errors::NotLoaded { span: item_span, dep_node_str: &label });
+                }
+            }
         }
     }
 
@@ -385,10 +398,31 @@ impl<'tcx> DirtyCleanVisitor<'tcx> {
                 self.assert_dirty(item_span, dep_node);
             }
             for label in assertion.loaded_from_disk.items().into_sorted_stable_ord() {
-                let dep_node = DepNode::from_label_string(self.tcx, label, def_path_hash).unwrap();
-                self.assert_loaded_from_disk(item_span, dep_node);
+                let dep_item = resolve_dep_item(self.tcx, label, def_path_hash);
+                self.assert_loaded_from_disk(item_span, dep_item);
             }
         }
+    }
+}
+
+/// Represents a query that we want to test for dirtiness.
+#[derive(Debug)]
+enum DepItem {
+    /// We have a DepNode for this query.
+    DepNode(DepNode),
+    /// This query has an opaque or a unit hash fingerprint, so we cannot resolve a DepNode for it.
+    /// We thus only store the DepKind, so that we can check if *any* query with the given label
+    /// was executed, regardless of its query arguments.
+    DepKind { kind: DepKind, label: String },
+}
+
+fn resolve_dep_item(tcx: TyCtxt<'_>, label: &str, def_path_hash: DefPathHash) -> DepItem {
+    let dep_kind = dep_kind_from_label(label).unwrap(); // Ensure that the query label is known
+
+    match DepNode::from_label_string(tcx, label, def_path_hash) {
+        Ok(dep_node) => DepItem::DepNode(dep_node),
+        // Opaque/unit hash, we only know the dep kind
+        Err(()) => DepItem::DepKind { kind: dep_kind, label: label.to_owned() },
     }
 }
 

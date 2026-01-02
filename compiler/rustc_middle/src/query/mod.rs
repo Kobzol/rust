@@ -97,8 +97,8 @@ use rustc_session::cstore::{
 use rustc_session::lint::LintExpectationId;
 use rustc_span::def_id::LOCAL_CRATE;
 use rustc_span::source_map::Spanned;
-use rustc_span::{DUMMY_SP, Span, Symbol};
-use rustc_target::spec::{PanicStrategy, SanitizerSet};
+use rustc_span::{DUMMY_SP, LocalExpnId, Span, Symbol};
+use rustc_target::spec::PanicStrategy;
 use {rustc_abi as abi, rustc_ast as ast, rustc_hir as hir};
 
 pub use self::keys::{AsLocalKey, Key, LocalCrate};
