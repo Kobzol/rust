@@ -11,6 +11,7 @@ pub struct Limit(pub usize);
 
 impl Limit {
     /// Create a new limit from a `usize`.
+    #[inline]
     pub fn new(value: usize) -> Self {
         Limit(value)
     }
