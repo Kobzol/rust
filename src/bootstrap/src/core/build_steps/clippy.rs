@@ -378,7 +378,7 @@ impl Step for CodegenGcc {
             .with_prefix("rustc_codegen_gcc-check");
 
         let args = lint_args(builder, &self.config, &[]);
-        run_cargo(builder, cargo, args.clone(), &stamp, vec![], true, false);
+        run_cargo(builder, cargo, args.clone(), &stamp, vec![], false);
 
         // Same but we disable the features enabled by default.
         let mut cargo = prepare_tool_cargo(
