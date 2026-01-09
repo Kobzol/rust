@@ -9,7 +9,7 @@ use crate::ptr;
 #[allow_internal_unstable(thread_local_internals)]
 #[allow_internal_unsafe]
 #[unstable(feature = "thread_local_internals", issue = "none")]
-#[rustc_macro_transparency = "semitransparent"]
+#[rustc_macro_transparency = "semiopaque"]
 pub macro thread_local_inner {
     // used to generate the `LocalKey` value for const-initialized thread locals
     (@key $t:ty, $(#[$align_attr:meta])*, const $init:expr) => {{
@@ -119,16 +119,19 @@ impl<T> LazyStorage<T> {
 // SAFETY: the target doesn't have threads.
 unsafe impl<T> Sync for LazyStorage<T> {}
 
-#[rustc_macro_transparency = "semitransparent"]
+#[rustc_macro_transparency = "semiopaque"]
 pub(crate) macro local_pointer {
     () => {},
     ($vis:vis static $name:ident; $($rest:tt)*) => {
+        #[doc(hidden)]
+        #[unstable(feature = "thread_local_internal_pointer", issue = "none")]
         $vis static $name: $crate::sys::thread_local::LocalPointer = $crate::sys::thread_local::LocalPointer::__new();
         $crate::sys::thread_local::local_pointer! { $($rest)* }
     },
 }
 
-pub(crate) struct LocalPointer {
+#[allow(missing_debug_implementations)]
+pub struct LocalPointer {
     p: Cell<*mut ()>,
 }
 
