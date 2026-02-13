@@ -1,0 +1,51 @@
+{
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "schedule": "at any time",
+    "dependencyDashboard": true,
+    "prHourlyLimit": 0,
+    "env": {
+        "RUSTC_BOOTSTRAP": "1"
+    },
+    "enabledManagers": [
+        "cargo"
+    ],
+    "cloneSubmodules": true,
+    "cloneSubmodulesFilter": [
+        "!src/llvm-project",
+        "!src/gcc"
+    ],
+    "forkProcessing": "enabled",
+    "includePaths": [
+        "library/**",
+        "src/bootstrap/Cargo.toml",
+        "src/tools/rustbook/Cargo.toml"
+    ],
+    "packageRules": [
+        {
+            "matchFileNames": [
+                "library/Cargo.toml"
+            ],
+            "enabled": true,
+            "groupName": "library Cargo.lock"
+        },
+        {
+            "matchFileNames": [
+                "src/bootstrap/Cargo.toml"
+            ],
+            "enabled": true,
+            "groupName": "bootstrap Cargo.lock"
+        },
+        {
+            "matchFileNames": [
+                "src/tools/rustbook/Cargo.toml"
+            ],
+            "enabled": true,
+            "groupName": "rustbook Cargo.lock"
+        }
+    ],
+    "rangeStrategy": "in-range-only",
+    "lockFileMaintenance": {
+        "enabled": true,
+        "schedule": "at any time"
+    }
+}
