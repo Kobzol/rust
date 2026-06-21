@@ -1261,6 +1261,11 @@ impl Step for PlainSourceTarball {
                 "The GCC source code is not included due to unclear licensing implications\n"
             ));
         }
+        eprintln!("BEFORE END OF SRC TARBALL");
+        eprintln!("Contents of {}", plain_dst_src.display());
+        for file in std::fs::read_dir(plain_dst_src).unwrap() {
+            eprintln!("File {}", file.unwrap().path().display());
+        }
         tarball.bare()
     }
 }
@@ -1343,10 +1348,15 @@ fn prepare_source_tarball<'a>(
 
     // Create the files containing git info, to ensure --version outputs the same.
     let write_git_info = |info: Option<&Info>, path: &Path| {
+        eprintln!("Writing info {info:?} into {path:?}");
         if let Some(info) = info {
             t!(std::fs::create_dir_all(path));
             channel::write_commit_hash_file(path, &info.sha);
             channel::write_commit_info_file(path, info);
+            eprintln!("Contents of {}", path.display());
+            for file in std::fs::read_dir(path).unwrap() {
+                eprintln!("File {}", file.unwrap().path().display());
+            }
         }
     };
     write_git_info(builder.rust_info().info(), plain_dst_src);

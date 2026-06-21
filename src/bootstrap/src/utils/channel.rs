@@ -13,7 +13,7 @@ use super::helpers;
 use crate::Build;
 use crate::utils::helpers::t;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub enum GitInfo {
     /// This is not a git repository.
     #[default]
@@ -27,7 +27,7 @@ pub enum GitInfo {
     RecordedForTarball(Info),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Info {
     pub commit_date: String,
     pub sha: String,

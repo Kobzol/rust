@@ -802,7 +802,7 @@ impl Config {
         // `false` if it's not explicitly set.
         let debug_assertions_requested = matches!(rust_rustc_debug_assertions, Some(true))
             || (matches!(rust_debug, Some(true))
-                && !matches!(rust_rustc_debug_assertions, Some(false)));
+            && !matches!(rust_rustc_debug_assertions, Some(false)));
 
         if debug_assertions_requested
             && let Some(ref opt) = rust_download_rustc
@@ -1259,6 +1259,7 @@ impl Config {
             .collect();
 
         let cargo_info = git_info(&exec_ctx, omit_git_hash, &src.join("src/tools/cargo"));
+        eprintln!("CARGO INFO: {cargo_info:?}");
         let clippy_info = git_info(&exec_ctx, omit_git_hash, &src.join("src/tools/clippy"));
         let in_tree_gcc_info = git_info(&exec_ctx, false, &src.join("src/gcc"));
         let in_tree_llvm_info = git_info(&exec_ctx, false, &src.join("src/llvm-project"));
@@ -2120,8 +2121,7 @@ pub fn check_stage0_version(
     _component_name: &'static str,
     _src_dir: &Path,
     _exec_ctx: &ExecutionContext,
-) {
-}
+) {}
 
 /// check rustc/cargo version is same or lower with 1 apart from the building one
 #[cfg(not(test))]
@@ -2157,8 +2157,8 @@ pub fn check_stage0_version(
             .unwrap();
     if !(source_version == stage0_version
         || (source_version.major == stage0_version.major
-            && (source_version.minor == stage0_version.minor
-                || source_version.minor == stage0_version.minor + 1)))
+        && (source_version.minor == stage0_version.minor
+        || source_version.minor == stage0_version.minor + 1)))
     {
         let prev_version = format!("{}.{}.x", source_version.major, source_version.minor - 1);
         fail(&format!(
@@ -2263,7 +2263,7 @@ pub fn check_path_modifications_<'a>(
                 paths,
                 CiEnv::current(),
             )
-            .unwrap()
+                .unwrap()
         })
         .clone()
 }
@@ -2576,7 +2576,7 @@ enum WouldBeValidFor {
 }
 
 fn join_oxford_comma(
-    mut parts: impl ExactSizeIterator<Item = impl std::fmt::Display>,
+    mut parts: impl ExactSizeIterator<Item=impl std::fmt::Display>,
     conj: &str,
 ) -> String {
     use std::fmt::Write;
@@ -2589,7 +2589,7 @@ fn join_oxford_comma(
         } else {
             write!(&mut out, "{part}, ")
         }
-        .unwrap();
+            .unwrap();
     }
     out
 }
