@@ -6,7 +6,7 @@ If your project doesn't use any of the things listed under "Not yet supported", 
 If not please open an issue.
 
 ## Download using Rustup
-
+FOO
 The Cranelift codegen backend is distributed in nightly builds on Linux, macOS and x86_64 Windows. If you want to
 install it using Rustup, you can do that by running:
 
