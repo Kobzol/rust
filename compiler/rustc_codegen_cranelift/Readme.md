@@ -12,6 +12,8 @@ install it using Rustup, you can do that by running:
 
 Change
 
+Change 2
+
 ```bash
 rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 ```
