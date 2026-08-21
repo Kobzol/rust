@@ -10,6 +10,10 @@ If not please open an issue.
 The Cranelift codegen backend is distributed in nightly builds on Linux, macOS and x86_64 Windows. If you want to
 install it using Rustup, you can do that by running:
 
+Change
+
+Change 2
+
 ```bash
 rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 ```
@@ -41,6 +45,8 @@ If you want to use `cargo clif build` instead of having to specify the full path
 (tutorial [for Windows](https://stackoverflow.com/a/44272417), and [for Linux/MacOS](https://unix.stackexchange.com/questions/26047/how-to-correctly-add-a-path-to-path/26059#26059)).
 
 [releases]: https://github.com/rust-lang/rustc_codegen_cranelift/releases/tag/dev
+
+Foo
 
 ## Building and testing
 
