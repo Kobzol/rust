@@ -46,6 +46,8 @@ If you want to use `cargo clif build` instead of having to specify the full path
 
 [releases]: https://github.com/rust-lang/rustc_codegen_cranelift/releases/tag/dev
 
+Foo
+
 ## Building and testing
 
 If you want to build the backend manually, you can download it from GitHub and build it yourself:
