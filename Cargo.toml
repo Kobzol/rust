@@ -1,89 +1,71 @@
-[workspace]
-resolver = "2"
-members = [
-# tidy-alphabetical-start
-  "compiler/rustc",
-  "src/build_helper",
-  "src/rustc-std-workspace/rustc-std-workspace-alloc",
-  "src/rustc-std-workspace/rustc-std-workspace-core",
-  "src/rustc-std-workspace/rustc-std-workspace-std",
-  "src/rustdoc-json-types",
-  "src/shim_utils",
-  "src/tools/build-manifest",
-  "src/tools/bump-stage0",
-  "src/tools/cargotest",
-  "src/tools/clippy",
-  "src/tools/clippy/clippy_dev",
-  "src/tools/collect-license-metadata",
-  "src/tools/compiletest",
-  "src/tools/coverage-dump",
-  "src/tools/features-status-dump",
-  "src/tools/generate-copyright",
-  "src/tools/generate-windows-sys",
-  "src/tools/html-checker",
-  "src/tools/jsondocck",
-  "src/tools/jsondoclint",
-  "src/tools/linkchecker",
-  "src/tools/lint-docs",
-  "src/tools/lld-wrapper",
-  "src/tools/llvm-bitcode-linker",
-  "src/tools/miri",
-  "src/tools/miri/cargo-miri",
-  "src/tools/miropt-test-tools",
-  "src/tools/opt-dist",
-  "src/tools/remote-test-client",
-  "src/tools/remote-test-server",
-  "src/tools/replace-version-placeholder",
-  "src/tools/run-make-support",
-  "src/tools/rust-installer",
-  "src/tools/rustdoc",
-  "src/tools/rustdoc-gui-test",
-  "src/tools/rustdoc-themes",
-  "src/tools/rustfmt",
-  "src/tools/test-float-parse",
-  "src/tools/tidy",
-  "src/tools/tier-check",
-  "src/tools/unicode-table-generator",
-  "src/tools/unstable-book-gen",
-  "src/tools/wasm-component-ld",
-  "src/tools/x",
-# tidy-alphabetical-end
-]
+[package]
+name = "clippy"
+version = "0.1.100"
+description = "A bunch of helpful lints to avoid common pitfalls in Rust"
+repository = "https://github.com/rust-lang/rust-clippy"
+license = "MIT OR Apache-2.0"
+keywords = ["clippy", "lint", "plugin"]
+categories = ["development-tools", "development-tools::cargo-plugins"]
+build = "build.rs"
+edition = "2024"
+publish = false
 
-exclude = [
-  "build",
-  "compiler/rustc_codegen_cranelift",
-  "compiler/rustc_codegen_gcc",
-  "src/bootstrap",
-  "tests/rustdoc-gui",
-  # HACK(eddyb) This hardcodes the fact that our CI uses `/checkout/obj`.
-  "obj",
-]
+[[bin]]
+name = "cargo-clippy"
+test = false
+path = "src/main.rs"
 
-# These are very thin wrappers around executing lld with the right binary name.
-# Basically nothing within them can go wrong without having been explicitly logged anyway.
-# We ship these in every rustc tarball and even after compression they add up
-# to around 0.6MB of data every user needs to download (and 15MB on disk).
-[profile.release.package.lld-wrapper]
-debug = 0
-strip = true
-[profile.release.package.wasm-component-ld-wrapper]
-debug = 0
-strip = true
+[[bin]]
+name = "clippy-driver"
+path = "src/driver.rs"
 
-# Bigint libraries are slow without optimization, speed up testing
-[profile.dev.package.test-float-parse]
-opt-level = 3
+[dependencies]
+clippy_config = { path = "clippy_config" }
+clippy_lints = { path = "clippy_lints" }
+clippy_utils = { path = "clippy_utils" }
+declare_clippy_lint = { path = "declare_clippy_lint" }
+rustc_tools_util = { path = "rustc_tools_util", version = "0.4.2" }
+clippy_lints_internal = { path = "clippy_lints_internal", optional = true }
+tempfile = { version = "3.20", optional = true }
+color-print = "0.3.4"
+anstream = "0.6.18"
 
-# Speed up the binary as much as possible
-[profile.release.package.test-float-parse]
-opt-level = 3
-codegen-units = 1
-# FIXME: LTO cannot be enabled for binaries in a workspace
-# <https://github.com/rust-lang/cargo/issues/9330>
-# lto = true
+[dev-dependencies]
+cargo_metadata = "0.23"
+ui_test = "0.30.7"
+regex = "1.5.5"
+serde = { version = "1.0.145", features = ["derive"] }
+serde_json = "1.0.122"
+walkdir = "2.3"
+itertools = "0.15"
+pulldown-cmark = { version = "0.11", default-features = false, features = ["html"] }
+askama = { version = "0.16.0", default-features = false, features = ["alloc", "config", "derive"] }
 
-# If you want to use a crate with local modifications, you can set a path or git dependency here.
-# For git dependencies, also add your source to ALLOWED_SOURCES in src/tools/tidy/src/extdeps.rs.
-#[patch.crates-io]
+[dev-dependencies.toml]
+version = "1.1"
+default-features = false
+# preserve_order keeps diagnostic output in file order
+features = ["parse", "preserve_order"]
 
+[build-dependencies]
+rustc_tools_util = { path = "rustc_tools_util", version = "0.4.2" }
+
+[features]
+integration = ["dep:tempfile"]
+internal = ["dep:clippy_lints_internal", "dep:tempfile"]
+
+[package.metadata.rust-analyzer]
+# This package uses #[feature(rustc_private)]
+rustc_private = true
+
+[[test]]
+name = "compile-test"
+harness = false
+
+[[test]]
+name = "dogfood"
+harness = false
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(bootstrap)']
