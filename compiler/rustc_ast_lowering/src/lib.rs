@@ -1182,7 +1182,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         target_span: Span,
         target: Target,
     ) -> &'hir [hir::Attribute] {
-        self.lower_attrs_with_extra(id, attrs, target_span, target, &[])
+        self.lower_attrs_with_extra(id, attrs, target_span, target, None, &[])
     }
 
     fn lower_attrs_with_extra(
@@ -1191,13 +1191,14 @@ impl<'hir> LoweringContext<'_, 'hir> {
         attrs: &[Attribute],
         target_span: Span,
         target: Target,
+        target_item: Option<&ast::Item>,
         extra_hir_attributes: &[hir::Attribute],
     ) -> &'hir [hir::Attribute] {
         if attrs.is_empty() && extra_hir_attributes.is_empty() {
             &[]
         } else {
             let mut lowered_attrs =
-                self.lower_attrs_vec(attrs, self.lower_span(target_span), id, target);
+                self.lower_attrs_vec(attrs, self.lower_span(target_span), id, target, target_item);
             lowered_attrs.extend(extra_hir_attributes.iter().cloned());
 
             assert_eq!(id.owner, self.curr_owner.owner_id);
@@ -1224,12 +1225,14 @@ impl<'hir> LoweringContext<'_, 'hir> {
         target_span: Span,
         target_hir_id: HirId,
         target: Target,
+        target_item: Option<&ast::Item>,
     ) -> Vec<hir::Attribute> {
         let l = self.span_lowerer();
         self.attribute_parser.parse_attribute_list(
             attrs,
             target_span,
             target,
+            target_item,
             |s| l.lower(s),
             |lint_id, span, kind| {
                 self.curr_owner.delayed_lints.push(DelayedLint {
@@ -1599,7 +1602,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     generic_params,
                     safety: self.lower_safety(f.safety, hir::Safety::Safe),
                     abi: self.lower_extern(f.ext),
-                    decl: self.lower_fn_decl(&f.decl, t.id, t.span, FnDeclKind::Pointer, None),
+                    decl: self.lower_fn_decl(&f.decl, t.id, FnDeclKind::Pointer, None),
                     param_idents: self.lower_fn_params_to_idents(&f.decl),
                 }))
             }
@@ -1959,7 +1962,6 @@ impl<'hir> LoweringContext<'_, 'hir> {
         &mut self,
         decl: &FnDecl,
         fn_node_id: NodeId,
-        fn_span: Span,
         kind: FnDeclKind,
         coro: Option<CoroutineMarker>,
     ) -> &'hir hir::FnDecl<'hir> {
@@ -2679,56 +2681,31 @@ impl<'hir> LoweringContext<'_, 'hir> {
     fn lower_const_item_rhs(
         &mut self,
         body: &Option<Box<Expr>>,
-        kind: ConstItemKind,
         span: Span,
     ) -> hir::ConstItemRhs<'hir> {
-        match (body, kind) {
-            (body, ConstItemKind::Body) => {
-                let is_direct = |body| {
-                    if self.tcx.features().macroless_generic_const_args() {
-                        self.can_lower_expr_to_const_arg_direct(
-                            body,
-                            DirectConstArgContext::MacrolessMinGenericConstArgs,
-                        )
-                        .is_ok()
-                    } else {
-                        // do not check can_lower_expr_to_const_arg_direct, but rather just
-                        // ExprKind::DirectConstArg, because we don't want e.g.
-                        // `impl<const N: u8> { const C: u8 = N; }` to be a direct-rhs const
-                        matches!(body, Expr { kind: ExprKind::DirectConstArg(_), .. })
-                    }
-                };
-                // N.B.: the feature gate for this is generic_const_args, not min_generic_const_args
-                if self.tcx.features().generic_const_args()
-                    && let Some(body) = body
-                    && is_direct(body)
-                {
-                    hir::ConstItemRhs::Direct(
-                        self.arena.alloc(self.lower_expr_to_const_arg_direct(&body, None)),
-                    )
-                } else {
-                    hir::ConstItemRhs::Body(self.lower_const_body(span, body.as_deref()))
-                }
-            }
-            (Some(body), ConstItemKind::TypeConst) => hir::ConstItemRhs::Direct(self.arena.alloc(
-                match self.can_lower_expr_to_const_arg_direct(
-                    &body,
+        let is_direct = |body| {
+            if self.tcx.features().macroless_const_item_generic_const_args() {
+                self.can_lower_expr_to_const_arg_direct(
+                    body,
                     DirectConstArgContext::MacrolessMinGenericConstArgs,
-                ) {
-                    Ok(()) => self.lower_expr_to_const_arg_direct(&body, None),
-                    Err(err) => err.emit(self),
-                },
-            )),
-            (None, ConstItemKind::TypeConst) => {
-                let const_arg = ConstArg {
-                    hir_id: self.next_id(),
-                    kind: hir::ConstArgKind::Error(
-                        self.dcx().span_delayed_bug(DUMMY_SP, "no block"),
-                    ),
-                    span: DUMMY_SP,
-                };
-                hir::ConstItemRhs::Direct(self.arena.alloc(const_arg))
+                )
+                .is_ok()
+            } else {
+                // do not check can_lower_expr_to_const_arg_direct, but rather just
+                // ExprKind::DirectConstArg, because we don't want e.g.
+                // `impl<const N: u8> { const C: u8 = N; }` to be a direct-rhs const
+                matches!(body, Expr { kind: ExprKind::DirectConstArg(_), .. })
             }
+        };
+        if self.tcx.features().min_generic_const_args()
+            && let Some(body) = body
+            && is_direct(body)
+        {
+            hir::ConstItemRhs::Direct(
+                self.arena.alloc(self.lower_expr_to_const_arg_direct(&body, None)),
+            )
+        } else {
+            hir::ConstItemRhs::Body(self.lower_const_body(span, body.as_deref()))
         }
     }
 

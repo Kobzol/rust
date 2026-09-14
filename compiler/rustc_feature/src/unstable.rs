@@ -605,12 +605,13 @@ declare_features! (
     (unstable, macro_metavar_expr, "1.61.0", Some(83527)),
     /// Provides a way to concatenate identifiers using metavariable expressions.
     (unstable, macro_metavar_expr_concat, "1.81.0", Some(124225)),
+    /// Allows directly represented generic_const_args as the rhs of const items without the
+    /// `direct_const_arg!` macro.
+    (incomplete, macroless_const_item_generic_const_args, "CURRENT_RUSTC_VERSION", Some(162540)),
     /// Allows directly represented generic_const_args without the `direct_const_arg!` macro.
     (incomplete, macroless_generic_const_args, "1.99.0", Some(159006)),
     /// Allows `#[marker]` on certain traits allowing overlapping implementations.
     (unstable, marker_trait_attr, "1.30.0", Some(29864)),
-    /// Enable mgca `type const` syntax before expansion.
-    (incomplete, mgca_type_const_syntax, "1.95.0", Some(132980)),
     /// Allows additional const parameter types, such as [u8; 10] or user defined types.
     /// User defined types must not have fields more private than the type itself.
     (unstable, min_adt_const_params, "1.96.0", Some(154042)),
@@ -856,5 +857,6 @@ pub const INCOMPATIBLE_FEATURES: &[(Symbol, Symbol)] = &[
 pub const DEPENDENT_FEATURES: &[(Symbol, &[Symbol])] = &[
     (sym::generic_const_args, &[sym::min_generic_const_args]),
     (sym::macroless_generic_const_args, &[sym::min_generic_const_args]),
+    (sym::macroless_const_item_generic_const_args, &[sym::min_generic_const_args]),
     (sym::unsized_const_params, &[sym::adt_const_params]),
 ];
