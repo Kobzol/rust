@@ -4,13 +4,13 @@ use Determinacy::*;
 use Namespace::*;
 use rustc_ast::{self as ast, NodeId};
 use rustc_errors::ErrorGuaranteed;
-use rustc_hir::def::{DefKind, MacroKinds, Namespace, NonMacroAttrKind, PartialRes, PerNS};
-use rustc_middle::{bug, span_bug};
+use rustc_hir::def::{DefKind, MacroKinds, Namespace, NonMacroAttrKind, PerNS};
+use rustc_lint_defs::builtin::PROC_MACRO_DERIVE_RESOLUTION_FALLBACK;
+use rustc_middle::middle::resolve::PartialRes;
 use rustc_session::diagnostics::feature_err;
-use rustc_session::lint::builtin::PROC_MACRO_DERIVE_RESOLUTION_FALLBACK;
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{ExpnId, ExpnKind, LocalExpnId, MacroKind, SyntaxContext};
-use rustc_span::{Ident, Span, kw, sym};
+use rustc_span::{Ident, Span, bug, kw, span_bug, sym};
 use smallvec::SmallVec;
 use tracing::{debug, instrument};
 
@@ -142,11 +142,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     // used to avoid long scope chains, see the comments on `MacroRulesScopeRef`.
                     // As another consequence of this optimization visitors never observe invocation
                     // scopes for macros that were already expanded.
-                    let mut scope = macro_rules_scope.get();
+                    // We need to lock this scope, such that the compression is always final.
+                    let mut write_scope = macro_rules_scope.write();
+                    let mut scope = *write_scope;
                     while let MacroRulesScope::Invocation(invoc_id) = scope {
                         if let Some(next) = self.output_macro_rules_scopes.get(&invoc_id) {
-                            scope = next.get();
-                            macro_rules_scope.set(scope);
+                            scope = *next.borrow();
+                            *write_scope = scope;
                         } else {
                             break;
                         }
@@ -187,7 +189,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     }
                 }
                 Scope::DeriveHelpersCompat => Scope::MacroRules(parent_scope.macro_rules),
-                Scope::MacroRules(macro_rules_scope) => match macro_rules_scope.get() {
+                Scope::MacroRules(macro_rules_scope) => match *macro_rules_scope.read() {
                     MacroRulesScope::Def(binding) => {
                         Scope::MacroRules(binding.parent_macro_rules_scope)
                     }
@@ -419,7 +421,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         ignore_import: Option<Import<'ra>>,
     ) -> Result<Decl<'ra>, Determinacy> {
         // Make sure `self`, `super` etc produce an error when passed to here.
-        if !matches!(scope_set, ScopeSet::Module(..)) && ident.name.is_path_segment_keyword() {
+        if ident.name.is_path_segment_keyword() {
             return Err(Determinacy::Determined);
         }
 
@@ -592,7 +594,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 }
                 result
             }
-            Scope::MacroRules(macro_rules_scope) => match macro_rules_scope.get() {
+            Scope::MacroRules(macro_rules_scope) => match *macro_rules_scope.read() {
                 MacroRulesScope::Def(macro_rules_def) if ident == macro_rules_def.ident => {
                     Ok(macro_rules_def.decl)
                 }
@@ -714,7 +716,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             }
             Scope::MacroUsePrelude => match self.macro_use_prelude.get(&ident.name).cloned() {
                 Some(decl) => Ok(decl),
-                None => Err(Determinacy::determined(!self.graph_root.has_unexpanded_invocations())),
+                None => {
+                    Err(Determinacy::determined(!self.graph_root.has_unexpanded_invocations(&self)))
+                }
             },
             Scope::BuiltinAttrs => match self.builtin_attr_decls.get(&ident.name) {
                 Some(decl) => Ok(*decl),
@@ -727,9 +731,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     finalize.is_some(),
                 ) {
                     Some(decl) => Ok(decl),
-                    None => {
-                        Err(Determinacy::determined(!self.graph_root.has_unexpanded_invocations()))
-                    }
+                    None => Err(Determinacy::determined(
+                        !self.graph_root.has_unexpanded_invocations(&self),
+                    )),
                 }
             }
             Scope::ExternPreludeFlags => {
@@ -1028,11 +1032,24 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 )
             }
             ModuleOrUniformRoot::OpenModule(sym) => {
-                let open_ns_name = format!("{}::{}", sym.as_str(), ident.name);
-                let ns_ident = IdentKey::with_root_ctxt(Symbol::intern(&open_ns_name));
-                match self.extern_prelude_get_flag(ns_ident, ident.span, finalize.is_some()) {
-                    Some(decl) => Ok(decl),
-                    None => Err(Determinacy::Determined),
+                if ns != TypeNS {
+                    Err(Determined)
+                } else {
+                    if ident.name == kw::SelfLower {
+                        let res = Res::OpenMod(sym);
+                        return Ok(self.arenas.new_pub_def_decl(
+                            res,
+                            ident.span,
+                            LocalExpnId::ROOT,
+                        ));
+                    }
+
+                    let open_ns_name = format!("{}::{}", sym.as_str(), ident.name);
+                    let ns_ident = IdentKey::with_root_ctxt(Symbol::intern(&open_ns_name));
+                    match self.extern_prelude_get_flag(ns_ident, ident.span, finalize.is_some()) {
+                        Some(decl) => Ok(decl),
+                        None => Err(Determined),
+                    }
                 }
             }
             ModuleOrUniformRoot::ModuleAndExternPrelude(module) => self.resolve_ident_in_scope_set(
@@ -1077,10 +1094,6 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     {
                         let module = self.resolve_crate_root(ident);
                         return Ok(module.self_decl.unwrap());
-                    } else if ident.name == kw::Super {
-                        // FIXME: Implement these with renaming requirements so that e.g.
-                        // `use super;` doesn't work, but `use super as name;` does.
-                        // Fall through here to get an error from `early_resolve_...`.
                     }
                 }
 
@@ -1158,7 +1171,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
         if let Some(finalize) = finalize {
             // finalize implies that the module is fully expanded
-            assert!(!module.has_unexpanded_invocations());
+            assert!(!module.has_unexpanded_invocations(&self));
             return self.get_mut().finalize_module_binding(
                 ident,
                 orig_ident_span,
@@ -1195,7 +1208,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
 
         // Check if one of unexpanded macros can still define the name.
-        if module.has_unexpanded_invocations() {
+        if module.has_unexpanded_invocations(&self) {
             return Err(ControlFlow::Continue(Undetermined));
         }
 
@@ -1224,7 +1237,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
         if let Some(finalize) = finalize {
             // finalize implies that the module is fully expanded
-            assert!(!module.has_unexpanded_invocations());
+            assert!(!module.has_unexpanded_invocations(&self));
             return self.get_mut().finalize_module_binding(
                 ident,
                 orig_ident_span,
@@ -1268,7 +1281,10 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         // and prohibit access to macro-expanded `macro_export` macros instead (unless restricted
         // shadowing is enabled, see `macro_expanded_macro_export_errors`).
         if let Some(binding) = binding {
-            return if binding.determined() || ns == MacroNS || shadowing == Shadowing::Restricted {
+            return if binding.determined(&self)
+                || ns == MacroNS
+                || shadowing == Shadowing::Restricted
+            {
                 let accessible = self.is_accessible_from(binding.vis(), parent_scope.module);
                 if accessible { Ok(binding) } else { Err(ControlFlow::Break(Determined)) }
             } else {
@@ -1283,13 +1299,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         // scopes we return `Undetermined` with `ControlFlow::Continue`.
         // Check if one of unexpanded macros can still define the name,
         // if it can then our "no resolution" result is not determined and can be invalidated.
-        if module.has_unexpanded_invocations() {
+        if module.has_unexpanded_invocations(&self) {
             return Err(ControlFlow::Continue(Undetermined));
         }
 
         // Check if one of glob imports can still define the name,
         // if it can then our "no resolution" result is not determined and can be invalidated.
-        for glob_import in module.globs.borrow().iter() {
+        for glob_import in module.globs.borrow_checked(&self).iter() {
             if ignore_import == Some(*glob_import) {
                 continue;
             }
@@ -1511,7 +1527,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                                 res_err = Some((span, CannotCaptureDynamicEnvironmentInFnItem));
                             }
                         }
-                        RibKind::ConstantItem(_, item) => {
+                        RibKind::ConstantItem(_, item, requires_type) => {
                             // Still doesn't deal with upvars
                             if let Some(span) = finalize {
                                 let (span, resolution_error) = match item {
@@ -1540,6 +1556,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                                                 suggestion: "const",
                                                 current: "let",
                                                 type_span,
+                                                requires_type,
                                             },
                                         )
                                     }
@@ -1550,6 +1567,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                                             suggestion: "let",
                                             current: kind.as_str(),
                                             type_span: None,
+                                            requires_type,
                                         },
                                     ),
                                 };
@@ -1595,22 +1613,32 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         }
 
                         RibKind::ConstParamTy => {
-                            if !self.features.generic_const_parameter_types() {
+                            let adt_enabled = self.features.min_adt_const_params()
+                                || self.features.adt_const_params();
+                            let is_self = matches!(res, Res::SelfTyAlias { .. });
+                            // We check whether Self depends on generics parameters in `fn type_of`
+                            if self.features.generic_const_parameter_types()
+                                || (adt_enabled && is_self)
+                            {
+                                continue;
+                            } else {
                                 if let Some(span) = finalize {
-                                    self.report_error(
-                                        span,
-                                        ResolutionError::ParamInTyOfConstParam {
-                                            name: rib_ident.name,
-                                        },
-                                    );
+                                    if matches!(res, Res::SelfTyAlias { .. }) {
+                                        self.report_error(span, ResolutionError::SelfInConstParam);
+                                    } else {
+                                        self.report_error(
+                                            span,
+                                            ResolutionError::ParamInTyOfConstParam {
+                                                name: rib_ident.name,
+                                            },
+                                        );
+                                    }
                                 }
                                 return Res::Err;
-                            } else {
-                                continue;
                             }
                         }
 
-                        RibKind::ConstantItem(trivial, _) => {
+                        RibKind::ConstantItem(trivial, _, _) => {
                             if let ConstantHasGenerics::No(cause) = trivial
                                 && !matches!(res, Res::SelfTyAlias { .. })
                             {
@@ -1704,7 +1732,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                             }
                         }
 
-                        RibKind::ConstantItem(trivial, _) => {
+                        RibKind::ConstantItem(trivial, _, _) => {
                             if let ConstantHasGenerics::No(cause) = trivial {
                                 if let Some(span) = finalize {
                                     let error = match cause {
@@ -1896,6 +1924,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                                 "this `super` would go above the crate root".to_string(),
                                 None,
                                 None,
+                                None,
                             )
                         },
                     );
@@ -1972,7 +2001,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                                 "can only be used in path start position".to_string(),
                             )
                         };
-                        (message, label, None, None)
+                        (message, label, None, None, None)
                     },
                 );
             }
@@ -2129,7 +2158,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                                 } else {
                                     None
                                 };
-                                (message, label, None, note)
+                                (message, label, None, note, None)
                             },
                         );
                     }
@@ -2154,7 +2183,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         module_had_parse_errors,
                         module,
                         || {
-                            let (message, label, suggestion) =
+                            let (message, label, suggestion, help) =
                                 this.get_mut().report_path_resolution_error(
                                     path,
                                     opt_ns,
@@ -2167,7 +2196,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                                     ident,
                                     diag_metadata,
                                 );
-                            (message, label, suggestion, None)
+                            (message, label, suggestion, None, help)
                         },
                     );
                 }

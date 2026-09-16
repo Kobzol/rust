@@ -9,13 +9,13 @@ use rustc_ast::entry::EntryPointType;
 use rustc_ast::mut_visit::*;
 use rustc_ast::visit::Visitor;
 use rustc_ast::{ModKind, attr};
+use rustc_attr_ir::AttributeKind;
 use rustc_attr_parsing::AttributeParser;
 use rustc_expand::base::{ExtCtxt, ResolverExpand};
 use rustc_expand::expand::{AstFragment, ExpansionConfig};
 use rustc_feature::Features;
-use rustc_hir::attrs::AttributeKind;
+use rustc_lint_defs::builtin::UNNAMEABLE_TEST_ITEMS;
 use rustc_session::Session;
-use rustc_session::lint::builtin::UNNAMEABLE_TEST_ITEMS;
 use rustc_span::hygiene::{AstPass, SyntaxContext, Transparency};
 use rustc_span::{DUMMY_SP, Ident, Span, Symbol, sym};
 use rustc_target::spec::PanicStrategy;
@@ -38,6 +38,7 @@ struct TestCtxt<'a> {
     def_site: Span,
     test_cases: Vec<Test>,
     reexport_test_harness_main: Option<Symbol>,
+    /// Value of a `#[test_runner]` attribute, if present.
     test_runner: Option<ast::Path>,
 }
 
@@ -130,7 +131,7 @@ impl<'a> MutVisitor for TestHarnessGenerator<'a> {
     }
 
     fn visit_item(&mut self, item: &mut ast::Item) {
-        if let Some(name) = get_test_name(&item) {
+        if let Some(name) = get_test_name(item) {
             debug!("this is a test item");
 
             // `unwrap` is ok because only functions, consts, and static should reach here.
@@ -151,7 +152,7 @@ impl<'a> MutVisitor for TestHarnessGenerator<'a> {
             self.add_test_cases(item.id, span, prev_tests);
         } else {
             // But in those cases, we emit a lint to warn the user of these missing tests.
-            ast::visit::walk_item(&mut InnerItemLinter { sess: self.cx.ext_cx.sess }, &item);
+            ast::visit::walk_item(&mut InnerItemLinter { sess: self.cx.ext_cx.sess }, item);
         }
     }
 }
@@ -202,7 +203,7 @@ impl<'a> MutVisitor for EntryPointCleaner<'a> {
         // Remove any #[rustc_main] from the AST so it doesn't
         // clash with the one we're going to add, but mark it as
         // #[allow(dead_code)] to avoid printing warnings.
-        match entry_point_type(&item, self.depth == 0) {
+        match entry_point_type(item, self.depth == 0) {
             EntryPointType::RustcMainAttr => {
                 let allow_dead_code = attr::mk_attr_nested_word(
                     &self.sess.psess.attr_id_generator,
@@ -266,7 +267,7 @@ fn generate_test_harness(
 /// #[rustc_main]
 /// pub fn main() {
 ///     extern crate test;
-///     test::test_main_static(&[
+///     test::test_main_env_args(&[
 ///         &test_const1,
 ///         &test_const2,
 ///         &test_const3,
@@ -286,16 +287,16 @@ fn generate_test_harness(
 ///
 /// [`TestCtxt::reexport_test_harness_main`] provides a different name for the `main`
 /// function and [`TestCtxt::test_runner`] provides a path that replaces
-/// `test::test_main_static`.
+/// `test::test_main_env_args`.
 fn mk_main(cx: &mut TestCtxt<'_>) -> Box<ast::Item> {
     let sp = cx.def_site;
     let ecx = &cx.ext_cx;
     let test_ident = Ident::new(sym::test, sp);
 
     let runner_name =
-        if cx.panic_strategy.unwinds() { "test_main_static" } else { "test_main_static_abort" };
+        if cx.panic_strategy.unwinds() { "test_main_env_args" } else { "test_main_env_args_abort" };
 
-    // test::test_main_static(...)
+    // test::test_main_env_args(...)
     let mut test_runner = cx.test_runner.clone().unwrap_or_else(|| {
         ecx.path(sp, vec![test_ident, Ident::from_str_and_span(runner_name, sp)])
     });
@@ -320,6 +321,10 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> Box<ast::Item> {
     let doc_hidden_attr = ecx.attr_nested_word(sym::doc, sym::hidden, sp);
 
     // pub fn main() { ... }
+    // FIXME: it would be nice if we could use `std::process::ExitCode` as return type here, and
+    // remove all early-exit from libtest itself. Or rather, it should be `test::ExitCode` so we
+    // don't depend on whatever `std` may be. This needs the `extern crate test` to be *outside*
+    // `main`. But naively moving it out causes ICEs that give no hint as to what is wrong.
     let main_ret_ty = ecx.ty(sp, ast::TyKind::Tup(ThinVec::new()));
 
     // If no test runner is provided we need to import the test crate
@@ -347,7 +352,7 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> Box<ast::Item> {
         contract: None,
         body: Some(main_body),
         define_opaque: None,
-        eii_impls: ThinVec::new(),
+        eii_impl: None,
     }));
 
     let main = Box::new(ast::Item {
@@ -392,7 +397,7 @@ fn get_test_name(i: &ast::Item) -> Option<Symbol> {
 
 fn get_test_runner(sess: &Session, krate: &ast::Crate) -> Option<ast::Path> {
     match AttributeParser::parse_limited_sym(sess, &krate.attrs, &[sym::test_runner]) {
-        Some(rustc_hir::Attribute::Parsed(AttributeKind::TestRunner(path))) => Some(path),
+        Some(rustc_attr_ir::Attribute::Parsed(AttributeKind::TestRunner(path))) => Some(path),
         _ => None,
     }
 }

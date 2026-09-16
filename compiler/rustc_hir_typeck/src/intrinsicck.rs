@@ -5,11 +5,10 @@ use rustc_errors::codes::*;
 use rustc_errors::struct_span_code_err;
 use rustc_hir as hir;
 use rustc_index::Idx;
-use rustc_middle::bug;
 use rustc_middle::ty::layout::{LayoutError, SizeSkeleton};
 use rustc_middle::ty::{self, Ty, TyCtxt, Unnormalized};
-use rustc_span::ErrorGuaranteed;
 use rustc_span::def_id::LocalDefId;
+use rustc_span::{ErrorGuaranteed, bug};
 use tracing::trace;
 
 /// If the type is `Option<T>`, it will return `T`, otherwise
@@ -75,20 +74,15 @@ fn check_transmute<'tcx>(
     hir_id: HirId,
 ) -> Result<(), ErrorGuaranteed> {
     let span = tcx.hir_span(hir_id);
-    let normalize = |ty| {
-        if let Ok(ty) = tcx.try_normalize_erasing_regions(typing_env, ty) {
-            ty
-        } else {
-            Ty::new_error_with_message(
-                tcx,
-                span,
-                format!("tried to normalize non-wf type {ty:#?} in check_transmute"),
-            )
-        }
+    let normalize = |ty: Unnormalized<'tcx, Ty<'tcx>>| -> Result<Ty<'tcx>, ErrorGuaranteed> {
+        tcx.try_normalize_erasing_regions(typing_env, ty).map_err(|err| {
+            let err = LayoutError::NormalizationFailure(ty.skip_normalization(), err);
+            tcx.dcx().span_err(span, err.to_string())
+        })
     };
 
-    let from = normalize(from);
-    let to = normalize(to);
+    let from = normalize(from)?;
+    let to = normalize(to)?;
     trace!(?from, ?to);
 
     // Transmutes that are only changing lifetimes are always ok.

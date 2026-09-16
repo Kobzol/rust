@@ -20,11 +20,11 @@ use rustc_data_structures::thin_vec::ThinVec;
 use rustc_hir as hir;
 use rustc_hir::def::DefKind;
 use rustc_index::{IndexSlice, IndexVec};
+use rustc_middle::mir;
 use rustc_middle::mir::visit::{MutVisitor, MutatingUseContext, PlaceContext, Visitor};
 use rustc_middle::mir::*;
-use rustc_middle::ty::{self, GenericArgs, List, RegionUtilitiesExt, Ty, TyCtxt, TypeVisitableExt};
-use rustc_middle::{bug, mir, span_bug};
-use rustc_span::{Span, Spanned};
+use rustc_middle::ty::{self, GenericArgs, List, Ty, TyCtxt, TypeVisitableExt};
+use rustc_span::{Span, Spanned, bug, span_bug};
 use tracing::{debug, instrument};
 
 use crate::PassPolicy;
@@ -64,7 +64,7 @@ impl<'tcx> crate::MirPass<'tcx> for PromoteTemps<'tcx> {
         self.promoted_fragments.set(promoted);
     }
 
-    fn policy(&self, _sess: &rustc_session::Session) -> PassPolicy {
+    fn policy(&self, _ctx: &crate::PassCtx<'_>) -> PassPolicy {
         // Implements promotion by extracting eligible values into separate constant MIR bodies.
         PassPolicy::Required
     }
@@ -299,7 +299,9 @@ impl<'tcx> Validator<'_, 'tcx> {
             | ProjectionElem::UnwrapUnsafeBinder(_) => {}
 
             // Never recurse.
-            ProjectionElem::OpaqueCast(..) | ProjectionElem::Downcast(..) => {
+            ProjectionElem::PhantomDeref
+            | ProjectionElem::OpaqueCast(..)
+            | ProjectionElem::Downcast(..) => {
                 return Err(Unpromotable);
             }
 
@@ -321,6 +323,8 @@ impl<'tcx> Validator<'_, 'tcx> {
                     // can only promote static accesses inside statics.
                     && let Some(hir::ConstContext::Static(..)) = self.const_kind
                     && !self.tcx.is_thread_local_static(did)
+                    // Extern statics can never be read by CTFE, even inside a static.
+                    && !self.tcx.is_foreign_item(did)
                 {
                     // Recurse.
                 } else {

@@ -66,8 +66,8 @@ pub trait TypeRelation<I: Interner>: Sized {
         a_ty: I::Ty,
         b_ty: I::Ty,
         ty_def_id: I::DefId,
-        a_arg: I::GenericArgs,
-        b_arg: I::GenericArgs,
+        a_args: I::GenericArgs,
+        b_args: I::GenericArgs,
         mk: impl FnOnce(I::GenericArgs) -> I::Ty,
     ) -> RelateResult<I, I::Ty>;
 
@@ -262,7 +262,8 @@ impl<I: Interner> Relate<I> for ty::AliasTerm<I> {
                 | ty::AliasTermKind::FreeConst { .. }
                 | ty::AliasTermKind::FreeTy { .. }
                 | ty::AliasTermKind::InherentTy { .. }
-                | ty::AliasTermKind::InherentConst { .. }
+                | ty::AliasTermKind::InherentConstSelf { .. }
+                | ty::AliasTermKind::InherentConstImpl { .. }
                 | ty::AliasTermKind::AnonConst { .. }
                 | ty::AliasTermKind::ProjectionConst { .. } => {
                     relate_args_invariantly(relation, a.args, b.args)?
@@ -281,8 +282,14 @@ impl<I: Interner> Relate<I> for ty::ExistentialProjection<I> {
     ) -> RelateResult<I, ty::ExistentialProjection<I>> {
         if a.def_id != b.def_id {
             Err(TypeError::ProjectionMismatched(ExpectedFound::new(
-                relation.cx().alias_term_kind_from_def_id(a.def_id.into()),
-                relation.cx().alias_term_kind_from_def_id(b.def_id.into()),
+                relation.cx().alias_term_kind_from_def_id(
+                    a.def_id.into(),
+                    ty::AliasConstInherentArgsKind::WithSelf,
+                ),
+                relation.cx().alias_term_kind_from_def_id(
+                    b.def_id.into(),
+                    ty::AliasConstInherentArgsKind::WithSelf,
+                ),
             )))
         } else {
             let term = relation.relate_with_variance(
@@ -503,12 +510,17 @@ pub fn structurally_relate_tys<I: Interner, R: TypeRelation<I>>(
             if a_args.skip_binder().is_empty() {
                 Ok(a)
             } else {
-                let a_args = a_args.no_bound_vars().unwrap();
-                let b_args = b_args.no_bound_vars().unwrap();
-                relation.relate_ty_args(a, b, a_def_id.into(), a_args, b_args, |args| {
-                    // FIXME(156581): actually instantiate the binder correctly (turbofishing/fndef changes)
-                    Ty::new_fn_def(cx, a_def_id, ty::Binder::dummy(args))
-                })
+                // FIXME: this behavior is wrong; relations with binders needs fixing.
+                //        need to relate the bound vars first.
+                let x = relation.relate_ty_args(
+                    a,
+                    b,
+                    a_def_id.into(),
+                    a_args.skip_binder(),
+                    b_args.skip_binder(),
+                    |args| Ty::new_fn_def(cx, a_def_id, a_args.rebind(args)),
+                );
+                x
             }
         }
 
@@ -634,16 +646,16 @@ impl<I: Interner, T: Relate<I>> Relate<I> for ty::Binder<I, T> {
     }
 }
 
-impl<I: Interner> Relate<I> for ty::TraitPredicate<I> {
+impl<I: Interner> Relate<I> for ty::TraitClause<I> {
     fn relate<R: TypeRelation<I>>(
         relation: &mut R,
-        a: ty::TraitPredicate<I>,
-        b: ty::TraitPredicate<I>,
-    ) -> RelateResult<I, ty::TraitPredicate<I>> {
+        a: ty::TraitClause<I>,
+        b: ty::TraitClause<I>,
+    ) -> RelateResult<I, ty::TraitClause<I>> {
         let trait_ref = relation.relate(a.trait_ref, b.trait_ref)?;
         if a.polarity != b.polarity {
             return Err(TypeError::PolarityMismatch(ExpectedFound::new(a.polarity, b.polarity)));
         }
-        Ok(ty::TraitPredicate { trait_ref, polarity: a.polarity })
+        Ok(ty::TraitClause { trait_ref, polarity: a.polarity })
     }
 }

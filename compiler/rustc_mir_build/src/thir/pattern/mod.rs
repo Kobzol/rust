@@ -16,15 +16,14 @@ use rustc_hir::pat_util::EnumerateAndAdjustIterator;
 use rustc_hir::{self as hir, RangeEnd};
 use rustc_index::Idx;
 use rustc_middle::thir::{
-    Ascription, DerefPatBorrowMode, FieldPat, LocalVarId, Pat, PatKind, PatRange, PatRangeBoundary,
+    Ascription, FieldPat, LocalVarId, Pat, PatKind, PatRange, PatRangeBoundary,
 };
 use rustc_middle::ty::adjustment::{PatAdjust, PatAdjustment};
 use rustc_middle::ty::layout::IntegerExt;
 use rustc_middle::ty::{
     self, CanonicalUserTypeAnnotation, LitToConstInput, Ty, TyCtxt, const_lit_matches_ty,
 };
-use rustc_middle::{bug, span_bug};
-use rustc_span::ErrorGuaranteed;
+use rustc_span::{ErrorGuaranteed, bug, span_bug};
 use tracing::{debug, instrument};
 
 pub(crate) use self::check_match::check_match;
@@ -352,11 +351,6 @@ impl<'tcx, 'ptcx> PatCtxt<'tcx, 'ptcx> {
                 }
                 PatKind::Deref { pin, subpattern }
             }
-            hir::PatKind::Box(subpattern) => PatKind::DerefPattern {
-                subpattern: self.lower_pattern(subpattern),
-                borrow: DerefPatBorrowMode::Box,
-            },
-
             hir::PatKind::Slice(prefix, slice, suffix) => {
                 return self.slice_or_array_pattern(pat, prefix, slice, suffix);
             }
@@ -642,8 +636,7 @@ impl<'tcx, 'ptcx> PatCtxt<'tcx, 'ptcx> {
         let res = self.typeck_results.qpath_res(qpath, id);
 
         let (def_id, user_ty) = match res {
-            Res::Def(DefKind::Const { .. }, def_id)
-            | Res::Def(DefKind::AssocConst { .. }, def_id) => {
+            Res::Def(DefKind::Const, def_id) | Res::Def(DefKind::AssocConst, def_id) => {
                 (def_id, self.typeck_results.user_provided_types().get(id))
             }
 
@@ -663,7 +656,11 @@ impl<'tcx, 'ptcx> PatCtxt<'tcx, 'ptcx> {
             ty::IsRigid::No,
             ty::AliasConst::new(
                 self.tcx,
-                ty::AliasConstKind::new_from_def_id(self.tcx, def_id),
+                ty::AliasConstKind::new_from_def_id(
+                    self.tcx,
+                    def_id,
+                    ty::AliasConstInherentArgsKind::Impl,
+                ),
                 args,
             ),
         );

@@ -15,7 +15,6 @@ use rustc_errors::{
     Applicability, Diag, DiagCtxtHandle, ErrorGuaranteed, PResult, Subdiagnostic, Suggestions, msg,
     pluralize,
 };
-use rustc_session::diagnostics::ExprParenthesesNeeded;
 use rustc_span::symbol::used_keywords;
 use rustc_span::{BytePos, DUMMY_SP, Ident, Span, SpanSnippetError, Spanned, Symbol, kw, sym};
 use thin_vec::{ThinVec, thin_vec};
@@ -27,11 +26,10 @@ use super::{
     SeqSep, TokenType,
 };
 use crate::diagnostics::{
-    AddParen, AmbiguousPlus, AsyncMoveBlockIn2015, AsyncUseBlockIn2015, AttributeOnParamType,
-    AwaitSuggestion, BadQPathStage2, BadTypePlus, BadTypePlusSub, ColonAsSemi,
-    ComparisonOperatorsCannotBeChained, ComparisonOperatorsCannotBeChainedSugg,
-    DocCommentDoesNotDocumentAnything, DocCommentOnParamType, DoubleColonInBound,
-    ExpectedIdentifier, ExpectedSemi, ExpectedSemiSugg, FoundPathInGenerics,
+    AddParen, AmbiguousPlus, AsyncMoveBlockIn2015, AsyncUseBlockIn2015, AwaitSuggestion,
+    BadQPathStage2, BadTypePlus, BadTypePlusSub, ColonAsSemi, ComparisonOperatorsCannotBeChained,
+    ComparisonOperatorsCannotBeChainedSugg, DocCommentDoesNotDocumentAnything, DoubleColonInBound,
+    ExpectedIdentifier, ExpectedSemi, ExpectedSemiSugg, ExprParenthesesNeeded, FoundPathInGenerics,
     GenericParamsWithoutAngleBrackets, GenericParamsWithoutAngleBracketsSugg,
     HelpIdentifierStartsWithNumber, HelpUseLatestEdition, InInTypo, IncorrectAwait,
     IncorrectSemicolon, IncorrectUseOfAwait, IncorrectUseOfUse, MisspelledKw,
@@ -339,66 +337,46 @@ impl<'a> Parser<'a> {
             HelpIdentifierStartsWithNumber { num_span: invalid }
         });
 
-        let err = ExpectedIdentifier {
+        let mut err = self.dcx().create_err(ExpectedIdentifier {
             span: bad_token.span,
             token: bad_token,
             suggest_raw,
             suggest_remove_comma,
             help_cannot_start_number,
-        };
-        let mut err = self.dcx().create_err(err);
+        });
 
-        // if the token we have is a `<`
-        // it *might* be a misplaced generic
-        // FIXME: could we recover with this?
+        // If the token we have is a `<` it *might* be a misplaced generic
+        // parameter list as in `fn <T>id(x: T) -> T { x }`.
+        // FIXME: Could we recover with this?
         if self.token == token::Lt {
-            // all keywords that could have generic applied
-            let valid_prev_keywords =
-                [kw::Fn, kw::Type, kw::Struct, kw::Enum, kw::Union, kw::Trait];
-
-            // If we've expected an identifier,
-            // and the current token is a '<'
-            // if the previous token is a valid keyword
-            // that might use a generic, then suggest a correct
-            // generic placement (later on)
-            let maybe_keyword = self.prev_token;
-            if valid_prev_keywords.into_iter().any(|x| maybe_keyword.is_keyword(x)) {
-                // if we have a valid keyword, attempt to parse generics
-                // also obtain the keywords symbol
+            // Let's check if the previous token could denote the start of an item
+            // whose kind can have generics.
+            if let Some((Ident { name, .. }, IdentIsRaw::No)) = self.prev_token.ident()
+                && let kw::Fn | kw::Type | kw::Struct | kw::Enum | kw::Union | kw::Trait = name
+            {
                 match self.parse_generics() {
-                    Ok(generic) => {
-                        if let TokenKind::Ident(symbol, _) = maybe_keyword.kind {
-                            let ident_name = symbol;
-                            // at this point, we've found something like
-                            // `fn <T>id`
-                            // and current token should be Ident with the item name (i.e. the function name)
-                            // if there is a `<` after the fn name, then don't show a suggestion, show help
-
-                            if !self.look_ahead(1, |t| *t == token::Lt)
-                                && let Ok(snippet) =
-                                    self.psess.source_map().span_to_snippet(generic.span)
-                            {
-                                err.multipart_suggestion(
-                                        format!("place the generic parameter name after the {ident_name} name"),
-                                        vec![
-                                            (self.token.span.shrink_to_hi(), snippet),
-                                            (generic.span, String::new())
-                                        ],
-                                        Applicability::MaybeIncorrect,
-                                    );
-                            } else {
-                                err.help(format!(
-                                    "place the generic parameter name after the {ident_name} name"
-                                ));
-                            }
+                    Ok(generics) => {
+                        if !self.look_ahead(1, |t| *t == token::Lt)
+                            && let Ok(snippet) =
+                                self.psess.source_map().span_to_snippet(generics.span)
+                        {
+                            err.multipart_suggestion(
+                                format!("place the generic parameter name after the {name} name"),
+                                vec![
+                                    (self.token.span.shrink_to_hi(), snippet),
+                                    (generics.span, String::new()),
+                                ],
+                                Applicability::MaybeIncorrect,
+                            );
+                        } else {
+                            err.help(format!(
+                                "place the generic parameter name after the {name} name"
+                            ));
                         }
                     }
-                    Err(err) => {
-                        // if there's an error parsing the generics,
-                        // then don't do a misplaced generics suggestion
-                        // and emit the expected ident error instead;
-                        err.cancel();
-                    }
+                    // It's unlikely that the user meant to write a generic parameter list.
+                    // Let's not show them errors specific to generics.
+                    Err(err) => err.cancel(),
                 }
             }
         }
@@ -604,15 +582,15 @@ impl<'a> Parser<'a> {
             );
         }
 
-        if let TokenKind::Ident(symbol, _) = &self.prev_token.kind {
-            if ["def", "fun", "func", "function"].contains(&symbol.as_str()) {
-                err.span_suggestion_short(
-                    self.prev_token.span,
-                    format!("write `fn` instead of `{symbol}` to declare a function"),
-                    "fn",
-                    Applicability::MachineApplicable,
-                );
-            }
+        if let Some((ident, IdentIsRaw::No)) = self.prev_token.ident()
+            && let "def" | "fun" | "func" | "function" = ident.name.as_str()
+        {
+            err.span_suggestion_short(
+                self.prev_token.span,
+                format!("write `fn` instead of `{}` to declare a function", ident.name),
+                "fn",
+                Applicability::MachineApplicable,
+            );
         }
 
         if let TokenKind::Ident(prev, _) = &self.prev_token.kind
@@ -1722,7 +1700,7 @@ impl<'a> Parser<'a> {
         );
         err.span_label(op_span, format!("not a valid {} operator", kind.fixity));
 
-        let help_base_case = |mut err: Diag<'_, _>, base| {
+        let help_base_case = |mut err: Diag<'_, ErrorGuaranteed>, base| {
             err.help(format!("use `{}= 1` instead", kind.op.chr()));
             err.emit();
             Ok(base)
@@ -2217,22 +2195,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn eat_incorrect_doc_comment_for_param_type(&mut self) {
-        if let token::DocComment(..) = self.token.kind {
-            self.dcx().emit_err(DocCommentOnParamType { span: self.token.span });
-            self.bump();
-        } else if self.token == token::Pound && self.look_ahead(1, |t| *t == token::OpenBracket) {
-            let lo = self.token.span;
-            // Skip every token until next possible arg.
-            while self.token != token::CloseBracket {
-                self.bump();
-            }
-            let sp = lo.to(self.token.span);
-            self.bump();
-            self.dcx().emit_err(AttributeOnParamType { span: sp });
-        }
-    }
-
     pub(super) fn parameter_without_type(
         &mut self,
         err: &mut Diag<'_>,
@@ -2385,12 +2347,23 @@ impl<'a> Parser<'a> {
     }
 
     #[cold]
-    pub(super) fn recover_arg_parse(&mut self) -> PResult<'a, (Box<ast::Pat>, Box<ast::Ty>)> {
+    pub(super) fn recover_arg_parse(
+        &mut self,
+        context: FnContext,
+    ) -> PResult<'a, (Box<ast::Pat>, Box<ast::Ty>)> {
         let pat = self.parse_pat_no_top_alt(Some(Expected::ArgumentName), None)?;
         self.expect(exp!(Colon))?;
         let ty = self.parse_ty()?;
-
-        self.dcx().emit_err(PatternMethodParamWithoutBody { span: pat.span });
+        self.dcx().emit_err(PatternMethodParamWithoutBody {
+            span: pat.span,
+            target: match context {
+                FnContext::Trait => "methods without bodies",
+                FnContext::FunctionPtrType => "function pointer types",
+                FnContext::ParenthesizedArgumentList => "parenthesized argument list",
+                FnContext::Free => unreachable!("This method is not called in free functions, as patterns are always allowed there"),
+                FnContext::Impl => unreachable!("This method is not called in impls, as patterns are always allowed there"),
+            },
+        });
 
         // Pretend the pattern is `_`, to avoid duplicate errors from AST validation.
         let pat = Box::new(Pat { kind: PatKind::Wild, span: pat.span, id: ast::DUMMY_NODE_ID });
@@ -2641,11 +2614,8 @@ impl<'a> Parser<'a> {
         if is_op_or_dot {
             self.bump();
         }
-        match (|| {
-            let attrs = self.parse_outer_attributes()?;
-            self.parse_expr_res(Restrictions::CONST_EXPR, attrs)
-        })() {
-            Ok((expr, _)) => {
+        match (|| self.parse_expr_res(Restrictions::CONST_EXPR))() {
+            Ok(expr) => {
                 // Find a mistake like `MyTrait<Assoc == S::Assoc>`.
                 if snapshot.token == token::EqEq {
                     err.span_suggestion_verbose(
@@ -2697,13 +2667,10 @@ impl<'a> Parser<'a> {
         &mut self,
         mut snapshot: SnapshotParser<'a>,
     ) -> Option<Box<ast::Expr>> {
-        match (|| {
-            let attrs = self.parse_outer_attributes()?;
-            snapshot.parse_expr_res(Restrictions::CONST_EXPR, attrs)
-        })() {
+        match (|| snapshot.parse_expr_res(Restrictions::CONST_EXPR))() {
             // Since we don't know the exact reason why we failed to parse the type or the
             // expression, employ a simple heuristic to weed out some pathological cases.
-            Ok((expr, _)) if let token::Comma | token::Gt = snapshot.token.kind => {
+            Ok(expr) if let token::Comma | token::Gt = snapshot.token.kind => {
                 self.restore_snapshot(snapshot);
                 Some(expr)
             }

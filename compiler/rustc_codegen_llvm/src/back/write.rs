@@ -100,14 +100,12 @@ fn write_output_file<'ll>(
     result.into_result().unwrap_or_else(|()| llvm_err(dcx, LlvmError::WriteOutput { path: output }))
 }
 
-pub(crate) fn create_informational_target_machine(
-    sess: &Session,
-    only_base_features: bool,
-) -> OwnedTargetMachine {
+pub(crate) fn create_informational_target_machine(sess: &Session) -> OwnedTargetMachine {
     let config = TargetMachineFactoryConfig { split_dwarf_file: None, output_obj_file: None };
     // Can't use query system here quite yet because this function is invoked before the query
     // system/tcx is set up.
-    let features = llvm_util::global_llvm_features(sess, only_base_features);
+    let features = llvm_util::global_llvm_features(sess, /* for_cfg */ false);
+
     target_machine_factory(sess, config::OptLevel::No, &features)(sess.dcx(), config)
 }
 
@@ -209,8 +207,7 @@ pub(crate) fn target_machine_factory(
 
     let code_model = to_llvm_code_model(sess.code_model());
 
-    // This is used to set cfg_has_threads, so all logic must be in this method.
-    let singlethread = sess.target.singlethread(&sess.target_features);
+    let singlethread = sess.target.singlethread(&sess.internal_target_features);
 
     let triple = SmallCStr::new(&versioned_llvm_target(sess));
     let cpu = SmallCStr::new(llvm_util::target_cpu(sess));
@@ -609,6 +606,8 @@ pub(crate) unsafe fn llvm_optimize(
     let pgo_use_path = get_pgo_use_path(config);
     let pgo_sample_use_path = get_pgo_sample_use_path(config);
     let is_lto = opt_stage == llvm::OptStage::ThinLTO || opt_stage == llvm::OptStage::FatLTO;
+    let is_final_stage =
+        !matches!(opt_stage, llvm::OptStage::PreLinkFatLTO | llvm::OptStage::PreLinkThinLTO);
     let instr_profile_output_path = get_instr_profile_output_path(config);
     let sanitize_dataflow_abilist: Vec<_> = config
         .sanitizer_dataflow_abilist
@@ -717,7 +716,11 @@ pub(crate) unsafe fn llvm_optimize(
         // Here we map the old arguments to the new arguments, with an offset of 1 to make sure
         // that we don't use the newly added `%dyn_ptr`.
         unsafe {
-            llvm::LLVMRustOffloadMapper(old_fn, new_fn, old_args_rebuilt.as_ptr());
+            llvm::RustOffloadWrapper::get_instance().llvm_rust_offload_wrapper(
+                old_fn,
+                new_fn,
+                old_args_rebuilt.as_slice(),
+            );
         }
 
         llvm::set_linkage(new_fn, llvm::get_linkage(old_fn));
@@ -735,7 +738,9 @@ pub(crate) unsafe fn llvm_optimize(
         llvm::set_value_name(new_fn, &name);
     }
 
-    if cgcx.target_is_like_gpu && config.offload.contains(&config::Offload::Device) {
+    if cgcx.target_is_like_gpu
+        && config.offload.iter().any(|o| matches!(o, config::Offload::Device(_)))
+    {
         let cx =
             SimpleCx::new(module.module_llvm.llmod(), module.module_llvm.llcx, cgcx.pointer_size);
         for func in cx.get_functions() {
@@ -806,21 +811,23 @@ pub(crate) unsafe fn llvm_optimize(
         )
     };
 
-    if cgcx.target_is_like_gpu && config.offload.contains(&config::Offload::Device) {
+    if cgcx.target_is_like_gpu
+        && config.offload.iter().any(|o| matches!(o, config::Offload::Device(_)))
+    {
         let device_path = cgcx.output_filenames.path(OutputType::Object);
         let device_dir = device_path.parent().unwrap();
         let device_out = device_dir.join("device.bin");
         let device_out_c = path_to_c_string(device_out.as_path());
-        unsafe {
-            // 1) Bundle device module into offload image device.bin (device TM)
-            let ok = llvm::LLVMRustBundleImages(
+        // 1) Bundle device module into offload image device.bin (device TM)
+        let ok = unsafe {
+            llvm::RustOffloadWrapper::get_instance().llvm_rust_bundle_images(
                 module.module_llvm.llmod(),
                 module.module_llvm.tm.raw(),
-                device_out_c.as_ptr(),
-            );
-            if !ok || !device_out.exists() {
-                dcx.emit_err(crate::diagnostics::OffloadBundleImagesFailed);
-            }
+                device_out_c.as_c_str(),
+            )
+        };
+        if !ok || !device_out.exists() {
+            dcx.emit_err(crate::diagnostics::OffloadBundleImagesFailed);
         }
     }
 
@@ -829,7 +836,7 @@ pub(crate) unsafe fn llvm_optimize(
     // don't need any other artifacts from the previous run. We will embed this artifact into our
     // LLVM-IR host module, to create a `host.o` ObjectFile, which we will write to disk.
     // The last, not yet automated steps uses the `clang-linker-wrapper` to process `host.o`.
-    if !cgcx.target_is_like_gpu {
+    if !cgcx.target_is_like_gpu && is_final_stage {
         if let Some(device_path) = config
             .offload
             .iter()
@@ -855,9 +862,12 @@ pub(crate) unsafe fn llvm_optimize(
             // 2) Finalize host: lib.bc + device.bin -> host.o (host TM)
             // We create a full clone of our LLVM host module, since we will embed the device IR
             // into it, and this might break caching or incremental compilation otherwise.
-            let llmod2 = llvm::LLVMCloneModule(module.module_llvm.llmod());
-            let ok =
-                unsafe { llvm::LLVMRustOffloadEmbedBufferInModule(llmod2, device_bin_c.as_ptr()) };
+            let ok = unsafe {
+                llvm::RustOffloadWrapper::get_instance().llvm_rust_offload_embed_buffer_in_module(
+                    module.module_llvm.llmod(),
+                    device_bin_c.as_c_str(),
+                )
+            };
             if !ok {
                 dcx.emit_err(crate::diagnostics::OffloadEmbedFailed);
             }
@@ -865,7 +875,7 @@ pub(crate) unsafe fn llvm_optimize(
                 dcx,
                 module.module_llvm.tm.raw(),
                 config.no_builtins,
-                llmod2,
+                module.module_llvm.llmod(),
                 &out_obj,
                 None,
                 llvm::FileType::ObjectFile,
@@ -875,6 +885,16 @@ pub(crate) unsafe fn llvm_optimize(
             // We ignore cgcx.save_temps here and unconditionally always keep our `device.bin` artifact.
             // Otherwise, recompiling the host code would fail since we deleted that device artifact
             // in the previous host compilation, which would be confusing at best.
+
+            let ok = unsafe {
+                llvm::RustOffloadWrapper::get_instance().llvm_rust_offload_wrap_images(
+                    module.module_llvm.llmod(),
+                    device_bin_c.as_c_str(),
+                )
+            };
+            if !ok {
+                dcx.emit_err(crate::diagnostics::OffloadWrapImagesFailed);
+            }
         }
     }
     result.into_result().unwrap_or_else(|()| llvm_err(dcx, LlvmError::RunLlvmPasses))
@@ -1290,9 +1310,9 @@ fn embed_bitcode(
         // We need custom section flags, so emit module-level inline assembly.
         let section_flags = if cgcx.is_pe_coff { "n" } else { "e" };
         let asm = create_section_with_flags_asm(".llvmbc", section_flags, bitcode);
-        llvm::append_module_inline_asm(llmod, &asm);
+        llvm::append_module_inline_asm(llmod, &asm, "", "");
         let asm = create_section_with_flags_asm(".llvmcmd", section_flags, &[]);
-        llvm::append_module_inline_asm(llmod, &asm);
+        llvm::append_module_inline_asm(llmod, &asm, "", "");
     }
 }
 

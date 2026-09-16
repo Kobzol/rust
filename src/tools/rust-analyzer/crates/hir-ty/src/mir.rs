@@ -15,7 +15,7 @@ use rustc_type_ir::{
     CollectAndApply, GenericTypeVisitable,
     inherent::{GenericArgs as _, IntoKind, Ty as _},
 };
-use salsa::Update;
+use salsa::SalsaValue;
 use smallvec::{SmallVec, smallvec};
 use stdx::impl_from;
 
@@ -32,15 +32,14 @@ use crate::{
     },
 };
 
-mod borrowck;
 mod eval;
 mod lower;
 mod monomorphization;
 mod pretty;
 
-pub use borrowck::{BorrowckResult, MutabilityReason};
 pub use eval::{
-    Evaluator, MirEvalError, VTableMap, interpret_mir, pad16, render_const_using_debug_impl,
+    Evaluator, IsSigned, MirEvalError, VTableMap, interpret_mir, pad16,
+    render_const_using_debug_impl,
 };
 pub use lower::{
     MirLowerError, lower_body_to_mir, lower_to_mir_with_store, mir_body_for_closure_query,
@@ -93,7 +92,7 @@ pub enum OperandKind {
     ///
     /// Before drop elaboration, the type of the place must be `Copy`. After drop elaboration there
     /// is no such requirement.
-    Copy(Place),
+    Copy(StoredPlace),
 
     /// Creates a value by performing loading the place, just like the `Copy` operand.
     ///
@@ -102,7 +101,7 @@ pub enum OperandKind {
     /// place without first re-initializing it.
     ///
     /// [UCG#188]: https://github.com/rust-lang/unsafe-code-guidelines/issues/188
-    Move(Place),
+    Move(StoredPlace),
     /// Constants are already semantically values, and remain unchanged.
     Constant {
         konst: StoredConst,
@@ -148,7 +147,7 @@ impl<'db> Operand {
 
 /// The index of a field (whether of a struct/enum variant, tuple, or closure).
 /// For a struct/enum it converts from and to the LocalFieldId, for a tuple or closure it's simply the index.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, salsa::Update, PartialOrd, Ord, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, salsa::SalsaValue, PartialOrd, Ord, Debug)]
 pub struct FieldIndex(pub u32);
 
 impl FieldIndex {
@@ -268,56 +267,54 @@ impl<'db> std::ops::Deref for Projection<'db> {
 }
 
 impl StoredProjection {
-    // FIXME: rename to as_slice
-    pub fn lookup(&self) -> &[PlaceElem] {
+    pub fn as_slice(&self) -> &[PlaceElem] {
         self.as_ref().as_slice()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.lookup().is_empty()
+        self.as_slice().is_empty()
     }
 }
 
-// FIXME: would be nicer to rename PlaceRef -> Place, Place -> StoredPlace, but I didn't want to blow up the diff
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct PlaceRef<'db> {
+pub struct Place<'db> {
     pub local: LocalId,
     pub projection: Projection<'db>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Place {
+pub struct StoredPlace {
     pub local: LocalId,
     pub projection: StoredProjection,
 }
 
-impl Place {
-    pub fn as_ref<'db>(&self) -> PlaceRef<'db> {
-        PlaceRef { local: self.local, projection: self.projection.as_ref() }
+impl StoredPlace {
+    pub fn as_ref<'db>(&self) -> Place<'db> {
+        Place { local: self.local, projection: self.projection.as_ref() }
     }
 }
 
-impl<'db> PlaceRef<'db> {
-    fn is_parent(&self, child: PlaceRef<'db>) -> bool {
+impl<'db> Place<'db> {
+    fn is_parent(&self, child: Place<'db>) -> bool {
         self.local == child.local
             && child.projection.as_slice().starts_with(self.projection.as_slice())
     }
 
     /// The place itself is not included
-    fn iterate_over_parents<'a>(&'a self) -> impl Iterator<Item = PlaceRef<'db>> + 'a {
+    fn iterate_over_parents<'a>(&'a self) -> impl Iterator<Item = Place<'db>> + 'a {
         let projection = self.projection.as_slice();
-        (0..projection.len()).map(move |x| PlaceRef {
+        (0..projection.len()).map(move |x| Place {
             local: self.local,
             projection: Projection::new_from_slice(&projection[0..x]),
         })
     }
 
-    fn project(&self, projection: PlaceElem) -> PlaceRef<'db> {
-        PlaceRef { local: self.local, projection: self.projection.project(projection) }
+    fn project(&self, projection: PlaceElem) -> Place<'db> {
+        Place { local: self.local, projection: self.projection.project(projection) }
     }
 
-    pub fn store(&self) -> Place {
-        Place { local: self.local, projection: self.projection.store() }
+    pub fn store(&self) -> StoredPlace {
+        StoredPlace { local: self.local, projection: self.projection.store() }
     }
     pub fn ty(
         &self,
@@ -333,10 +330,10 @@ impl<'db> PlaceRef<'db> {
     }
 }
 
-impl<'db> From<LocalId> for PlaceRef<'db> {
+impl<'db> From<LocalId> for Place<'db> {
     fn from(local: LocalId) -> Self {
         let empty: &[PlaceElem] = &[];
-        PlaceRef { local, projection: Projection::new_from_slice(empty) }
+        Place { local, projection: Projection::new_from_slice(empty) }
     }
 }
 
@@ -495,7 +492,7 @@ pub enum TerminatorKind {
     /// > The drop glue is executed if, among all statements executed within this `Body`, an assignment to
     /// > the place or one of its "parents" occurred more recently than a move out of it. This does not
     /// > consider indirect assignments.
-    Drop { place: Place, target: BasicBlockId, unwind: Option<BasicBlockId> },
+    Drop { place: StoredPlace, target: BasicBlockId, unwind: Option<BasicBlockId> },
 
     /// Drops the place and assigns a new value to it.
     ///
@@ -528,7 +525,7 @@ pub enum TerminatorKind {
     ///
     /// Disallowed after drop elaboration.
     DropAndReplace {
-        place: Place,
+        place: StoredPlace,
         value: Operand,
         target: BasicBlockId,
         unwind: Option<BasicBlockId>,
@@ -553,7 +550,7 @@ pub enum TerminatorKind {
         /// reused across function calls without duplicating the contents.
         args: Box<[Operand]>,
         /// Where the returned value will be written
-        destination: Place,
+        destination: StoredPlace,
         /// Where to go after this call returns. If none, the call necessarily diverges.
         target: Option<BasicBlockId>,
         /// Cleanups to be done if the call unwinds.
@@ -598,7 +595,7 @@ pub enum TerminatorKind {
         /// Where to resume to.
         resume: BasicBlockId,
         /// The place to store the resume argument in.
-        resume_arg: Place,
+        resume_arg: StoredPlace,
         /// Cleanup to be done if the coroutine is dropped at this suspend point.
         drop: Option<BasicBlockId>,
     },
@@ -890,7 +887,7 @@ pub enum Rvalue {
     /// exactly what the behavior of this operation should be.
     ///
     /// `Shallow` borrows are disallowed after drop lowering.
-    Ref(BorrowKind, Place),
+    Ref(BorrowKind, StoredPlace),
 
     /// Creates a pointer/reference to the given thread local.
     ///
@@ -921,7 +918,7 @@ pub enum Rvalue {
     /// If the type of the place is an array, this is the array length. For slices (`[T]`, not
     /// `&[T]`) this accesses the place's metadata to determine the length. This rvalue is
     /// ill-formed for places of other types.
-    Len(Place),
+    Len(StoredPlace),
 
     /// Performs essentially all of the casts that can be performed via `as`.
     ///
@@ -982,7 +979,7 @@ pub enum Rvalue {
     /// variant index; use `discriminant_for_variant` to convert.
     ///
     /// [#91095]: https://github.com/rust-lang/rust/issues/91095
-    Discriminant(Place),
+    Discriminant(StoredPlace),
 
     /// Creates an aggregate value, like a tuple or struct.
     ///
@@ -1002,18 +999,18 @@ pub enum Rvalue {
     /// read never happened and just projects further. This allows simplifying various MIR
     /// optimizations and codegen backends that previously had to handle deref operations anywhere
     /// in a place.
-    CopyForDeref(Place),
+    CopyForDeref(StoredPlace),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum StatementKind {
-    Assign(Place, Rvalue),
-    FakeRead(Place),
+    Assign(StoredPlace, Rvalue),
+    FakeRead(StoredPlace),
     //SetDiscriminant {
     //    place: Box<Place>,
     //    variant_index: VariantIdx,
     //},
-    Deinit(Place),
+    Deinit(StoredPlace),
     StorageLive(LocalId),
     StorageDead(LocalId),
     //Retag(RetagKind, Box<Place>),
@@ -1055,7 +1052,7 @@ pub struct BasicBlock {
     pub is_cleanup: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Update)]
+#[derive(Debug, Clone, PartialEq, Eq, SalsaValue)]
 pub struct MirBody<'db> {
     pub basic_blocks: Arena<BasicBlock>,
     pub locals: Arena<Local>,
@@ -1074,8 +1071,8 @@ impl MirBody<'_> {
         self.binding_locals.iter().map(|(it, y)| (*y, it)).collect()
     }
 
-    fn walk_places(&mut self, mut f: impl FnMut(&mut Place)) {
-        fn for_operand(op: &mut Operand, f: &mut impl FnMut(&mut Place)) {
+    fn walk_places(&mut self, mut f: impl FnMut(&mut StoredPlace)) {
+        fn for_operand(op: &mut Operand, f: &mut impl FnMut(&mut StoredPlace)) {
             match &mut op.kind {
                 OperandKind::Copy(p) | OperandKind::Move(p) => {
                     f(p);
@@ -1180,7 +1177,7 @@ impl MirBody<'_> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, SalsaValue)]
 pub enum MirSpan {
     ExprId(ExprId),
     PatId(PatId),
@@ -1196,13 +1193,13 @@ impl From<&ExprId> for MirSpan {
     }
 }
 
-impl<'tcx> PlaceRef<'tcx> {
+impl<'tcx> Place<'tcx> {
     /// If this place represents a local variable like `_X` with no
     /// projections, return `Some(_X)`.
     #[inline]
     pub fn as_local(&self) -> Option<LocalId> {
         match *self {
-            PlaceRef { local, projection } if projection.as_slice().is_empty() => Some(local),
+            Place { local, projection } if projection.as_slice().is_empty() => Some(local),
             _ => None,
         }
     }
