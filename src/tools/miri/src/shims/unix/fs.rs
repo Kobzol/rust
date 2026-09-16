@@ -15,7 +15,7 @@ use rustc_target::spec::Os;
 use self::shims::time::system_time_to_duration;
 use crate::shims::files::FileHandle;
 use crate::shims::os_str::bytes_to_os_str;
-use crate::shims::sig::check_min_vararg_count;
+use crate::shims::sig::Varargs;
 use crate::shims::unix::fd::{FlockOp, UnixFileDescription};
 use crate::*;
 
@@ -399,7 +399,7 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
         &mut self,
         path_raw: &OpTy<'tcx>,
         flag: &OpTy<'tcx>,
-        varargs: &[OpTy<'tcx>],
+        varargs: Varargs<'tcx, '_>,
     ) -> InterpResult<'tcx, Scalar> {
         let this = self.eval_context_mut();
 
@@ -460,10 +460,19 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
         let o_creat = this.eval_libc_i32("O_CREAT");
         if flag & o_creat == o_creat {
             flag &= !o_creat;
-            // Get the mode.  On macOS, the argument type `mode_t` is actually `u16`, but
-            // C integer promotion rules mean that on the ABI level, it gets passed as `u32`
-            // (see https://github.com/rust-lang/rust/issues/71915).
-            let [mode] = check_min_vararg_count("open(pathname, O_CREAT, ...)", varargs)?;
+            // Get the mode.
+            let ([mode], _) = this.check_varargs(
+                if this.libc_ty_layout("mode_t").size.bytes() >= 4 {
+                    // `mode_t` is big enough, no C integer promotion.
+                    shim_varargs![libc::mode_t]
+                } else {
+                    // Types smaller than int get promoted to int
+                    // (see https://github.com/rust-lang/rust/issues/71915).
+                    shim_varargs![i32]
+                },
+                varargs,
+                "open(pathname, O_CREAT, ...)",
+            )?;
             let mode = this.read_scalar(mode)?.to_u32()?;
 
             #[cfg(unix)]
@@ -1117,9 +1126,9 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
 
         if !matches!(
             &this.tcx.sess.target.os,
-            Os::Linux | Os::Android | Os::Solaris | Os::Illumos | Os::FreeBsd
+            Os::Linux | Os::Android | Os::Solaris | Os::Illumos | Os::FreeBsd | Os::MacOs
         ) {
-            panic!("`readdir` should not be called on {}", this.tcx.sess.target.os);
+            throw_unsup_format!("`readdir` is not yet supported on {}", this.tcx.sess.target.os);
         }
 
         let dirp = this.read_target_usize(dirp_op)?;
@@ -1170,6 +1179,16 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
                 //     pub d_namlen: uint8_t,
                 //     pub d_name: [c_char; 256],
                 // }
+                //
+                // On macOS:
+                // pub struct dirent {
+                //     pub d_ino: u64,
+                //     pub d_seekoff: u64,
+                //     pub d_reclen: u16,
+                //     pub d_namlen: u16,
+                //     pub d_type: u8,
+                //     pub d_name: [c_char; 1024],
+                // }
 
                 // We just use the pointee type here since determining the right pointee type
                 // independently is highly non-trivial: it depends on which exact alias of the
@@ -1213,6 +1232,9 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
                 if let Some(d_off) = this.try_project_field_named(&entry, "d_off")? {
                     this.write_null(&d_off)?;
                 }
+                if let Some(d_seekoff) = this.try_project_field_named(&entry, "d_seekoff")? {
+                    this.write_null(&d_seekoff)?;
+                }
                 if let Some(d_namlen) = this.try_project_field_named(&entry, "d_namlen")? {
                     this.write_int(name_len.strict_sub(1), &d_namlen)?;
                 }
@@ -1240,88 +1262,6 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
 
         this.write_pointer(entry.unwrap_or_else(Pointer::null), dest)?;
         interp_ok(())
-    }
-
-    fn macos_readdir_r(
-        &mut self,
-        dirp_op: &OpTy<'tcx>,
-        entry_op: &OpTy<'tcx>,
-        result_op: &OpTy<'tcx>,
-    ) -> InterpResult<'tcx, Scalar> {
-        let this = self.eval_context_mut();
-
-        this.assert_target_os(Os::MacOs, "readdir_r");
-
-        let dirp = this.read_target_usize(dirp_op)?;
-        let result_place = this.deref_pointer_as(result_op, this.machine.layouts.mut_raw_ptr)?;
-
-        // Reject if isolation is enabled.
-        if let IsolatedOp::Reject(reject_with) = this.machine.isolated_op {
-            this.reject_in_isolation("`readdir_r`", reject_with)?;
-            // Return error code, do *not* set `errno`.
-            return interp_ok(this.eval_libc("EBADF"));
-        }
-
-        let open_dir = this.machine.dirs.streams.get_mut(&dirp).ok_or_else(|| {
-            err_unsup_format!("the DIR pointer passed to readdir_r did not come from opendir")
-        })?;
-        interp_ok(match open_dir.next_host_entry() {
-            Some(Ok(dir_entry)) => {
-                let dir_entry = this.dir_entry_fields(dir_entry)?;
-                // Write into entry, write pointer to result, return 0 on success.
-                // The name is written with write_os_str_to_c_str, while the rest of the
-                // dirent struct is written using write_int_fields.
-
-                // For reference, on macOS this looks like:
-                // pub struct dirent {
-                //     pub d_ino: u64,
-                //     pub d_seekoff: u64,
-                //     pub d_reclen: u16,
-                //     pub d_namlen: u16,
-                //     pub d_type: u8,
-                //     pub d_name: [c_char; 1024],
-                // }
-
-                let entry_place = this.deref_pointer_as(entry_op, this.libc_ty_layout("dirent"))?;
-
-                // Write the name.
-                let name_place = this.project_field_named(&entry_place, "d_name")?;
-                let (name_fits, file_name_buf_len) = this.write_os_str_to_c_str(
-                    &dir_entry.name,
-                    name_place.ptr(),
-                    name_place.layout.size.bytes(),
-                )?;
-                if !name_fits {
-                    throw_unsup_format!(
-                        "a directory entry had a name too large to fit in libc::dirent"
-                    );
-                }
-
-                // Write the other fields.
-                this.write_int_fields_named(
-                    &[
-                        ("d_reclen", entry_place.layout.size.bytes().into()),
-                        ("d_namlen", file_name_buf_len.strict_sub(1).into()),
-                        ("d_type", dir_entry.d_type.into()),
-                        ("d_ino", dir_entry.ino.into()),
-                        ("d_seekoff", 0),
-                    ],
-                    &entry_place,
-                )?;
-                this.write_scalar(this.read_scalar(entry_op)?, &result_place)?;
-
-                Scalar::from_i32(0)
-            }
-            None => {
-                // end of stream: return 0, assign *result=NULL
-                this.write_null(&result_place)?;
-                Scalar::from_i32(0)
-            }
-            Some(Err(e)) => {
-                // return positive error number on error (do *not* set last error)
-                this.host_error_to_errnum(e)?
-            }
-        })
     }
 
     fn closedir(&mut self, dirp_op: &OpTy<'tcx>) -> InterpResult<'tcx, Scalar> {
@@ -1790,15 +1730,13 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
         fopts.read(true).write(true).create_new(true);
 
         cfg_select! {
-            unix =>
-            {
+            unix => {
                 use std::os::unix::fs::OpenOptionsExt;
                 // Do not allow others to read or modify this file.
                 fopts.mode(0o600);
                 fopts.custom_flags(libc::O_EXCL);
             }
-            windows =>
-            {
+            windows => {
                 use std::os::windows::fs::OpenOptionsExt;
                 // Do not allow others to read or modify this file.
                 fopts.share_mode(0);
@@ -1992,8 +1930,7 @@ impl FileMetadata {
 
         cfg_select! {
             unix => {
-                use std::os::unix::fs::MetadataExt;
-                use std::os::unix::fs::PermissionsExt;
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
                 let dev = metadata.dev();
                 let ino = metadata.ino();
@@ -2038,7 +1975,7 @@ impl FileMetadata {
                     blksize: None,
                     blocks: None,
                 }))
-            },
+            }
         }
     }
 }

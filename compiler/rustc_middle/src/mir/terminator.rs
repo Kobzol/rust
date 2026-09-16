@@ -4,9 +4,10 @@ use std::slice;
 
 use rustc_ast::InlineAsmOptions;
 use rustc_data_structures::packed::Pu128;
-use rustc_hir::LangItem;
 use rustc_hir::attrs::AttributeKind;
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
+use rustc_span::bug;
 use smallvec::{SmallVec, smallvec};
 use thin_vec::ThinVec;
 

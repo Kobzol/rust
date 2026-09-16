@@ -1,12 +1,11 @@
 use rustc_data_structures::fx::FxHashMap;
-use rustc_span::Span;
 use rustc_span::def_id::DefId;
+use rustc_span::{Span, bug};
 use tracing::{debug, instrument, trace};
 
-use crate::error::ConstNotUsedTraitAlias;
+use crate::diagnostics::ConstNotUsedTraitAlias;
 use crate::ty::{
-    self, GenericArg, GenericArgKind, RegionExt, Ty, TyCtxt, TypeFoldable, TypeFolder,
-    TypeSuperFoldable,
+    self, GenericArg, GenericArgKind, Ty, TyCtxt, TypeFoldable, TypeFolder, TypeSuperFoldable,
 };
 
 pub type OpaqueTypeKey<'tcx> = rustc_type_ir::OpaqueTypeKey<TyCtxt<'tcx>>;

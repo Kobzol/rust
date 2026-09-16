@@ -5372,8 +5372,42 @@ impl<'a, 'b> Trait<'a, 'b> for Foo {}
 fn run_dyn<'b>(val: &dyn for<'a> Trait<'a, 'b>) {}
 "#,
         expect![[r#"
-            91..94 'val': &'? (dyn Trait<'_, '_> + 'static)
+            91..94 'val': &'? (dyn Trait<'?0.0, '_> + 'static)
             124..126 '{}': ()
         "#]],
+    );
+}
+
+#[test]
+fn recursive_auto_trait() {
+    check_types(
+        r#"
+auto trait Send {}
+impl<T> !Send for *const T {}
+
+struct Vec<T>(*const T);
+impl<T: Send> Send for Vec<T> {}
+
+struct Node {
+    children: Vec<Node>,
+}
+
+struct Holder<T>(T);
+
+trait Lock<T> {
+    fn get(&self) -> &T;
+}
+
+impl<T: Send> Lock<T> for Holder<T> {
+    fn get(&self) -> &T {
+        &self.0
+    }
+}
+
+fn probe(h: &Holder<Node>) {
+    h.get();
+ // ^^^^^^^ &'? Node
+}
+    "#,
     );
 }

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use rustc_data_structures::fingerprint::{Fingerprint, PackedFingerprint};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::profiling::QueryInvocationId;
-use rustc_data_structures::sharded::{self, ShardedHashMap};
+use rustc_data_structures::sharded::ShardedHashMap;
 use rustc_data_structures::stable_hash::{StableHash, StableHasher};
 use rustc_data_structures::sync::{AtomicU64, Lock, WorkerLocal};
 use rustc_data_structures::unord::UnordMap;
@@ -48,7 +48,7 @@ pub enum QuerySideEffect {
     /// effect dep node as a dependency.
     Diagnostic(DiagInner),
     /// Records the feature used during query execution.
-    /// This feature will be inserted into `sess.used_features`
+    /// This feature will be inserted into `query_system.used_features`
     /// if we mark the query as green, as that query will have
     /// the side effect dep node as a dependency.
     CheckFeature { symbol: Symbol },
@@ -676,7 +676,7 @@ impl DepGraphData {
             let ok = match color {
                 DepNodeColor::Unknown => true,
                 DepNodeColor::Red => false,
-                DepNodeColor::Green(..) => sess.threads().is_some(), // Other threads may mark this green
+                DepNodeColor::Green(..) => sess.opts.jobs.frontend.is_some(), // Other threads may mark this green
             };
             if !ok {
                 panic!("{}", msg())
@@ -703,6 +703,15 @@ impl DepGraphData {
     #[inline]
     pub fn prev_value_fingerprint_of(&self, prev_index: SerializedDepNodeIndex) -> Fingerprint {
         self.previous.value_fingerprint_for_index(prev_index)
+    }
+
+    /// The number of incremental sessions in this graph's lineage, from
+    /// [`SerializedDepGraph::session_count`]. Advances by one per successful
+    /// session; a failed session does not commit a graph, so a re-run sees
+    /// the same count.
+    #[inline]
+    pub fn session_count(&self) -> u64 {
+        self.previous.session_count()
     }
 
     #[inline]
@@ -770,7 +779,7 @@ impl DepGraphData {
                     tcx.dcx().emit_diagnostic(diagnostic.clone());
                 }
                 QuerySideEffect::CheckFeature { symbol } => {
-                    tcx.sess.used_features.lock().insert(*symbol, dep_node_index.as_u32());
+                    tcx.query_system.used_features.lock().insert(*symbol, dep_node_index);
                 }
             }
 
@@ -1221,8 +1230,7 @@ impl CurrentDepGraph {
         CurrentDepGraph {
             encoder: GraphEncoder::new(session, encoder, prev_index_space_len, previous),
             anon_node_to_index: ShardedHashMap::with_capacity(
-                // FIXME: The count estimate is off as anon nodes are only a portion of the nodes.
-                new_node_count_estimate / sharded::shards(),
+                3 * new_node_count_estimate / 100, // Reserve capacity for 3% anon nodes
             ),
             anon_id_seed,
             #[cfg(debug_assertions)]

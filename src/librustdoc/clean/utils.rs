@@ -117,18 +117,22 @@ pub(crate) fn clean_middle_generic_args<'tcx>(
     };
 
     let mut elision_has_failed_once_before = false;
+
+    // Calculates where the parent trait's generic parameters end
+    let index_offset = generics.count() - args.len();
     let clean_arg = |(index, &arg): (usize, &ty::GenericArg<'tcx>)| {
         // Elide the self type.
         if has_self && index == 0 {
             return None;
         }
 
-        let param = generics.param_at(index, cx.tcx);
+        // Skips over the parent trait's generic parameters
+        let param = generics.param_at(index + index_offset, cx.tcx);
         let arg = ty::Binder::bind_with_vars(arg, bound_vars);
 
         // Elide arguments that coincide with their default.
         if !elision_has_failed_once_before && let Some(default) = param.default_value(cx.tcx) {
-            let default = default.instantiate(cx.tcx, args.as_ref()).skip_norm_wip();
+            let default = default.instantiate(cx.tcx, args.as_ref()).skip_normalization();
             if can_elide_generic_arg(arg, arg.rebind(default)) {
                 return None;
             }
@@ -309,7 +313,7 @@ pub(crate) fn name_from_pat(p: &hir::Pat<'_>) -> Symbol {
             return kw::Underscore;
         }
         PatKind::Binding(_, _, ident, _) => return ident.name,
-        PatKind::Box(p) | PatKind::Ref(p, _, _) | PatKind::Guard(p, _) => return name_from_pat(p),
+        PatKind::Ref(p, _, _) | PatKind::Guard(p, _) => return name_from_pat(p),
         PatKind::TupleStruct(p, ..) | PatKind::Expr(PatExpr { kind: PatExprKind::Path(p), .. }) => {
             qpath_to_string(p)
         }
@@ -354,7 +358,8 @@ pub(crate) fn print_const(tcx: TyCtxt<'_>, n: ty::Const<'_>) -> String {
         ty::ConstKind::Alias(_, ty::AliasConst { kind, .. }) => {
             let def_id: DefId = match kind {
                 ty::AliasConstKind::Projection { def_id } => def_id.into(),
-                ty::AliasConstKind::Inherent { def_id } => def_id.into(),
+                ty::AliasConstKind::InherentSelf { def_id } => def_id.into(),
+                ty::AliasConstKind::InherentImpl { def_id } => def_id.into(),
                 ty::AliasConstKind::Free { def_id } => def_id.into(),
                 ty::AliasConstKind::Anon { def_id } => def_id.into(),
             };

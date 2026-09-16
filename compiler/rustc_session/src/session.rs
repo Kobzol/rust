@@ -1,23 +1,22 @@
 use std::any::Any;
+use std::path::Component::Prefix;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::{env, io};
 
+use rustc_data_structures::flock;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use rustc_data_structures::profiling::{SelfProfiler, SelfProfilerRef};
-use rustc_data_structures::sync::{
-    AppendOnlyVec, DynSend, DynSync, Lock, MappedReadGuard, ReadGuard, RwLock,
-};
-use rustc_data_structures::{Limit, flock};
+use rustc_data_structures::sync::{AppendOnlyVec, DynSend, DynSync, Lock};
 use rustc_errors::annotate_snippet_emitter_writer::AnnotateSnippetEmitter;
 use rustc_errors::codes::*;
 use rustc_errors::emitter::{DynEmitter, HumanReadableErrorType, OutputTheme, stderr_destination};
 use rustc_errors::json::JsonEmitter;
 use rustc_errors::timings::TimingSectionHandler;
 use rustc_errors::{
-    Diag, DiagCtxt, DiagCtxtHandle, DiagMessage, Diagnostic, ErrorGuaranteed, FatalAbort,
+    Diag, DiagCtxt, DiagCtxtHandle, DiagMessage, Diagnostic, ErrorGuaranteed, FatalAbort, PResult,
     TerminalUrl,
 };
 use rustc_feature::UnstableFeatures;
@@ -26,6 +25,7 @@ pub use rustc_span::def_id::StableCrateId;
 use rustc_span::edition::Edition;
 use rustc_span::source_map::{FilePathMapping, SourceMap};
 use rustc_span::{RealFileName, Span, Symbol};
+use rustc_structures::{CrateType, Limit};
 use rustc_target::asm::InlineAsmArch;
 use rustc_target::spec::{
     Arch, CfgAbi, CodeModel, DebuginfoKind, Os, PanicStrategy, RelocModel, RelroLevel,
@@ -36,9 +36,9 @@ use rustc_target::spec::{
 use crate::code_stats::CodeStats;
 pub use crate::code_stats::{DataTypeKind, FieldInfo, FieldKind, SizeKind, VariantInfo};
 use crate::config::{
-    self, BranchProtection, Cfg, CheckCfg, CoverageLevel, CoverageOptions, CrateType, DebugInfo,
+    self, BranchProtection, Cfg, CheckCfg, CoverageLevel, CoverageOptions, DebugInfo,
     ErrorOutputType, FunctionReturn, Input, InstrumentCoverage, InstrumentMcount, NATIVE_CPU,
-    OptLevel, OutFileName, OutputType, PAuthKey, PointerAuthOption, SwitchWithOptPath,
+    OutFileName, OutputType, PAuthKey, PointerAuthOption, SwitchWithOptPath,
 };
 use crate::filesearch::FileSearch;
 use crate::lint::LintId;
@@ -328,8 +328,10 @@ impl PointerAuthConfig {
 pub struct Session {
     pub target: Target,
     pub host: Target,
+    pub wasm_proc_macro_tuple: TargetTuple,
+    pub wasm_proc_macro_target: Target,
     pub opts: config::Options,
-    pub target_tlib_path: Arc<SearchPath>,
+    pub target_tlib_path: SearchPath,
     pub psess: ParseSess,
     pub unstable_features: UnstableFeatures,
     pub config: Cfg,
@@ -340,8 +342,6 @@ pub struct Session {
 
     /// Input, input file path and output file path to this compilation process.
     pub io: CompilerIO,
-
-    incr_comp_session: RwLock<IncrCompSession>,
 
     /// Used by `-Z self-profile`.
     pub prof: SelfProfilerRef,
@@ -375,11 +375,11 @@ pub struct Session {
     /// Architecture to use for interpreting asm!.
     pub asm_arch: Option<InlineAsmArch>,
 
-    /// Set of enabled features for the current target.
-    pub target_features: FxIndexSet<Symbol>,
-
-    /// Set of enabled features for the current target, including unstable ones.
-    pub unstable_target_features: FxIndexSet<Symbol>,
+    /// Set of actually enabled features for the current target, including ones that are not
+    /// in `cfg(target_feature)` because they are unstable or internal-only.
+    /// This is used by the compiler itself when it needs to know which target features are actually
+    /// going to be enabled in the backend.
+    pub internal_target_features: FxIndexSet<Symbol>,
 
     /// The version of the rustc process, possibly including a commit hash and description.
     pub cfg_version: &'static str,
@@ -396,8 +396,9 @@ pub struct Session {
     /// File paths accessed during the build.
     pub file_depinfo: Lock<FxIndexSet<Symbol>>,
 
-    target_filesearch: FileSearch,
-    host_filesearch: FileSearch,
+    target_filesearch: Arc<FileSearch>,
+    host_filesearch: Arc<FileSearch>,
+    wasm_proc_macro_filesearch: Option<Arc<FileSearch>>,
 
     /// The names of intrinsics that the current codegen backend replaces
     /// with its own implementations.
@@ -415,17 +416,15 @@ pub struct Session {
     /// optimization-pass execution candidate during this compilation.
     pub mir_opt_bisect_eval_count: AtomicUsize,
 
-    /// Enabled features that are used in the current compilation.
-    ///
-    /// The value is the `DepNodeIndex` of the node encodes the used feature.
-    pub used_features: Lock<FxHashMap<Symbol, u32>>,
-
     /// Whether the test harness removed a user-written `#[rustc_main]` attribute
     /// while generating the synthetic test entry point.
     pub removed_rustc_main_attr: AtomicBool,
 
     /// Config specifying targets' pointer authentication preference.
     pub pointer_auth_config: Option<PointerAuthConfig>,
+
+    /// Cached sanitizer set.
+    sanitizers: SanitizerSet,
 }
 
 #[derive(Clone, Copy)]
@@ -609,6 +608,14 @@ impl Session {
         self.opts.unstable_opts.sanitizer_cfi_normalize_integers == Some(true)
     }
 
+    pub fn is_sanitizer_cfi_recover_enabled(&self) -> bool {
+        self.opts.unstable_opts.sanitizer_cfi_recover == Some(true)
+    }
+
+    pub fn is_sanitizer_cfi_diag_enabled(&self) -> bool {
+        self.opts.unstable_opts.sanitizer_cfi_diag == Some(true)
+    }
+
     pub fn is_sanitizer_kcfi_arity_enabled(&self) -> bool {
         self.opts.unstable_opts.sanitizer_kcfi_arity == Some(true)
     }
@@ -667,6 +674,9 @@ impl Session {
     pub fn host_filesearch(&self) -> &filesearch::FileSearch {
         &self.host_filesearch
     }
+    pub fn wasm_proc_macro_filesearch(&self) -> &filesearch::FileSearch {
+        self.wasm_proc_macro_filesearch.as_ref().expect("wasm_filesearch not set")
+    }
 
     /// Returns a list of directories where target-specific tool binaries are located. Some fallback
     /// directories are also returned, for example if `--sysroot` is used but tools are missing
@@ -686,45 +696,6 @@ impl Session {
         } else {
             search_paths.collect()
         }
-    }
-
-    pub fn init_incr_comp_session(&self, session_dir: PathBuf, lock_file: flock::Lock) {
-        let mut incr_comp_session = self.incr_comp_session.borrow_mut();
-
-        if let IncrCompSession::NotInitialized = *incr_comp_session {
-        } else {
-            panic!("Trying to initialize IncrCompSession `{:?}`", *incr_comp_session)
-        }
-
-        *incr_comp_session =
-            IncrCompSession::Active { session_directory: session_dir, _lock_file: lock_file };
-    }
-
-    pub fn finalize_incr_comp_session(&self) {
-        let mut incr_comp_session = self.incr_comp_session.borrow_mut();
-
-        if let IncrCompSession::Active { .. } = *incr_comp_session {
-        } else {
-            panic!("trying to finalize `IncrCompSession` `{:?}`", *incr_comp_session);
-        }
-
-        // Note: this will also drop the lock file, thus unlocking the directory.
-        *incr_comp_session = IncrCompSession::FinalizedOrRemoved;
-    }
-
-    pub fn incr_comp_session_dir(&self) -> MappedReadGuard<'_, PathBuf> {
-        let incr_comp_session = self.incr_comp_session.borrow();
-        ReadGuard::map(incr_comp_session, |incr_comp_session| match incr_comp_session {
-            IncrCompSession::NotInitialized | IncrCompSession::FinalizedOrRemoved => panic!(
-                "trying to get session directory from `IncrCompSession`: {:?}",
-                incr_comp_session,
-            ),
-            IncrCompSession::Active { session_directory, .. } => session_directory,
-        })
-    }
-
-    pub fn incr_comp_session_dir_opt(&self) -> Option<MappedReadGuard<'_, PathBuf>> {
-        self.opts.incremental.as_ref().map(|_| self.incr_comp_session_dir())
     }
 
     /// Is this edition 2015?
@@ -815,6 +786,41 @@ impl Session {
             None => Box::new(std::iter::empty()),
         }
     }
+
+    /// Resolves a `path` mentioned inside Rust code, returning an absolute path.
+    ///
+    /// This unifies the logic used for resolving `include_*!` and debugger visualizers.
+    pub fn resolve_path(&self, path: impl Into<PathBuf>, span: Span) -> PResult<'_, PathBuf> {
+        let path = path.into();
+
+        // Relative paths are resolved relative to the file in which they are found
+        // after macro expansion (that is, they are unhygienic).
+        if !path.is_absolute() {
+            let callsite = span.source_callsite();
+            let source_map = self.source_map();
+            let Some(mut base_path) = source_map.span_to_filename(callsite).into_local_path()
+            else {
+                return Err(self.dcx().create_err(diagnostics::ResolveRelativePath {
+                    span,
+                    path: source_map
+                        .filename_for_diagnostics(&source_map.span_to_filename(callsite))
+                        .to_string(),
+                }));
+            };
+            base_path.pop();
+            base_path.push(path);
+            Ok(base_path)
+        } else {
+            // This ensures that Windows verbatim paths are fixed if mixed path separators are used,
+            // which can happen when `concat!` is used to join paths.
+            match path.components().next() {
+                Some(Prefix(prefix)) if prefix.kind().is_verbatim() => {
+                    Ok(path.components().collect())
+                }
+                _ => Ok(path),
+            }
+        }
+    }
 }
 
 // JUSTIFICATION: defn of the suggested wrapper fns
@@ -841,10 +847,7 @@ impl Session {
     }
 
     pub fn mir_opt_level(&self) -> usize {
-        self.opts
-            .unstable_opts
-            .mir_opt_level
-            .unwrap_or_else(|| if self.opts.optimize != OptLevel::No { 2 } else { 1 })
+        self.opts.unstable_opts.mir_opt_level.unwrap_or_else(|| self.opts.optimize.mir_opt_level())
     }
 
     /// Calculates the flavor of LTO to use for this compilation.
@@ -934,7 +937,7 @@ impl Session {
             let more_names = self.opts.output_types.contains_key(&OutputType::LlvmAssembly)
                 || self.opts.output_types.contains_key(&OutputType::Bitcode)
                 // AddressSanitizer and MemorySanitizer use alloca name when reporting an issue.
-                || self.opts.unstable_opts.sanitizer.intersects(SanitizerSet::ADDRESS | SanitizerSet::MEMORY);
+                || self.sanitizers().intersects(SanitizerSet::ADDRESS | SanitizerSet::MEMORY);
             !more_names
         }
     }
@@ -1060,15 +1063,6 @@ impl Session {
                 .unwrap_or(self.panic_strategy().unwinds() || self.target.default_uwtable)
     }
 
-    /// Returns the number of threads used for the thread pool.
-    ///
-    /// `None` means thread pool is not used and synchronization is disabled.
-    /// `Some(n)` means synchronization is enabled with `n` worker threads.
-    #[inline]
-    pub fn threads(&self) -> Option<usize> {
-        self.opts.unstable_opts.threads
-    }
-
     /// Returns the number of codegen units that should be used for this
     /// compilation
     pub fn codegen_units(&self) -> CodegenUnits {
@@ -1192,7 +1186,7 @@ impl Session {
     }
 
     pub fn sanitizers(&self) -> SanitizerSet {
-        return self.opts.unstable_opts.sanitizer | self.target.options.default_sanitizers;
+        self.sanitizers
     }
 
     pub fn pointer_authentication(&self) -> bool {
@@ -1311,6 +1305,19 @@ pub fn build_session(
         dcx.handle().warn(warning)
     }
 
+    let wasm_proc_macro_tuple = TargetTuple::from_tuple("wasm32-wasip2");
+    let (wasm_proc_macro_target, target_warnings) = Target::search(
+        &wasm_proc_macro_tuple,
+        sopts.sysroot.path(),
+        sopts.unstable_opts.unstable_options,
+    )
+    .unwrap_or_else(|e| {
+        dcx.handle().fatal(format!("Error loading wasm proc-macro target specification: {e}"))
+    });
+    for warning in target_warnings.warning_messages() {
+        dcx.handle().warn(warning)
+    }
+
     let self_profiler = if let SwitchWithOptPath::Enabled(ref d) = sopts.unstable_opts.self_profile
     {
         let directory = if let Some(directory) = d { directory } else { std::path::Path::new(".") };
@@ -1337,15 +1344,10 @@ pub fn build_session(
     let host_triple = config::host_tuple();
     let target_triple = sopts.target_triple.tuple();
     // FIXME use host sysroot?
-    let host_tlib_path =
-        Arc::new(SearchPath::from_sysroot_and_triple(sopts.sysroot.path(), host_triple));
-    let target_tlib_path = if host_triple == target_triple {
-        // Use the same `SearchPath` if host and target triple are identical to avoid unnecessary
-        // rescanning of the target lib path and an unnecessary allocation.
-        Arc::clone(&host_tlib_path)
-    } else {
-        Arc::new(SearchPath::from_sysroot_and_triple(sopts.sysroot.path(), target_triple))
-    };
+    let host_tlib_path = SearchPath::from_sysroot_and_triple(sopts.sysroot.path(), host_triple);
+    let target_tlib_path = SearchPath::from_sysroot_and_triple(sopts.sysroot.path(), target_triple);
+    let wasm_proc_macro_tlib_path =
+        SearchPath::from_sysroot_and_triple(sopts.sysroot.path(), wasm_proc_macro_tuple.tuple());
 
     let prof = SelfProfilerRef::new(
         self_profiler,
@@ -1359,27 +1361,46 @@ pub fn build_session(
     });
 
     let asm_arch = if target.allow_asm { InlineAsmArch::from_arch(&target.arch) } else { None };
-    let target_filesearch = filesearch::FileSearch::new(
+    let target_filesearch = Arc::new(filesearch::FileSearch::new(
         &sopts.search_paths,
         &target_tlib_path,
         &target,
         sopts.unstable_opts.implicit_sysroot_deps,
-    );
-    let host_filesearch = filesearch::FileSearch::new(
-        &sopts.search_paths,
-        &host_tlib_path,
-        &host,
-        sopts.unstable_opts.implicit_sysroot_deps,
-    );
+    ));
+    let host_filesearch = if target == host {
+        Arc::clone(&target_filesearch)
+    } else {
+        Arc::new(filesearch::FileSearch::new(
+            &sopts.search_paths,
+            &host_tlib_path,
+            &host,
+            sopts.unstable_opts.implicit_sysroot_deps,
+        ))
+    };
+    let wasm_proc_macro_filesearch = if sopts.unstable_opts.wasm_proc_macros {
+        Some(Arc::new(FileSearch::new(
+            &sopts.search_paths,
+            &wasm_proc_macro_tlib_path,
+            &wasm_proc_macro_target,
+            sopts.unstable_opts.implicit_sysroot_deps,
+        )))
+    } else {
+        None
+    };
 
     let timings = TimingSectionHandler::new(sopts.json_timings);
 
     let pointer_auth_config: Option<PointerAuthConfig> =
         PointerAuthConfig::from_raw(&sopts.unstable_opts.pointer_authentication, &target);
 
+    let sanitizers =
+        sopts.unstable_opts.sanitizer.combine_with_defaults(target.options.default_sanitizers);
+
     let sess = Session {
         target,
         host,
+        wasm_proc_macro_tuple,
+        wasm_proc_macro_target,
         opts: sopts,
         target_tlib_path,
         psess,
@@ -1388,7 +1409,6 @@ pub fn build_session(
         check_config: CheckCfg::default(),
         proc_macro_quoted_spans: Default::default(),
         io,
-        incr_comp_session: RwLock::new(IncrCompSession::NotInitialized),
         prof,
         timings,
         code_stats: Default::default(),
@@ -1397,21 +1417,21 @@ pub fn build_session(
         ctfe_backtrace,
         miri_unleashed_features: Lock::new(Default::default()),
         asm_arch,
-        target_features: Default::default(),
-        unstable_target_features: Default::default(),
+        internal_target_features: Default::default(),
         cfg_version,
         using_internal_features,
         env_depinfo: Default::default(),
         file_depinfo: Default::default(),
         target_filesearch,
         host_filesearch,
+        wasm_proc_macro_filesearch,
         replaced_intrinsics: FxHashSet::default(), // filled by `run_compiler`
         fallback_intrinsics: FxHashSet::default(), // filled by `run_compiler`
         thin_lto_supported: true,                  // filled by `run_compiler`
         mir_opt_bisect_eval_count: AtomicUsize::new(0),
-        used_features: Lock::default(),
         removed_rustc_main_attr: AtomicBool::new(false),
         pointer_auth_config,
+        sanitizers,
     };
 
     validate_commandline_args_with_session_available(&sess);
@@ -1474,7 +1494,7 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
     }
 
     // Do the same for sample profile data.
-    if let Some(ref path) = sess.opts.unstable_opts.profile_sample_use {
+    if let Some(ref path) = sess.opts.cg.profile_sample_use {
         if !path.exists() {
             sess.dcx().emit_err(diagnostics::ProfileSampleUseFileDoesNotExist { path });
         }
@@ -1489,7 +1509,7 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
 
     // Sanitizers can only be used on platforms that we know have working sanitizer codegen.
     let supported_sanitizers = sess.target.options.supported_sanitizers;
-    let mut unsupported_sanitizers = sess.opts.unstable_opts.sanitizer - supported_sanitizers;
+    let mut unsupported_sanitizers = sess.sanitizers() - supported_sanitizers;
     // Niche: if `fixed-x18`, or effectively switching on `reserved-x18` flag, is enabled
     // we should allow Shadow Call Stack sanitizer.
     if sess.opts.unstable_opts.fixed_x18 && sess.target.arch == Arch::AArch64 {
@@ -1510,7 +1530,7 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
     }
 
     // Cannot mix and match mutually-exclusive sanitizers.
-    if let Some((first, second)) = sess.opts.unstable_opts.sanitizer.mutually_exclusive() {
+    if let Some((first, second)) = sess.sanitizers().mutually_exclusive() {
         sess.dcx().emit_err(diagnostics::CannotMixAndMatchSanitizers {
             first: first.to_string(),
             second: second.to_string(),
@@ -1518,10 +1538,7 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
     }
 
     // Cannot enable crt-static with sanitizers on Linux
-    if sess.crt_static(None)
-        && !sess.opts.unstable_opts.sanitizer.is_empty()
-        && !sess.target.is_like_msvc
-    {
+    if sess.crt_static(None) && !sess.sanitizers().is_empty() && !sess.target.is_like_msvc {
         sess.dcx().emit_err(diagnostics::CannotEnableCrtStaticLinux);
     }
 
@@ -1568,6 +1585,20 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
     if sess.is_sanitizer_cfi_generalize_pointers_enabled() {
         if !(sess.is_sanitizer_cfi_enabled() || sess.is_sanitizer_kcfi_enabled()) {
             sess.dcx().emit_err(diagnostics::SanitizerCfiGeneralizePointersRequiresCfi);
+        }
+    }
+
+    // LLVM CFI recovery requires CFI.
+    if sess.is_sanitizer_cfi_recover_enabled() {
+        if !sess.is_sanitizer_cfi_enabled() {
+            sess.dcx().emit_err(diagnostics::SanitizerCfiRecoverRequiresCfi);
+        }
+    }
+
+    // LLVM CFI diagnostics requires CFI.
+    if sess.is_sanitizer_cfi_diag_enabled() {
+        if !sess.is_sanitizer_cfi_enabled() {
+            sess.dcx().emit_err(diagnostics::SanitizerCfiDiagRequiresCfi);
         }
     }
 
@@ -1645,10 +1676,15 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         }
     }
 
-    if sess.opts.unstable_opts.instrument_mcount == InstrumentMcount::Fentry
-        && !sess.target.options.supports_fentry
-    {
-        sess.dcx().emit_err(diagnostics::InstrumentationNotSupported { us: "fentry".to_string() });
+    if let InstrumentMcount::Fentry(opts) = sess.opts.unstable_opts.instrument_mcount {
+        if !sess.target.options.supports_fentry {
+            sess.dcx()
+                .emit_err(diagnostics::InstrumentationNotSupported { us: "fentry".to_string() });
+        }
+        if (opts.no_call || opts.record) && sess.target.arch != Arch::S390x {
+            sess.dcx()
+                .emit_err(diagnostics::InstrumentationNotSupported { us: "fentry-*".to_string() });
+        }
     }
 
     if sess.opts.unstable_opts.instrument_xray.is_some() && !sess.target.options.supports_xray {
@@ -1722,20 +1758,15 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
 }
 
 /// Holds data on the current incremental compilation session, if there is one.
-#[derive(Debug)]
-enum IncrCompSession {
-    /// This is the state the session will be in until the incr. comp. dir is
-    /// needed.
-    NotInitialized,
-    /// This is the state during which the session directory is private and can
-    /// be modified. `_lock_file` is never directly used, but its presence
+pub struct IncrCompSession {
+    /// The directory containing all cached data. Cached data from a previous
+    /// session can be read out of it and new data for the current session will
+    /// be written into it.
+    pub session_directory: PathBuf,
+    /// `_lock_file` is never directly used, but its presence
     /// alone has an effect, because the file will unlock when the session is
     /// dropped.
-    Active { session_directory: PathBuf, _lock_file: flock::Lock },
-    /// This is the state after the session directory has been finalized or
-    /// removed after errors. In this state, the contents of the directory must
-    /// not be modified any more.
-    FinalizedOrRemoved,
+    pub _lock_file: flock::Lock,
 }
 
 /// A wrapper around an [`DiagCtxt`] that is used for early error emissions.
@@ -1756,14 +1787,6 @@ impl EarlyDiagCtxt {
 
         let emitter = mk_emitter(output);
         self.dcx = DiagCtxt::new(emitter);
-    }
-
-    pub fn early_note(&self, msg: impl Into<DiagMessage>) {
-        self.dcx.handle().note(msg)
-    }
-
-    pub fn early_help(&self, msg: impl Into<DiagMessage>) {
-        self.dcx.handle().struct_help(msg).emit()
     }
 
     #[must_use = "raise_fatal must be called on the returned ErrorGuaranteed in order to exit with a non-zero status code"]

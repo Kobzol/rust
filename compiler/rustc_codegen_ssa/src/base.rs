@@ -13,9 +13,9 @@ use rustc_data_structures::fx::{FxHashMap, FxIndexMap, FxIndexSet};
 use rustc_data_structures::profiling::{get_resident_set_size, print_time_passes_entry};
 use rustc_data_structures::sync::{IntoDynSyncSend, par_map};
 use rustc_data_structures::unord::UnordMap;
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::attrs::{DebuggerVisualizerType, EiiDecl, EiiImpl, OptimizeAttr};
 use rustc_hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
-use rustc_hir::lang_items::LangItem;
 use rustc_hir::{ItemId, Target, find_attr};
 use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs;
 use rustc_middle::middle::debugger_visualizer::DebuggerVisualizerFile;
@@ -28,10 +28,10 @@ use rustc_middle::mono::{CodegenUnit, CodegenUnitNameBuilder, MonoItem, MonoItem
 use rustc_middle::query::Providers;
 use rustc_middle::ty::layout::{HasTyCtxt, HasTypingEnv, LayoutOf, TyAndLayout};
 use rustc_middle::ty::{self, Instance, PatternKind, Ty, TyCtxt, UintTy, Unnormalized};
-use rustc_middle::{bug, span_bug};
 use rustc_session::Session;
-use rustc_session::config::{self, CrateType, EntryFnType};
-use rustc_span::{DUMMY_SP, Symbol};
+use rustc_session::config::{self, EntryFnType};
+use rustc_span::{DUMMY_SP, Symbol, bug, span_bug};
+use rustc_structures::CrateType;
 use rustc_symbol_mangling::mangle_internal_symbol;
 use rustc_target::spec::{Arch, Os};
 use rustc_trait_selection::infer::{BoundRegionConversionTime, TyCtxtInferExt};
@@ -41,7 +41,7 @@ use tracing::{debug, info};
 use crate::assert_module_sources::CguReuse;
 use crate::back::link::are_upstream_rust_objects_already_included;
 use crate::back::write::{
-    ComputedLtoType, OngoingCodegen, compute_per_cgu_lto_type, start_async_codegen,
+    ComputedLtoType, ModuleConfig, OngoingCodegen, compute_per_cgu_lto_type, start_async_codegen,
     submit_codegened_module_to_llvm, submit_post_lto_module_to_llvm, submit_pre_lto_module_to_llvm,
 };
 use crate::common::{self, IntPredicate, RealPredicate, TypeKind};
@@ -51,7 +51,7 @@ use crate::mir::place::PlaceRef;
 use crate::traits::*;
 use crate::{
     CachedModuleCodegen, CodegenLintLevelSpecs, CrateInfo, EiiLinkageImplInfo, EiiLinkageInfo,
-    ModuleCodegen, diagnostics, meth, mir,
+    ModuleCodegen, ModuleKind, diagnostics, meth, mir,
 };
 
 pub(crate) fn bin_op_to_icmp_predicate(op: BinOp, signed: bool) -> IntPredicate {
@@ -143,7 +143,7 @@ pub fn validate_trivial_unsize<'tcx>(
                 ) else {
                     return false;
                 };
-                if !ocx.evaluate_obligations_error_on_ambiguity().is_empty() {
+                if !ocx.evaluate_obligations_error_on_ambiguity().no_errors() {
                     return false;
                 }
                 infcx.leak_check(universe, None).is_ok()
@@ -489,7 +489,7 @@ where
             })
             .collect();
 
-        cx.codegen_global_asm(asm.template, &operands, asm.options, asm.line_spans);
+        cx.codegen_global_asm(asm.template, &operands, asm.options, asm.line_spans, &[]);
     } else {
         span_bug!(item.span, "Mismatch between hir::Item type and MonoItem type")
     }
@@ -592,7 +592,8 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
             )
         };
 
-        let result = bx.call(start_ty, None, None, start_fn, &args, None, instance);
+        let result =
+            bx.call(start_ty, None, None, start_fn, ReturnSlot::Direct, &args, None, instance);
         if cx.sess().target.os == Os::Uefi {
             bx.ret(result);
         } else {
@@ -761,7 +762,18 @@ pub fn codegen_crate<
         None
     };
 
-    let ongoing_codegen = start_async_codegen(backend.clone(), tcx, allocator_module);
+    let no_builtins = find_attr!(tcx, crate, NoBuiltins);
+    let regular_module_config = ModuleConfig::new(ModuleKind::Regular, tcx, no_builtins);
+    let bitcode_needed = regular_module_config.bitcode_needed();
+    let allocator_module_config = ModuleConfig::new(ModuleKind::Allocator, tcx, no_builtins);
+
+    let ongoing_codegen = start_async_codegen(
+        backend.clone(),
+        tcx,
+        Arc::new(regular_module_config),
+        Arc::new(allocator_module_config),
+        allocator_module,
+    );
 
     // For better throughput during parallel processing by LLVM, we used to sort
     // CGUs largest to smallest. This would lead to better thread utilization
@@ -807,21 +819,22 @@ pub fn codegen_crate<
     // This likely is a temporary measure. Once we don't have to support the
     // non-parallel compiler anymore, we can compile CGUs end-to-end in
     // parallel and get rid of the complicated scheduling logic.
-    let mut pre_compiled_cgus = if let Some(threads) = tcx.sess.threads() {
+    let mut pre_compiled_cgus = if let Some(threads) = tcx.sess.opts.jobs.frontend {
         tcx.sess.time("compile_first_CGU_batch", || {
             // Try to find one CGU to compile per thread.
             let cgus: Vec<_> = cgu_reuse
                 .iter()
                 .enumerate()
                 .filter(|&(_, reuse)| reuse == &CguReuse::No)
-                .take(threads)
+                .take(threads.get())
                 .collect();
 
             // Compile the found CGUs in parallel.
             let start_time = Instant::now();
 
             let pre_compiled_cgus = par_map(cgus, |(i, _)| {
-                let module = backend.compile_codegen_unit(tcx, codegen_units[i].name());
+                let module =
+                    backend.compile_codegen_unit(tcx, codegen_units[i].name(), bitcode_needed);
                 (i, IntoDynSyncSend(module))
             });
 
@@ -845,7 +858,7 @@ pub fn codegen_crate<
                     cgu.0
                 } else {
                     let start_time = Instant::now();
-                    let module = backend.compile_codegen_unit(tcx, cgu.name());
+                    let module = backend.compile_codegen_unit(tcx, cgu.name(), bitcode_needed);
                     total_codegen_time += start_time.elapsed();
                     module
                 };

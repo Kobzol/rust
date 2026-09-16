@@ -1,9 +1,10 @@
 use std::assert_matches;
 
 use rustc_abi::{BackendRepr, FieldsShape, Scalar, Size, TagEncoding, Variants};
+use rustc_middle::ty;
 use rustc_middle::ty::TypeVisitableExt;
 use rustc_middle::ty::layout::{HasTyCtxt, LayoutCx, TyAndLayout};
-use rustc_middle::{bug, ty};
+use rustc_span::bug;
 
 /// Enforce some basic invariants on layouts.
 pub(super) fn layout_sanity_check<'tcx>(cx: &LayoutCx<'tcx>, layout: &TyAndLayout<'tcx>) {
@@ -276,7 +277,7 @@ pub(super) fn layout_sanity_check<'tcx>(cx: &LayoutCx<'tcx>, layout: &TyAndLayou
                 // Currently, vectors must always be aligned to at least their elements:
                 assert!(align >= element_align);
                 // And the size has to be element * count plus alignment padding, of course
-                assert!(size == (element_size * count).align_to(align));
+                assert!(size == (element_size * count.as_u64()).align_to(align));
             }
             BackendRepr::Memory { .. } | BackendRepr::SimdScalableVector { .. } => {} // Nothing to check.
         }

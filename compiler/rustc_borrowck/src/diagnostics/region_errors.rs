@@ -8,17 +8,15 @@ use rustc_hir::QPath::Resolved;
 use rustc_hir::WherePredicateKind::BoundPredicate;
 use rustc_hir::def::Res::Def;
 use rustc_hir::def_id::DefId;
-use rustc_hir::intravisit::VisitorExt;
+use rustc_hir::intravisit::Visitor;
 use rustc_hir::{PolyTraitRef, TyKind, WhereBoundPredicate};
 use rustc_infer::infer::{NllRegionVariableOrigin, SubregionOrigin};
-use rustc_middle::bug;
 use rustc_middle::hir::place::PlaceBase;
 use rustc_middle::mir::{AnnotationSource, ConstraintCategory, ReturnConstraint};
 use rustc_middle::ty::{
-    self, GenericArgs, Region, RegionUtilitiesExt, RegionVid, Ty, TyCtxt, TypeFoldable,
-    TypeVisitor, fold_regions,
+    self, GenericArgs, Region, RegionVid, Ty, TyCtxt, TypeFoldable, TypeVisitor, fold_regions,
 };
-use rustc_span::{Ident, Span, kw};
+use rustc_span::{Ident, Span, bug, kw};
 use rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use rustc_trait_selection::error_reporting::infer::nice_region_error::{
     self, HirTraitObjectVisitor, NiceRegionError, TraitObjectVisitor, find_anon_type,
@@ -478,14 +476,9 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         let errci = ErrorConstraintInfo { fr, outlived_fr, category, span };
 
         let mut diag = match (category, fr_is_local, outlived_fr_is_local) {
-            (ConstraintCategory::SolverRegionConstraint(span), _, _) => {
-                let mut d = self.dcx().struct_span_err(
-                    span,
-                    "unsatisfied lifetime constraint from -Zassumptions-on-binders :3",
-                );
-                d.note("meoow :c");
-                d
-            }
+            (ConstraintCategory::SolverRegionConstraint(span), _, _) => self
+                .dcx()
+                .struct_span_err(span, "higher-ranked lifetime bound could not be satisfied"),
             (ConstraintCategory::Return(kind), true, false)
                 if self.regioncx.is_closure_fn_mut(fr) =>
             {
@@ -960,7 +953,7 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
             tcx,
             self.infcx.typing_env(self.infcx.param_env),
             fn_did,
-            self.infcx.resolve_vars_if_possible(args.no_bound_vars().unwrap()),
+            self.infcx.deeply_resolve_ignoring_regions(args.no_bound_vars().unwrap()),
         ) else {
             return;
         };
@@ -1181,7 +1174,7 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
             )
         }));
 
-        if ocx.evaluate_obligations_error_on_ambiguity().is_empty() && count > 0 {
+        if ocx.evaluate_obligations_error_on_ambiguity().no_errors() && count > 0 {
             diag.span_suggestion_verbose(
                 tcx.hir_body(*body).value.peel_blocks().span.shrink_to_lo(),
                 msg!("dereference the return value"),

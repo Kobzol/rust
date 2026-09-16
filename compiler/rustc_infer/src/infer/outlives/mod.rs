@@ -5,7 +5,6 @@ use std::iter;
 use rustc_data_structures::undo_log::UndoLogs;
 use rustc_middle::traits::query::OutlivesBound;
 use rustc_middle::ty;
-use rustc_span::Span;
 use tracing::instrument;
 
 use self::env::OutlivesEnvironment;
@@ -20,7 +19,7 @@ pub mod obligations;
 pub mod test_type_match;
 pub(crate) mod verify;
 
-#[instrument(level = "debug", skip(param_env), ret)]
+#[instrument(level = "debug", skip(param_env))]
 pub fn explicit_outlives_bounds<'tcx>(
     param_env: ty::ParamEnv<'tcx>,
 ) -> impl Iterator<Item = OutlivesBound<'tcx>> {
@@ -29,14 +28,14 @@ pub fn explicit_outlives_bounds<'tcx>(
         .into_iter()
         .filter_map(ty::Clause::as_region_outlives_clause)
         .filter_map(ty::Binder::no_bound_vars)
-        .map(|ty::OutlivesPredicate(r_a, r_b)| OutlivesBound::RegionSubRegion(r_b, r_a))
+        .map(|ty::OutlivesClause(r_a, r_b)| OutlivesBound::RegionSubRegion(r_b, r_a))
 }
 
 impl<'tcx> InferCtxt<'tcx> {
     /// Process the region constraints and return any errors that
     /// result. After this, no more unification operations should be
     /// done -- or the compiler will panic -- but it is legal to use
-    /// `resolve_vars_if_possible` as well as `fully_resolve`.
+    /// `deeply_resolve_ignoring_regions` as well as `fully_resolve`.
     ///
     /// Don't call this directly unless you know what you're doing.
     /// You probably want to use `resolve_regions` instead.
@@ -44,9 +43,8 @@ impl<'tcx> InferCtxt<'tcx> {
     pub fn resolve_regions_with_outlives_env(
         &self,
         outlives_env: &OutlivesEnvironment<'tcx>,
-        span: Span,
     ) -> Vec<RegionResolutionError<'tcx>> {
-        self.process_registered_region_obligations(outlives_env, span);
+        self.process_registered_region_obligations(outlives_env);
 
         let mut storage = {
             let mut inner = self.inner.borrow_mut();
@@ -75,7 +73,7 @@ impl<'tcx> InferCtxt<'tcx> {
             storage.data.constraints.retain(|(c, _)| match c.kind {
                 ConstraintKind::RegSubReg => !outlives_env
                     .higher_ranked_assumptions()
-                    .contains(&ty::OutlivesPredicate(c.sup.into(), c.sub)),
+                    .contains(&ty::OutlivesClause(c.sup.into(), c.sub)),
 
                 ConstraintKind::VarSubVar
                 | ConstraintKind::RegSubVar

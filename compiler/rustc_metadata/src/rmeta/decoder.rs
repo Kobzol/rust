@@ -8,6 +8,7 @@ use std::{io, mem};
 
 pub(super) use cstore_impl::provide;
 use rustc_ast as ast;
+use rustc_crate_store::{CrateSource, ExternCrate};
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_data_structures::owned_slice::OwnedSlice;
@@ -17,27 +18,26 @@ use rustc_expand::base::{SyntaxExtension, SyntaxExtensionKind};
 use rustc_expand::proc_macro::{AttrProcMacro, BangProcMacro, DeriveProcMacro};
 use rustc_hir::Safety;
 use rustc_hir::attrs::CanonicalSymbols;
+use rustc_hir::attrs::diagnostic_items::DiagnosticItems;
 use rustc_hir::def::Res;
 use rustc_hir::def_id::{CRATE_DEF_INDEX, LOCAL_CRATE};
 use rustc_hir::definitions::{DefPath, DefPathData};
-use rustc_hir::diagnostic_items::DiagnosticItems;
 use rustc_index::Idx;
+use rustc_middle::implement_ty_decoder;
 use rustc_middle::middle::lib_features::LibFeatures;
 use rustc_middle::mir::interpret::{AllocDecodingSession, AllocDecodingState};
-use rustc_middle::ty::Visibility;
 use rustc_middle::ty::codec::TyDecoder;
-use rustc_middle::{bug, implement_ty_decoder};
+use rustc_middle::ty::{RestrictionKind, Visibility};
 use rustc_proc_macro::bridge::client::Client as ProcMacroClient;
 use rustc_serialize::opaque::MemDecoder;
 use rustc_serialize::{Decodable, Decoder};
 use rustc_session::config::TargetModifier;
 use rustc_session::config::mitigation_coverage::DeniedPartialMitigation;
-use rustc_session::cstore::{CrateSource, ExternCrate};
 use rustc_span::def_id::ModId;
 use rustc_span::hygiene::HygieneDecodeContext;
 use rustc_span::{
     BlobDecoder, BytePos, ByteSymbol, DUMMY_SP, Pos, RemapPathScopeComponents, SpanData,
-    SpanDecoder, Symbol, SyntaxContext, kw,
+    SpanDecoder, Symbol, SyntaxContext, bug, kw,
 };
 use tracing::debug;
 
@@ -411,12 +411,12 @@ impl<'a, 'tcx> TyDecoder<'tcx> for MetadataDecodeContext<'a, 'tcx> {
 
         let key = ty::CReaderCacheKey { cnum: Some(self.cdata.cnum), pos: shorthand };
 
-        if let Some(&ty) = tcx.ty_rcache.borrow().get(&key) {
+        if let Some(&ty) = tcx.caches.ty_rcache.borrow().get(&key) {
             return ty;
         }
 
         let ty = or_insert_with(self);
-        tcx.ty_rcache.borrow_mut().insert(key, ty);
+        tcx.caches.ty_rcache.borrow_mut().insert(key, ty);
         ty
     }
 
@@ -1145,6 +1145,7 @@ impl CrateMetadata {
                         did,
                         name: self.item_name(did.index),
                         vis: self.get_visibility(tcx, did.index),
+                        mut_restriction: self.get_mut_restriction(tcx, did.index),
                         safety: self.get_safety(did.index),
                         value: self.get_default_field(tcx, did.index),
                     })
@@ -1205,6 +1206,15 @@ impl CrateMetadata {
             .unwrap_or_else(|| self.missing("visibility", id))
             .decode((self, tcx))
             .map_id(|index| ModId::new_unchecked(self.local_def_id(index)))
+    }
+
+    fn get_mut_restriction(&self, tcx: TyCtxt<'_>, id: DefIndex) -> RestrictionKind {
+        self.root
+            .tables
+            .mut_restriction
+            .get(self, id)
+            .unwrap_or_else(|| self.missing("mut_restriction", id))
+            .decode((self, tcx))
     }
 
     fn get_safety(&self, id: DefIndex) -> Safety {
@@ -1298,6 +1308,18 @@ impl CrateMetadata {
         canonical_symbols
     }
 
+    /// Iterates over the fake_doc_items in the given crate.
+    fn get_fake_doc_items(&self, tcx: TyCtxt<'_>) -> Vec<DefId> {
+        let mut fake_doc_items = Vec::new();
+
+        for def_index in self.root.fake_doc_items.decode((self, tcx)) {
+            let id = self.local_def_id(def_index);
+            fake_doc_items.push(id);
+        }
+
+        fake_doc_items
+    }
+
     fn get_mod_child(&self, tcx: TyCtxt<'_>, id: DefIndex) -> ModChild {
         let ident = self.item_ident(tcx, id);
         let res = Res::Def(self.def_kind(id), self.local_def_id(id));
@@ -1389,9 +1411,7 @@ impl CrateMetadata {
 
     fn get_associated_item(&self, tcx: TyCtxt<'_>, id: DefIndex) -> ty::AssocItem {
         let kind = match self.def_kind(id) {
-            DefKind::AssocConst { is_type_const } => {
-                ty::AssocKind::Const { name: self.item_name(id), is_type_const }
-            }
+            DefKind::AssocConst => ty::AssocKind::Const { name: self.item_name(id) },
             DefKind::AssocFn => ty::AssocKind::Fn {
                 name: self.item_name(id),
                 has_self: self.get_fn_has_self_parameter(tcx, id),

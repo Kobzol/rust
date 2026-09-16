@@ -3,11 +3,10 @@ use std::fmt::Write;
 use rustc_abi::Primitive::{Float, Int, Pointer};
 use rustc_abi::{Align, BackendRepr, FieldsShape, Scalar, Size, Variants};
 use rustc_codegen_ssa::traits::*;
-use rustc_middle::bug;
 use rustc_middle::ty::layout::{LayoutOf, TyAndLayout};
 use rustc_middle::ty::print::{with_no_trimmed_paths, with_no_visible_paths};
 use rustc_middle::ty::{self, CoroutineArgsExt, Ty, TypeVisitableExt};
-use rustc_span::{DUMMY_SP, Span};
+use rustc_span::{DUMMY_SP, Span, bug};
 use tracing::debug;
 
 use crate::common::*;
@@ -22,7 +21,7 @@ fn uncached_llvm_type<'a, 'tcx>(
         BackendRepr::Scalar(_) => bug!("handled elsewhere"),
         BackendRepr::SimdVector { element, count } => {
             let element = layout.scalar_llvm_type_at(cx, element);
-            return cx.type_vector(element, count);
+            return cx.type_vector(element, count.as_u64());
         }
         BackendRepr::SimdScalableVector { ref element, count, number_of_vectors } => {
             let element = if element.is_bool() {
@@ -31,7 +30,7 @@ fn uncached_llvm_type<'a, 'tcx>(
                 layout.scalar_llvm_type_at(cx, *element)
             };
 
-            let vector_type = cx.type_scalable_vector(element, count);
+            let vector_type = cx.type_scalable_vector(element, count.as_u64());
             return match number_of_vectors.0 {
                 1 => vector_type,
                 2 => cx.type_struct(&[vector_type, vector_type], false),

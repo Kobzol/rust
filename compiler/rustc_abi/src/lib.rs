@@ -40,7 +40,7 @@ use std::cmp::min;
 use std::fmt;
 #[cfg(feature = "nightly")]
 use std::iter::Step;
-use std::num::{NonZeroUsize, ParseIntError};
+use std::num::{NonZero, ParseIntError};
 use std::ops::{Add, AddAssign, Deref, Mul, Sub};
 use std::range::RangeInclusive;
 use std::str::FromStr;
@@ -51,7 +51,7 @@ use rustc_data_structures::stable_hash::StableOrd;
 #[cfg(feature = "nightly")]
 use rustc_error_messages::{DiagArgValue, IntoDiagArg};
 #[cfg(feature = "nightly")]
-use rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, EmissionGuarantee, Level, msg};
+use rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level, msg};
 use rustc_hashes::Hash64;
 use rustc_index::{Idx, IndexSlice, IndexVec};
 #[cfg(feature = "nightly")]
@@ -184,6 +184,14 @@ impl ReprOptions {
         self.flags.contains(ReprFlags::IS_C)
     }
 
+    /// Returns whether this is (implicitly or explicitly) `repr(Rust)`, i.e., its layout
+    /// is defined by Rust and we make no stable commitments.
+    #[inline]
+    pub fn rust(&self) -> bool {
+        // `linear` is currently just an internal flag we set on Box; that's still `repr(Rust)`.
+        !self.c() & !self.simd() & !self.scalable() & !self.transparent()
+    }
+
     #[inline]
     pub fn packed(&self) -> bool {
         self.pack.is_some()
@@ -237,6 +245,16 @@ impl ReprOptions {
     pub fn inhibits_union_abi_opt(&self) -> bool {
         self.c()
     }
+
+    /// Ensures two `repr` are equal up to the seed.
+    pub fn equal_up_to_seed(&self, other: &Self) -> bool {
+        let ReprOptions { int, align, pack, flags, scalable, field_shuffle_seed: _ } = *self;
+        int == other.int
+            && align == other.align
+            && pack == other.pack
+            && flags == other.flags
+            && scalable == other.scalable
+    }
 }
 
 /// The maximum supported number of lanes in a SIMD vector.
@@ -244,7 +262,42 @@ impl ReprOptions {
 /// This value is selected based on backend support:
 /// * LLVM does not appear to have a vector width limit.
 /// * Cranelift stores the base-2 log of the lane count in a 4 bit integer.
-pub const MAX_SIMD_LANES: u64 = 1 << 0xF;
+pub const MAX_SIMD_LANES: u16 = 1 << 0xF;
+
+/// The number of lanes in a [`BackendRepr::SimdVector`], `1..=`[`MAX_SIMD_LANES`].
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[cfg_attr(feature = "nightly", derive(Encodable_NoContext, Decodable_NoContext, StableHash))]
+pub struct BackendLaneCount(NonZero<u16>);
+
+impl BackendLaneCount {
+    pub fn new<N>(count: u64) -> Result<Self, LayoutCalculatorError<N>> {
+        let Ok(count @ ..=MAX_SIMD_LANES) = u16::try_from(count) else {
+            return Err(LayoutCalculatorError::OversizedSimdType {
+                max_lanes: crate::MAX_SIMD_LANES.into(),
+            });
+        };
+        if let Some(count) = NonZero::new(count) {
+            Ok(BackendLaneCount(count))
+        } else {
+            Err(LayoutCalculatorError::ZeroLengthSimdType)
+        }
+    }
+
+    #[inline]
+    pub fn is_power_of_two(self) -> bool {
+        self.0.is_power_of_two()
+    }
+
+    #[inline]
+    pub fn as_u64(self) -> u64 {
+        self.0.get().into()
+    }
+
+    #[inline]
+    pub fn as_u32(self) -> u32 {
+        self.0.get().into()
+    }
+}
 
 /// How pointers are represented in a given address space
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -346,7 +399,7 @@ pub enum TargetDataLayoutError<'a> {
 }
 
 #[cfg(feature = "nightly")]
-impl<G: EmissionGuarantee> Diagnostic<'_, G> for TargetDataLayoutError<'_> {
+impl<G> Diagnostic<'_, G> for TargetDataLayoutError<'_> {
     fn into_diag(self, dcx: DiagCtxtHandle<'_>, level: Level) -> Diag<'_, G> {
         match self {
             TargetDataLayoutError::InvalidAddressSpace { addr_space, err, cause } => {
@@ -1006,7 +1059,6 @@ impl Step for Size {
     }
 
     #[inline]
-    #[cfg(not(bootstrap))]
     fn forward_overflowing(start: Self, count: usize) -> (Self, bool) {
         let (s, o) = u64::forward_overflowing(start.bytes(), count);
         (Self::from_bytes(s), o)
@@ -1028,7 +1080,6 @@ impl Step for Size {
     }
 
     #[inline]
-    #[cfg(not(bootstrap))]
     fn backward_overflowing(start: Self, count: usize) -> (Self, bool) {
         let (s, o) = u64::backward_overflowing(start.bytes(), count);
         (Self::from_bytes(s), o)
@@ -1410,6 +1461,31 @@ impl Float {
     }
 }
 
+/// Numeric primitives.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "nightly", derive(StableHash))]
+pub enum Numeric {
+    /// The `bool` is the signedness of the `Integer` type.
+    Int(Integer, bool),
+    Float(Float),
+}
+
+impl Numeric {
+    pub fn size(self) -> Size {
+        match self {
+            Numeric::Int(integer, _) => integer.size(),
+            Numeric::Float(float) => float.size(),
+        }
+    }
+
+    pub fn reg_kind(self) -> RegKind {
+        match self {
+            Numeric::Int(_, _) => RegKind::Integer,
+            Numeric::Float(_) => RegKind::Float,
+        }
+    }
+}
+
 /// Fundamental unit of memory access and layout.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "nightly", derive(StableHash))]
@@ -1611,7 +1687,7 @@ pub enum FieldsShape<FieldIdx: Idx> {
     Primitive,
 
     /// All fields start at no offset. The `usize` is the field count.
-    Union(NonZeroUsize),
+    Union(NonZero<usize>),
 
     /// Array/vector-like placement, with all fields of identical types.
     Array { stride: Size, count: u64 },
@@ -1770,12 +1846,12 @@ pub enum BackendRepr {
     },
     SimdScalableVector {
         element: Scalar,
-        count: u64,
+        count: BackendLaneCount,
         number_of_vectors: NumScalableVectors,
     },
     SimdVector {
         element: Scalar,
-        count: u64,
+        count: BackendLaneCount,
     },
     // FIXME: I sometimes use memory, sometimes use an IR aggregate!
     Memory {
@@ -2136,8 +2212,8 @@ pub struct LayoutData<FieldIdx: Idx, VariantIdx: Idx> {
     pub max_repr_align: Option<Align>,
 
     /// The alignment the type would have, ignoring any `repr(align)` but including `repr(packed)`.
-    /// Only used on aarch64-linux, where the argument passing ABI ignores the requested alignment
-    /// in some cases.
+    /// Only used on aarch64-linux and arm, where the argument passing ABI ignores the requested
+    /// alignment in some cases.
     pub unadjusted_abi_align: Align,
 
     /// The randomization seed based on this type's own repr and its fields.
@@ -2167,6 +2243,17 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     /// Returns `true` if this is an uninhabited type
     pub fn is_uninhabited(&self) -> bool {
         self.uninhabited
+    }
+
+    /// Returns `true` if the given variant is uninhabited.
+    pub fn is_variant_uninhabited(&self, variant: VariantIdx) -> bool {
+        match self.variants {
+            Variants::Empty => true,
+            Variants::Single { index } => variant != index || self.uninhabited,
+            Variants::Multiple { ref variants, .. } => {
+                variants.get(variant).map(|v| v.uninhabited).unwrap_or(true)
+            }
+        }
     }
 }
 
@@ -2260,7 +2347,7 @@ impl<FieldIdx: Idx, VariantIdx: Idx> LayoutData<FieldIdx, VariantIdx> {
     }
 
     /// Returns the elements count of a scalable vector.
-    pub fn scalable_vector_element_count(&self) -> Option<u64> {
+    pub fn scalable_vector_element_count(&self) -> Option<BackendLaneCount> {
         match self.backend_repr {
             BackendRepr::SimdScalableVector { count, .. } => Some(count),
             _ => None,
@@ -2337,7 +2424,7 @@ pub enum AbiFromStrErr {
     NoExplicitUnwind,
 }
 
-// NOTE: This struct is generic over the FieldIdx and VariantIdx for rust-analyzer usage.
+// NOTE: This struct is generic over the FieldIdx for rust-analyzer usage.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 #[cfg_attr(feature = "nightly", derive(StableHash))]
 pub struct VariantLayout<FieldIdx: Idx> {

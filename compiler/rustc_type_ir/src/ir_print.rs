@@ -4,8 +4,8 @@ use std::fmt;
 use crate::{AliasConst, ClosureKind};
 use crate::{
     AliasTerm, AliasTy, Binder, CoercePredicate, ExistentialProjection, ExistentialTraitRef, FnSig,
-    HostEffectPredicate, Interner, NormalizesTo, OutlivesPredicate, PatternKind, Placeholder,
-    ProjectionPredicate, Region, SubtypePredicate, TraitPredicate, TraitRef,
+    HostEffectClause, Interner, NormalizesTo, OutlivesClause, PatternKind, Placeholder,
+    ProjectionClause, Region, SubtypePredicate, TraitClause, TraitRef,
 };
 
 pub trait IrPrint<T> {
@@ -39,14 +39,14 @@ macro_rules! define_debug_via_print {
 
 define_display_via_print!(
     TraitRef,
-    TraitPredicate,
+    TraitClause,
     ExistentialTraitRef,
     ExistentialProjection,
-    ProjectionPredicate,
+    ProjectionClause,
     NormalizesTo,
     SubtypePredicate,
     CoercePredicate,
-    HostEffectPredicate,
+    HostEffectClause,
     AliasTy,
     AliasTerm,
     FnSig,
@@ -64,12 +64,12 @@ where
     }
 }
 
-impl<I: Interner, T> fmt::Display for OutlivesPredicate<I, T>
+impl<I: Interner, T> fmt::Display for OutlivesClause<I, T>
 where
-    I: IrPrint<OutlivesPredicate<I, T>>,
+    I: IrPrint<OutlivesClause<I, T>>,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <I as IrPrint<OutlivesPredicate<I, T>>>::print(self, fmt)
+        <I as IrPrint<OutlivesClause<I, T>>>::print(self, fmt)
     }
 }
 

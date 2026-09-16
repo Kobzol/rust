@@ -6,21 +6,23 @@ use std::sync::Once;
 use std::{ptr, slice, str};
 
 use libc::c_int;
+use rustc_codegen_ssa::back::versioned_llvm_target;
 use rustc_codegen_ssa::base::wants_wasm_eh;
-use rustc_codegen_ssa::target_features::cfg_target_feature;
+use rustc_codegen_ssa::target_features::internal_target_features;
 use rustc_codegen_ssa::{TargetConfig, target_features};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_fs_util::path_to_c_string;
-use rustc_middle::bug;
 use rustc_session::Session;
 use rustc_session::config::{NATIVE_CPU, PrintKind, PrintRequest};
+use rustc_span::bug;
 use rustc_target::spec::{
     Arch, CfgAbi, Env, MergeFunctions, Os, PanicStrategy, SmallDataThresholdSupport,
 };
 use smallvec::{SmallVec, smallvec};
 
-use crate::back::write::create_informational_target_machine;
+use crate::back::owned_mc_subtarget_info::OwnedMCSubtargetInfo;
+use crate::back::write::{create_informational_target_machine, llvm_err};
 use crate::{diagnostics, llvm};
 
 static INIT: Once = Once::new();
@@ -47,6 +49,25 @@ unsafe fn configure_llvm(sess: &Session) {
     let n_args = sess.opts.cg.llvm_args.len() + sess.target.llvm_args.len();
     let mut llvm_c_strs = Vec::with_capacity(n_args + 1);
     let mut llvm_args = Vec::with_capacity(n_args + 1);
+
+    // Check to ensure we're running against the correct LLVM version.
+    unsafe {
+        let (llvm_major, llvm_minor, llvm_patch) = get_version();
+        let expected_version = llvm::LLVMRustVersionMajor();
+        if llvm_major != expected_version {
+            sess.dcx().emit_fatal(diagnostics::LlvmVersionMismatch {
+                expected_version,
+                llvm_major,
+                llvm_minor,
+                llvm_patch,
+                dll_loc: &match rustc_session::filesearch::dll_path(llvm::LLVMGetVersion as *mut _)
+                {
+                    Ok(path) => format!(" at {}", path.display()),
+                    Err(_) => String::new(),
+                },
+            })
+        }
+    }
 
     unsafe {
         llvm::LLVMRustInstallErrorHandlers();
@@ -252,6 +273,12 @@ pub(crate) fn to_llvm_features<'a>(sess: &Session, s: &'a str) -> Option<LLVMFea
             "allows-misaligned-mem-access" if major < 22 => None,
             s => Some(LLVMFeature::new(s)),
         },
+        Arch::Nvptx64 => match s {
+            "sm_101" if major >= 24 => Some(LLVMFeature::new("sm_110")),
+            "sm_101a" if major >= 24 => Some(LLVMFeature::new("sm_110a")),
+            "sm_101f" if major >= 24 => Some(LLVMFeature::new("sm_110f")),
+            s => Some(LLVMFeature::new(s)),
+        },
         // Filter out features that are not supported by the current LLVM version
         Arch::PowerPC | Arch::PowerPC64 => match s {
             "power8-crypto" => Some(LLVMFeature::new("crypto")),
@@ -312,9 +339,16 @@ pub(crate) fn to_llvm_features<'a>(sess: &Session, s: &'a str) -> Option<LLVMFea
 ///
 /// We do not have to worry about RUSTC_SPECIFIC_FEATURES here, those are handled outside codegen.
 pub(crate) fn target_config(sess: &Session) -> TargetConfig {
-    let target_machine = create_informational_target_machine(sess, true);
+    require_inited();
+    let target_features = global_llvm_features(sess, /* for_cfg */ true);
 
-    let (unstable_target_features, target_features) = cfg_target_feature(
+    let triple = SmallCStr::new(&versioned_llvm_target(sess));
+    let cpu = SmallCStr::new(target_cpu(sess));
+    let features = CString::new(target_features.join(",")).unwrap();
+    let mc_subtarget_info = OwnedMCSubtargetInfo::new(&triple, &cpu, &features)
+        .unwrap_or_else(|err| llvm_err(sess.dcx(), err));
+
+    let internal_target_features = internal_target_features(
         sess,
         |feature| {
             to_llvm_features(sess, feature)
@@ -322,17 +356,18 @@ pub(crate) fn target_config(sess: &Session) -> TargetConfig {
                 .unwrap_or_default()
         },
         |feature| {
-            // This closure determines whether the target CPU has the feature according to LLVM. We do
-            // *not* consider the `-Ctarget-feature`s here, as that will be handled later in
-            // `cfg_target_feature`.
+            // This closure determines whether the target CPU has the feature according to LLVM. We
+            // do *not* consider the `-Ctarget-feature`s here (that's why we passed `for_cfg: true`
+            // to `global_llvm_features` above) because that will be handled later in
+            // `internal_target_features`.
             if let Some(feat) = to_llvm_features(sess, feature) {
                 // All the LLVM features this expands to must be enabled.
                 for llvm_feature in feat {
                     let cstr = SmallCStr::new(llvm_feature);
-                    // `LLVMRustHasFeature` is moderately expensive. On targets with many
+                    // `has_feature` is moderately expensive. On targets with many
                     // features (e.g. x86) these calls take a non-trivial fraction of runtime
                     // when compiling very small programs.
-                    if !unsafe { llvm::LLVMRustHasFeature(target_machine.raw(), cstr.as_ptr()) } {
+                    if !mc_subtarget_info.has_feature(&cstr) {
                         return false;
                     }
                 }
@@ -344,8 +379,7 @@ pub(crate) fn target_config(sess: &Session) -> TargetConfig {
     );
 
     let mut cfg = TargetConfig {
-        target_features,
-        unstable_target_features,
+        internal_target_features,
         has_reliable_f16: true,
         has_reliable_f16_math: true,
         has_reliable_f128: true,
@@ -369,7 +403,8 @@ fn update_target_reliable_float_cfg(sess: &Session, cfg: &mut TargetConfig) {
     cfg.has_reliable_f16 = match (target_arch, target_os) {
         // Unsupported <https://github.com/llvm/llvm-project/issues/94434> (fixed in llvm22)
         (Arch::Arm64EC, _) if major < 22 => false,
-        // MinGW ABI bugs <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=115054>
+        // MinGW ABI bugs <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=115054> resolved in GCC 16
+        // but our toolchain hasn't been updated.
         (Arch::X86_64, Os::Windows) if *target_env == Env::Gnu && *target_abi != CfgAbi::Llvm => {
             false
         }
@@ -387,8 +422,7 @@ fn update_target_reliable_float_cfg(sess: &Session, cfg: &mut TargetConfig) {
     cfg.has_reliable_f128 = match (target_arch, target_os) {
         // Unsupported https://github.com/llvm/llvm-project/issues/121122
         (Arch::AmdGpu, _) => false,
-        // Unsupported <https://github.com/llvm/llvm-project/issues/94434>
-        (Arch::Arm64EC, _) => false,
+        (Arch::Arm64EC, _) if major < 23 => false, // (fixed in llvm23)
         // Selection bug <https://github.com/llvm/llvm-project/issues/95471>. This issue is closed
         // but basic math still does not work.
         (Arch::Nvptx64, _) => false,
@@ -397,8 +431,10 @@ fn update_target_reliable_float_cfg(sess: &Session, cfg: &mut TargetConfig) {
         (Arch::PowerPC | Arch::PowerPC64, _) => false,
         // ABI unsupported  <https://github.com/llvm/llvm-project/issues/41838> (fixed in llvm22)
         (Arch::Sparc, _) if major < 22 => false,
-        // MinGW ABI bugs <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=115054>
-        (Arch::X86_64, Os::Windows) if *target_env == Env::Gnu && *target_abi != CfgAbi::Llvm => {
+        // MinGW ABI bugs <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=115054> (fixed in llvm23)
+        (Arch::X86_64, Os::Windows)
+            if *target_env == Env::Gnu && *target_abi != CfgAbi::Llvm && major < 23 =>
+        {
             false
         }
         // There are no known problems on other platforms, so the only requirement is that symbols
@@ -433,11 +469,13 @@ pub(crate) fn print_version() {
     println!("LLVM version: {major}.{minor}.{patch}");
 }
 
+/// Returns the version of LLVM that we are actually linked to at runtime.
 pub(crate) fn get_version() -> (u32, u32, u32) {
-    // Can be called without initializing LLVM
-    unsafe {
-        (llvm::LLVMRustVersionMajor(), llvm::LLVMRustVersionMinor(), llvm::LLVMRustVersionPatch())
-    }
+    let mut llvm_major = 0;
+    let mut llvm_minor = 0;
+    let mut llvm_patch = 0;
+    llvm::LLVMGetVersion(&mut llvm_major, &mut llvm_minor, &mut llvm_patch);
+    (llvm_major, llvm_minor, llvm_patch)
 }
 
 pub(crate) fn print_passes() {
@@ -472,7 +510,7 @@ fn llvm_target_features(tm: &llvm::TargetMachine) -> Vec<(&str, &str)> {
 
 pub(crate) fn print(req: &PrintRequest, out: &mut String, sess: &Session) {
     require_inited();
-    let tm = create_informational_target_machine(sess, false);
+    let tm = create_informational_target_machine(sess);
     match req.kind {
         PrintKind::TargetCPUs => print_target_cpus(sess, tm.raw(), out),
         PrintKind::TargetFeatures => print_target_features(sess, tm.raw(), out),
@@ -490,10 +528,11 @@ fn print_target_cpus(sess: &Session, tm: &llvm::TargetMachine, out: &mut String)
         cpu_name: &'a str,
         remark: String,
     }
-    // Compare CPU against current target to label the default.
+    // Compare CPU against current target to label the default. Do not print it if
+    // `need_explicit_cpu` is set, because in that case the concept of default makes less sense.
     let target_cpu = handle_native(&sess.target.cpu);
     let make_remark = |cpu_name| {
-        if cpu_name == target_cpu {
+        if cpu_name == target_cpu && !sess.target.need_explicit_cpu {
             // FIXME(#132514): This prints the LLVM target string, which can be
             // different from the Rust target string. Is that intended?
             let target = &sess.target.llvm_target;
@@ -646,7 +685,11 @@ fn llvm_features_by_flags(sess: &Session, features: &mut Vec<String>) {
 
 /// The list of LLVM features computed from CLI flags (`-Ctarget-cpu`, `-Ctarget-feature`,
 /// `--target` and similar).
-pub(crate) fn global_llvm_features(sess: &Session, only_base_features: bool) -> Vec<String> {
+///
+/// If `for_cfg` is `true` then we are assembling the feature list for the purpose of populating
+/// [`rustc_codegen_ssa::TargetConfig`] based on what LLVM actually enables in this configuration.
+/// `-Ctarget-feature` should be ignored in that case since it is already processed separately.
+pub(crate) fn global_llvm_features(sess: &Session, for_cfg: bool) -> Vec<String> {
     // Features that come earlier are overridden by conflicting features later in the string.
     // Typically we'll want more explicit settings to override the implicit ones, so:
     //
@@ -725,13 +768,35 @@ pub(crate) fn global_llvm_features(sess: &Session, only_base_features: bool) -> 
     // Features implied by an implicit or explicit `--target`.
     target_features::target_spec_to_backend_features(sess, &mut extend_backend_features);
 
-    // -Ctarget-features
-    if !only_base_features {
+    // -Ctarget-features. Skipped for `cfg` as there we parse -Ctarget-features directly instead of
+    // going via an LLVM target machine (which avoids accidentally picking up LLVM-level target
+    // feature implications that we do not want).
+    if !for_cfg {
         target_features::flag_to_backend_features(sess, extend_backend_features);
     }
 
-    // We add this in the "base target" so that these show up in `sess.unstable_target_features`.
+    // `-C` flags that map to LLVM target features.
+    // We need to include them even with `only_base_features` as this is used to populate
+    // `sess.internal_target_features` where we very much want them to be present (e.g. the inline
+    // asm logic uses that to check which registers may be used).
     llvm_features_by_flags(sess, &mut features);
+
+    // `-Zllvm-target-features`, all the way at the end to overwrite everything.
+    // Should be picked up by `cfg` (e.g. if someone enables AVX this way).
+    for feature in sess.opts.unstable_opts.llvm_target_feature.split(',') {
+        if feature.is_empty() {
+            continue;
+        }
+        if feature.starts_with('+') || feature.starts_with('-') {
+            features.push(feature.to_owned());
+        } else {
+            // LLVM seems to silently ignore entries without leading `+`/`-`. Let's emit a warning
+            // to avoid confusion. But only emit this warning once, under `for_cfg`.
+            if for_cfg {
+                sess.dcx().emit_warn(diagnostics::UnknownLlvmTargetFeaturePrefix { feature });
+            }
+        }
+    }
 
     features
 }
@@ -743,7 +808,7 @@ pub(crate) fn tune_cpu(sess: &Session) -> Option<&str> {
 
 pub(crate) fn target_has_mnemonic(sess: &Session, mnemonic: &str) -> bool {
     require_inited();
-    let tm = create_informational_target_machine(sess, false);
+    let tm = create_informational_target_machine(sess);
     let cstr = SmallCStr::new(mnemonic);
     unsafe { llvm::LLVMRustTargetHasMnemonic(tm.raw(), cstr.as_ptr()) }
 }

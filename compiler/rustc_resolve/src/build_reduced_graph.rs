@@ -5,7 +5,6 @@
 //! unexpanded macros in the fragment are visited and registered.
 //! Imports are also considered items and placed into modules here, but not resolved yet.
 
-use std::cell::RefMut;
 use std::sync::Arc;
 
 use rustc_ast::visit::{self, AssocCtxt, Visitor, WalkItemKind};
@@ -16,6 +15,7 @@ use rustc_ast::{
 };
 use rustc_attr_parsing::AttributeParser;
 use rustc_data_structures::fx::FxIndexMap;
+use rustc_data_structures::sync::WriteGuard;
 use rustc_expand::base::{ResolverExpand, SyntaxExtension, SyntaxExtensionKind};
 use rustc_hir::Attribute;
 use rustc_hir::attrs::{AttributeKind, MacroUseArgs};
@@ -23,12 +23,11 @@ use rustc_hir::def::{self, *};
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_index::bit_set::DenseBitSet;
 use rustc_metadata::creader::LoadedMacro;
-use rustc_middle::metadata::{ModChild, Reexport};
+use rustc_middle::middle::resolve::{ModChild, PartialRes, Reexport};
 use rustc_middle::ty::{TyCtxtFeed, Visibility};
-use rustc_middle::{bug, span_bug};
 use rustc_span::def_id::{CRATE_MOD_ID, ModId};
 use rustc_span::hygiene::{ExpnId, LocalExpnId, MacroKind};
-use rustc_span::{Ident, Span, Symbol, kw, sym};
+use rustc_span::{Ident, Span, Symbol, bug, kw, span_bug, sym};
 use thin_vec::ThinVec;
 use tracing::debug;
 
@@ -135,7 +134,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     fn get_extern_module_with_lock(
         &self,
         def_id: DefId,
-        map_lock: &mut RefMut<'_, FxIndexMap<DefId, ExternModule<'ra>>>,
+        map_lock: &mut WriteGuard<'_, FxIndexMap<DefId, ExternModule<'ra>>>,
     ) -> Option<ExternModule<'ra>> {
         if let module @ Some(..) = map_lock.get(&def_id) {
             return module.copied();
@@ -319,14 +318,15 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     PathResult::NonModule(partial_res) => {
                         expected_found_error(partial_res.expect_full_res())
                     }
-                    PathResult::Failed { label, suggestion, message, segment, .. } => {
-                        Err(VisResolutionError::FailedToResolve(
-                            segment.span,
-                            segment.name,
+                    PathResult::Failed { label, suggestion, help, message, segment, .. } => {
+                        Err(VisResolutionError::FailedToResolve {
+                            span: segment.span,
+                            segment: segment.name,
                             label,
                             suggestion,
+                            help,
                             message,
-                        ))
+                        })
                     }
                     PathResult::Indeterminate => Err(VisResolutionError::Indeterminate(path.span)),
                 }
@@ -441,8 +441,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 DefKind::Fn
                 | DefKind::AssocFn
                 | DefKind::Static { .. }
-                | DefKind::Const { .. }
-                | DefKind::AssocConst { .. }
+                | DefKind::Const
+                | DefKind::AssocConst
                 | DefKind::Ctor(..),
                 _,
             ) => define_extern(ValueNS),
@@ -459,7 +459,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 | DefKind::GlobalAsm
                 | DefKind::Closure
                 | DefKind::SyntheticCoroutineBody
-                | DefKind::Impl { .. },
+                | DefKind::Impl { .. }
+                | DefKind::TestBinderConstraints,
                 _,
             )
             | Res::Local(..)
@@ -567,7 +568,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
                 // Don't add underscore imports to `single_imports`
                 // because they cannot define any usable names.
                 if target.name != kw::Underscore {
-                    self.r.per_ns(|this, ns| {
+                    self.r.per_ns_mut(|this, ns| {
                         let key = BindingKey::new(IdentKey::new(target), ns);
                         this.resolution_or_default(current_module.to_module(), key, target.span)
                             .borrow_mut(this)
@@ -987,7 +988,8 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
             ItemKind::Impl { .. }
             | ItemKind::ForeignMod(..)
             | ItemKind::GlobalAsm(..)
-            | ItemKind::ConstBlock(..) => {}
+            | ItemKind::ConstBlock(..)
+            | ItemKind::TestBinderConstraints(..) => {}
 
             ItemKind::MacroDef(..) | ItemKind::MacCall(_) | ItemKind::DelegationMac(..) => {
                 unreachable!()
