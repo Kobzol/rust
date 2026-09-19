@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use rustc_abi::{FieldIdx, VariantIdx};
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_errors::formatting::DiagMessageAddArg;
-use rustc_errors::{Applicability, Diag, DiagMessage, EmissionGuarantee, MultiSpan, listify, msg};
+use rustc_errors::{Applicability, Diag, DiagMessage, MultiSpan, listify, msg};
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::def::{CtorKind, Namespace};
 use rustc_hir::{
-    self as hir, CoroutineKind, GenericBound, LangItem, WhereBoundPredicate, WherePredicateKind,
+    self as hir, CoroutineKind, GenericBound, WhereBoundPredicate, WherePredicateKind,
 };
 use rustc_index::{IndexSlice, IndexVec};
 use rustc_infer::infer::{BoundRegionConversionTime, NllRegionVariableOrigin};
@@ -18,12 +19,11 @@ use rustc_middle::mir::{
     LocalKind, Location, Operand, Place, PlaceRef, PlaceTy, ProjectionElem, Rvalue, Statement,
     StatementKind, Terminator, TerminatorKind, VarDebugInfoContents, find_self_call,
 };
-use rustc_middle::ty::print::Print;
+use rustc_middle::ty::print::{Print, with_no_trimmed_paths};
 use rustc_middle::ty::{self, Ty, TyCtxt};
-use rustc_middle::{bug, span_bug};
 use rustc_mir_dataflow::move_paths::{InitLocation, LookupResult, MoveOutIndex};
 use rustc_span::def_id::LocalDefId;
-use rustc_span::{DUMMY_SP, Span, Spanned, Symbol, sym};
+use rustc_span::{DUMMY_SP, Span, Spanned, Symbol, bug, span_bug, sym};
 use rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use rustc_trait_selection::error_reporting::traits::call_kind::{CallDesugaringKind, call_kind};
 use rustc_trait_selection::infer::InferCtxtExt;
@@ -74,20 +74,6 @@ pub(super) struct DescribePlaceOpt {
 
 pub(super) struct IncludingTupleField(pub(super) bool);
 
-pub(crate) enum BufferedDiag<'diag> {
-    Error(Diag<'diag>),
-    NonError(Diag<'diag, ()>),
-}
-
-impl<'diag> BufferedDiag<'diag> {
-    fn sort_span(&self) -> Span {
-        match self {
-            BufferedDiag::Error(diag) => diag.sort_span,
-            BufferedDiag::NonError(diag) => diag.sort_span,
-        }
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct BorrowckDiagnosticsBuffer<'diag, 'tcx> {
     /// This field keeps track of move errors that are to be reported for given move indices.
@@ -108,16 +94,13 @@ pub(crate) struct BorrowckDiagnosticsBuffer<'diag, 'tcx> {
 
     buffered_mut_errors: FxIndexMap<Span, (Diag<'diag>, usize)>,
 
-    /// Buffer of diagnostics to be reported. A mixture of error and non-error diagnostics.
-    buffered_diags: Vec<BufferedDiag<'diag>>,
+    /// Buffer of diagnostics to be reported.
+    buffered_diags: Vec<Diag<'diag>>,
 }
 
 impl<'diag, 'tcx> BorrowckDiagnosticsBuffer<'diag, 'tcx> {
-    pub(crate) fn buffer_non_error(&mut self, diag: Diag<'diag, ()>) {
-        self.buffered_diags.push(BufferedDiag::NonError(diag));
-    }
     pub(crate) fn buffer_error(&mut self, diag: Diag<'diag>) {
-        self.buffered_diags.push(BufferedDiag::Error(diag));
+        self.buffered_diags.push(diag);
     }
 
     pub(crate) fn emit_errors(&mut self) {
@@ -134,14 +117,9 @@ impl<'diag, 'tcx> BorrowckDiagnosticsBuffer<'diag, 'tcx> {
         }
 
         if !self.buffered_diags.is_empty() {
-            self.buffered_diags.sort_by_key(|buffered_diag| buffered_diag.sort_span());
-            for buffered_diag in self.buffered_diags.drain(..) {
-                match buffered_diag {
-                    BufferedDiag::Error(diag) => {
-                        diag.emit();
-                    }
-                    BufferedDiag::NonError(diag) => diag.emit(),
-                }
+            self.buffered_diags.sort_by_key(|diag| diag.sort_span);
+            for diag in self.buffered_diags.drain(..) {
+                diag.emit();
             }
         }
     }
@@ -150,10 +128,6 @@ impl<'diag, 'tcx> BorrowckDiagnosticsBuffer<'diag, 'tcx> {
 impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
     pub(crate) fn buffer_error(&mut self, diag: Diag<'_>) {
         self.diags_buffer.buffer_error(diag.with_dcx(self.dcx()));
-    }
-
-    pub(crate) fn buffer_non_error(&mut self, diag: Diag<'_, ()>) {
-        self.diags_buffer.buffer_non_error(diag.with_dcx(self.dcx()));
     }
 
     pub(crate) fn buffer_move_error(
@@ -397,6 +371,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                         }
                     }
                 }
+                ProjectionElem::PhantomDeref => (),
                 ProjectionElem::Downcast(..) if opt.including_downcast => return None,
                 ProjectionElem::Downcast(..) => (),
                 ProjectionElem::OpaqueCast(..) => (),
@@ -485,6 +460,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                     PlaceTy::from_ty(*ty)
                 }
                 ProjectionElem::Field(_, field_type) => PlaceTy::from_ty(*field_type),
+                ProjectionElem::PhantomDeref => unreachable!("not a field"),
             },
         };
         self.describe_field_from_ty(
@@ -666,7 +642,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
     ///
     /// This is very similar to `fn suggest_static_lifetime_for_gat_from_hrtb` which handles this
     /// note for failed type tests instead of outlives errors.
-    fn add_placeholder_from_predicate_note<G: EmissionGuarantee>(
+    fn add_placeholder_from_predicate_note<G>(
         &self,
         diag: &mut Diag<'_, G>,
         path: &[OutlivesConstraint<'tcx>],
@@ -728,7 +704,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
 
     /// Add a label to region errors and borrow explanations when outlives constraints arise from
     /// proving a type implements `Sized` or `Copy`.
-    fn add_sized_or_copy_bound_info<G: EmissionGuarantee>(
+    fn add_sized_or_copy_bound_info<G>(
         &self,
         err: &mut Diag<'_, G>,
         blamed_category: ConstraintCategory<'tcx>,
@@ -1374,12 +1350,21 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                             &move_spans,
                         );
 
-                        let func = tcx.def_path_str(method_did);
-                        err.subdiagnostic(CaptureReasonNote::FuncTakeSelf {
-                            func,
-                            place_name: place_name.clone(),
-                            span: self_arg.span,
-                        });
+                        let func = with_no_trimmed_paths!(tcx.def_path_str(method_did));
+                        if let Some((kind, _)) = desugaring {
+                            err.subdiagnostic(CaptureReasonNote::DesugaringFuncTakeSelf {
+                                func,
+                                desugar_name: kind.name(),
+                                place_name: place_name.clone(),
+                                span: self_arg.span,
+                            });
+                        } else {
+                            err.subdiagnostic(CaptureReasonNote::FuncTakeSelf {
+                                func,
+                                place_name: place_name.clone(),
+                                span: self_arg.span,
+                            });
+                        }
                     }
                     let parent_did = tcx.parent(method_did);
                     let parent_self_ty =
@@ -1400,17 +1385,20 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                             var_span: var_span.shrink_to_hi(),
                         });
                     }
-                    if let Some((CallDesugaringKind::ForLoopIntoIter, _)) = desugaring {
+                    if let Some((
+                        kind @ (CallDesugaringKind::ForLoopIntoIter
+                        | CallDesugaringKind::ForLoopIntoAsyncIter),
+                        _,
+                    )) = desugaring
+                    {
                         let ty = moved_place.ty(self.body, tcx).ty;
-                        let suggest = match tcx.get_diagnostic_item(sym::IntoIterator) {
-                            Some(def_id) => type_known_to_meet_bound_modulo_regions(
-                                self.infcx,
-                                self.infcx.param_env,
-                                Ty::new_imm_ref(tcx, tcx.lifetimes.re_erased, ty),
-                                def_id,
-                            ),
-                            _ => false,
-                        };
+                        let def_id = kind.trait_def_id(tcx);
+                        let suggest = type_known_to_meet_bound_modulo_regions(
+                            self.infcx,
+                            self.infcx.param_env,
+                            Ty::new_imm_ref(tcx, tcx.lifetimes.re_erased, ty),
+                            def_id,
+                        );
                         if suggest {
                             err.subdiagnostic(CaptureReasonSuggest::IterateSlice {
                                 ty,
@@ -1418,12 +1406,25 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                             });
                         }
 
-                        err.subdiagnostic(CaptureReasonLabel::ImplicitCall {
-                            fn_call_span,
-                            place_name: &place_name,
-                            is_partial,
-                            is_loop_message,
-                        });
+                        match kind {
+                            CallDesugaringKind::ForLoopIntoIter => {
+                                err.subdiagnostic(CaptureReasonLabel::ImplicitCall {
+                                    fn_call_span,
+                                    place_name: &place_name,
+                                    is_partial,
+                                    is_loop_message,
+                                });
+                            }
+                            CallDesugaringKind::ForLoopIntoAsyncIter => {
+                                err.subdiagnostic(CaptureReasonLabel::ImplicitAsyncCall {
+                                    fn_call_span,
+                                    place_name: &place_name,
+                                    is_partial,
+                                    is_loop_message,
+                                });
+                            }
+                            _ => {}
+                        }
                         // If the moved place was a `&mut` ref, then we can
                         // suggest to reborrow it where it was moved, so it
                         // will still be valid by the time we get to the usage.
@@ -1451,20 +1452,31 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                             }
                         }
                     } else {
-                        if let Some((CallDesugaringKind::Await, _)) = desugaring {
-                            err.subdiagnostic(CaptureReasonLabel::Await {
-                                fn_call_span,
-                                place_name: &place_name,
-                                is_partial,
-                                is_loop_message,
-                            });
-                        } else {
-                            err.subdiagnostic(CaptureReasonLabel::MethodCall {
-                                fn_call_span,
-                                place_name: &place_name,
-                                is_partial,
-                                is_loop_message,
-                            });
+                        match desugaring {
+                            Some((CallDesugaringKind::Await, _)) => {
+                                err.subdiagnostic(CaptureReasonLabel::Await {
+                                    fn_call_span,
+                                    place_name: &place_name,
+                                    is_partial,
+                                    is_loop_message,
+                                });
+                            }
+                            Some((CallDesugaringKind::QuestionBranch, _)) => {
+                                err.subdiagnostic(CaptureReasonLabel::QuestionMark {
+                                    fn_call_span,
+                                    place_name: &place_name,
+                                    is_partial,
+                                    is_loop_message,
+                                });
+                            }
+                            _ => {
+                                err.subdiagnostic(CaptureReasonLabel::MethodCall {
+                                    fn_call_span,
+                                    place_name: &place_name,
+                                    is_partial,
+                                    is_loop_message,
+                                });
+                            }
                         }
                         // Erase and shadow everything that could be passed to the new infcx.
                         let ty = moved_place.ty(self.body, tcx).ty;
@@ -1534,9 +1546,9 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                             ) && !has_sugg
                             {
                                 let skip_for_simple_clone =
-                                    has_deref && !has_overloaded_deref && errors.is_empty();
+                                    has_deref && !has_overloaded_deref && errors.no_errors();
                                 if !skip_for_simple_clone {
-                                    let msg = match &errors[..] {
+                                    let msg = match errors.as_slice() {
                                         [] => "you can `clone` the value and consume it, but \
                                                this might not be your desired behavior"
                                             .to_string(),
@@ -1553,7 +1565,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                                                  the following trait bounds could be satisfied: \
                                                  {}",
                                                 listify(
-                                                    &errors,
+                                                    errors.as_slice(),
                                                     |e: &FulfillmentError<'tcx>| format!(
                                                         "`{}`",
                                                         e.obligation.predicate
@@ -1569,7 +1581,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                                         Applicability::MaybeIncorrect,
                                     );
 
-                                    suggested_cloning = errors.is_empty();
+                                    suggested_cloning = errors.no_errors();
 
                                     for error in errors {
                                         if let FulfillmentErrorCode::Select(

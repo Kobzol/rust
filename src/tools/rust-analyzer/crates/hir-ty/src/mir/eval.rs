@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, cell::RefCell, fmt::Write, iter, mem, ops::Range};
 
-use base_db::{Crate, salsa::update_fallback_db, target::TargetLoadError};
+use base_db::{Crate, target::TargetLoadError};
 use either::Either;
 use hir_def::{
     AdtId, DefWithBodyId, EnumVariantId, FunctionId, HasModule, ItemContainerId, Lookup, StaticId,
@@ -31,7 +31,7 @@ use rustc_type_ir::{
     AliasTyKind,
     inherent::{GenericArgs as _, IntoKind, Region as _, SliceLike, Ty as _},
 };
-use salsa::Update;
+use salsa::SalsaValue;
 use span::FileId;
 use stdx::never;
 use syntax::{SyntaxNodePtr, TextRange};
@@ -57,8 +57,8 @@ use crate::{
 
 use super::{
     AggregateKind, BasicBlockId, BinOp, CastKind, LocalId, MirBody, MirLowerError, MirSpan,
-    Operand, OperandKind, Place, PlaceElem, PlaceRef, PlaceTy, ProjectionElem, Rvalue,
-    StatementKind, TerminatorKind, UnOp, return_slot,
+    Operand, OperandKind, Place, PlaceElem, PlaceTy, ProjectionElem, Rvalue, StatementKind,
+    StoredPlace, TerminatorKind, UnOp, return_slot,
 };
 
 mod shim;
@@ -309,7 +309,6 @@ const STACK_OFFSET: usize = 1 << 30;
 const HEAP_OFFSET: usize = 1 << 29;
 
 impl Address {
-    #[allow(clippy::double_parens)]
     fn from_bytes<'db>(it: &[u8]) -> Result<'db, Self> {
         Ok(Address::from_usize(from_bytes!(usize, it)))
     }
@@ -349,7 +348,7 @@ impl Address {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Update)]
+#[derive(Clone, PartialEq, Eq, SalsaValue)]
 pub enum MirEvalError<'db> {
     ConstEvalError(String, Box<ConstEvalError<'db>>),
     LayoutError(LayoutError, StoredTy),
@@ -366,8 +365,7 @@ pub enum MirEvalError<'db> {
     InvalidConst,
     InFunction(
         Box<MirEvalError<'db>>,
-        #[update(bounds(InternedClosureId<'db>: Update), unsafe(with(update_fallback_db::<'db, _>)))]
-         Vec<(Either<FunctionId, InternedClosureId<'db>>, MirSpan, InferBodyId<'db>)>,
+        Vec<(Either<FunctionId, InternedClosureId<'db>>, MirSpan, InferBodyId<'db>)>,
     ),
     ExecutionLimitExceeded,
     StackOverflow,
@@ -564,11 +562,11 @@ type Result<'db, T> = std::result::Result<T, MirEvalError<'db>>;
 
 #[derive(Debug, Default)]
 struct DropFlags<'db> {
-    need_drop: FxHashSet<PlaceRef<'db>>,
+    need_drop: FxHashSet<Place<'db>>,
 }
 
 impl<'db> DropFlags<'db> {
-    fn add_place(&mut self, p: PlaceRef<'db>) {
+    fn add_place(&mut self, p: Place<'db>) {
         if p.iterate_over_parents().any(|it| self.need_drop.contains(&it)) {
             return;
         }
@@ -576,7 +574,7 @@ impl<'db> DropFlags<'db> {
         self.need_drop.insert(p);
     }
 
-    fn remove_place(&mut self, p: PlaceRef<'db>) -> bool {
+    fn remove_place(&mut self, p: Place<'db>) -> bool {
         // FIXME: replace parents with parts
         if let Some(parent) = p.iterate_over_parents().find(|it| self.need_drop.contains(it)) {
             self.need_drop.remove(&parent);
@@ -714,11 +712,11 @@ impl<'a, 'db> Evaluator<'a, 'db> {
         self.infcx.interner.lang_items()
     }
 
-    fn place_addr(&self, p: &Place, locals: &Locals<'a, 'db>) -> Result<'db, Address> {
+    fn place_addr(&self, p: &StoredPlace, locals: &Locals<'a, 'db>) -> Result<'db, Address> {
         Ok(self.place_addr_and_ty_and_metadata(p, locals)?.0)
     }
 
-    fn place_interval(&self, p: &Place, locals: &Locals<'a, 'db>) -> Result<'db, Interval> {
+    fn place_interval(&self, p: &StoredPlace, locals: &Locals<'a, 'db>) -> Result<'db, Interval> {
         let place_addr_and_ty = self.place_addr_and_ty_and_metadata(p, locals)?;
         Ok(Interval {
             addr: place_addr_and_ty.0,
@@ -787,13 +785,13 @@ impl<'a, 'db> Evaluator<'a, 'db> {
 
     fn place_addr_and_ty_and_metadata<'b>(
         &'b self,
-        p: &Place,
+        p: &StoredPlace,
         locals: &'b Locals<'a, 'db>,
     ) -> Result<'db, (Address, Ty<'db>, Option<IntervalOrOwned>)> {
         let mut addr = locals.ptr[p.local].addr;
         let mut ty = PlaceTy::from_ty(locals.body.locals[p.local].ty.as_ref());
         let mut metadata: Option<IntervalOrOwned> = None; // locals are always sized
-        for proj in p.projection.lookup() {
+        for proj in p.projection.as_slice() {
             let prev_ty = ty;
             ty = self.projected_ty(ty, *proj);
             match proj {
@@ -815,8 +813,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
                         self.read_memory(locals.ptr[*op].addr, self.ptr_size())?
                     );
                     metadata = None; // Result of index is always sized
-                    let ty_size =
-                        self.size_of_sized(ty.ty, locals, "array inner type should be sized")?;
+                    let ty_size = self.size_of_sized(ty.ty, locals, "array inner type")?;
                     addr = addr.offset(ty_size * offset);
                 }
                 &ProjectionElem::ConstantIndex { from_end, offset } => {
@@ -839,8 +836,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
                         offset as usize
                     };
                     metadata = None; // Result of index is always sized
-                    let ty_size =
-                        self.size_of_sized(ty.ty, locals, "array inner type should be sized")?;
+                    let ty_size = self.size_of_sized(ty.ty, locals, "array inner type")?;
                     addr = addr.offset(ty_size * offset);
                 }
                 &ProjectionElem::Subslice { from, to } => {
@@ -857,8 +853,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
                         }
                         None => None,
                     };
-                    let ty_size =
-                        self.size_of_sized(inner_ty, locals, "array inner type should be sized")?;
+                    let ty_size = self.size_of_sized(inner_ty, locals, "array inner type")?;
                     addr = addr.offset(ty_size * (from as usize));
                 }
                 ProjectionElem::Field(f) => {
@@ -909,7 +904,11 @@ impl<'a, 'db> Evaluator<'a, 'db> {
         self.layout(Ty::new_adt(self.interner(), adt, subst))
     }
 
-    fn place_ty<'b>(&'b self, p: &Place, locals: &'b Locals<'a, 'db>) -> Result<'db, Ty<'db>> {
+    fn place_ty<'b>(
+        &'b self,
+        p: &StoredPlace,
+        locals: &'b Locals<'a, 'db>,
+    ) -> Result<'db, Ty<'db>> {
         Ok(self.place_addr_and_ty_and_metadata(p, locals)?.1)
     }
 
@@ -1047,7 +1046,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
                         TerminatorKind::SwitchInt { discr, targets } => {
                             let val = u128::from_le_bytes(pad16(
                                 self.eval_operand(discr, locals)?.get(self)?,
-                                false,
+                                IsSigned::No,
                             ));
                             current_block_idx = targets.target_for_value(val);
                         }
@@ -1504,8 +1503,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
                         )?)
                     }
                     AggregateKind::Union(it, f) => {
-                        let layout =
-                            self.layout_adt((*it).into(), GenericArgs::empty(self.interner()))?;
+                        let layout = self.layout_adt((*it).into(), GenericArgs::empty())?;
                         let offset = layout
                             .fields
                             .offset(u32::from(f.local_id.into_raw()) as usize)
@@ -1570,7 +1568,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
                 | CastKind::PointerExposeAddress
                 | CastKind::PointerFromExposedAddress => {
                     let current_ty = self.operand_ty(operand, locals)?;
-                    let is_signed = matches!(current_ty.kind(), TyKind::Int(_));
+                    let is_signed = matches!(current_ty.kind(), TyKind::Int(_)).into();
                     let current = pad16(self.eval_operand(operand, locals)?.get(self)?, is_signed);
                     let dest_size = self.size_of_sized(
                         target_ty.as_ref(),
@@ -1649,7 +1647,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
                 }
                 CastKind::IntToFloat => {
                     let current_ty = self.operand_ty(operand, locals)?;
-                    let is_signed = matches!(current_ty.kind(), TyKind::Int(_));
+                    let is_signed = matches!(current_ty.kind(), TyKind::Int(_)).into();
                     let value = pad16(self.eval_operand(operand, locals)?.get(self)?, is_signed);
                     let value = i128::from_le_bytes(value);
                     let TyKind::Float(target_ty) = target_ty.as_ref().kind() else {
@@ -1690,7 +1688,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
             Variants::Multiple { tag, tag_encoding, variants, .. } => {
                 let size = tag.size(self.target_data_layout).bytes_usize();
                 let offset = layout.fields.offset(0).bytes_usize(); // The only field on enum variants is the tag field
-                let is_signed = tag.is_signed();
+                let is_signed = tag.is_signed().into();
                 match tag_encoding {
                     TagEncoding::Direct => {
                         let tag = &bytes[offset..offset + size];
@@ -2093,7 +2091,6 @@ impl<'a, 'db> Evaluator<'a, 'db> {
         }
     }
 
-    #[allow(clippy::double_parens)]
     fn allocate_const_in_heap(
         &mut self,
         locals: &Locals<'a, 'db>,
@@ -2151,7 +2148,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
         let v: Cow<'_, [u8]> = if size != v.len() {
             // Handle self enum
             if size == 16 && v.len() < 16 {
-                Cow::Owned(pad16(v, false).to_vec())
+                Cow::Owned(pad16(v, IsSigned::No).to_vec())
             } else if size < 16 && v.len() == 16 {
                 Cow::Borrowed(&v[0..size])
             } else {
@@ -2177,7 +2174,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
         Ok(Interval::new(addr, size))
     }
 
-    fn eval_place(&mut self, p: &Place, locals: &Locals<'a, 'db>) -> Result<'db, Interval> {
+    fn eval_place(&mut self, p: &StoredPlace, locals: &Locals<'a, 'db>) -> Result<'db, Interval> {
         let addr = self.place_addr(p, locals)?;
         Ok(Interval::new(
             addr,
@@ -2548,7 +2545,6 @@ impl<'a, 'db> Evaluator<'a, 'db> {
         ty: Ty<'db>,
         locals: &Locals<'a, 'db>,
     ) -> Result<'db, ()> {
-        // FIXME: support indirect references
         let layout = self.layout(ty)?;
         let my_size = self.size_of_sized(ty, locals, "value to patch address")?;
         use rustc_type_ir::TyKind;
@@ -2574,9 +2570,30 @@ impl<'a, 'db> Evaluator<'a, 'db> {
                         )?;
                     }
                     None => {
-                        let current = from_bytes!(usize, self.read_memory(addr, my_size / 2)?);
-                        if let Some(it) = patch_map.get(&current) {
-                            self.write_memory(addr, &it.to_le_bytes())?;
+                        let bytes = self.read_memory(addr, my_size)?;
+                        let (current, metadata) = bytes.split_at(my_size / 2);
+                        let metadata = metadata.to_vec();
+                        let current = from_bytes!(usize, current);
+                        let patched = match patch_map.get(&current) {
+                            Some(it) => {
+                                self.write_memory(addr, &it.to_le_bytes())?;
+                                *it
+                            }
+                            None => current,
+                        };
+                        let patched = Address::from_usize(patched);
+                        if let TyKind::Slice(inner) = t.kind() {
+                            let len = from_bytes!(usize, metadata);
+                            let size = self.size_of_sized(inner, locals, "slice item to patch")?;
+                            for i in 0..len {
+                                self.patch_addresses(
+                                    patch_map,
+                                    ty_of_bytes,
+                                    patched.offset(i * size),
+                                    inner,
+                                    locals,
+                                )?;
+                            }
                         }
                     }
                 }
@@ -3062,7 +3079,7 @@ impl<'a, 'db> Evaluator<'a, 'db> {
 
     fn drop_place(
         &mut self,
-        place: &Place,
+        place: &StoredPlace,
         locals: &mut Locals<'a, 'db>,
         span: MirSpan,
     ) -> Result<'db, ()> {
@@ -3274,8 +3291,20 @@ pub fn render_const_using_debug_impl<'db>(
     Ok(std::string::String::from_utf8_lossy(evaluator.read_memory(addr, size)?).into_owned())
 }
 
-pub fn pad16(it: &[u8], is_signed: bool) -> [u8; 16] {
-    let is_negative = is_signed && it.last().unwrap_or(&0) > &127;
+#[derive(PartialEq, Eq)]
+pub enum IsSigned {
+    Yes,
+    No,
+}
+
+impl From<bool> for IsSigned {
+    fn from(value: bool) -> Self {
+        if value { Self::Yes } else { Self::No }
+    }
+}
+
+pub fn pad16(it: &[u8], is_signed: IsSigned) -> [u8; 16] {
+    let is_negative = is_signed == IsSigned::Yes && it.last().unwrap_or(&0) > &127;
     let mut res = [if is_negative { 255 } else { 0 }; 16];
     res[..it.len()].copy_from_slice(it);
     res

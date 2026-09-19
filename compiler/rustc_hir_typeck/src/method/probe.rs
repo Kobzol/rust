@@ -1,18 +1,21 @@
 use std::cell::{Cell, RefCell};
 use std::cmp::max;
-use std::debug_assert_matches;
 use std::ops::Deref;
+use std::{assert_matches, debug_assert_matches};
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sso::SsoHashSet;
 use rustc_errors::{Applicability, Diag, DiagCtxtHandle, Diagnostic, Level};
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::def::DefKind;
 use rustc_hir::{self as hir, ExprKind, HirId, Node, find_attr};
 use rustc_hir_analysis::autoderef::{self, Autoderef};
 use rustc_infer::infer::canonical::{Canonical, OriginalQueryValues, QueryResponse};
 use rustc_infer::infer::{BoundRegionConversionTime, DefineOpaqueTypes, InferOk, TyCtxtInferExt};
 use rustc_infer::traits::{ObligationCauseCode, PredicateObligation, query};
-use rustc_lint::builtin::METHOD_CALL_ON_DIVERGING_INFER_VAR;
+use rustc_lint_defs::builtin::{
+    METHOD_CALL_ON_DIVERGING_INFER_VAR, TYVAR_BEHIND_RAW_POINTER, UNSTABLE_NAME_COLLISIONS,
+};
 use rustc_macros::Diagnostic;
 use rustc_middle::middle::stability;
 use rustc_middle::ty::elaborate::supertrait_def_ids;
@@ -21,13 +24,11 @@ use rustc_middle::ty::{
     self, AssocContainer, AssocItem, GenericArgs, GenericArgsRef, GenericParamDefKind, ParamEnvAnd,
     Ty, TyCtxt, TypeVisitableExt, Unnormalized, Upcast,
 };
-use rustc_middle::{bug, span_bug};
-use rustc_session::lint;
 use rustc_span::def_id::{DefId, LocalDefId};
 use rustc_span::edit_distance::{
     edit_distance_with_substrings, find_best_match_for_name_with_substrings,
 };
-use rustc_span::{DUMMY_SP, Ident, Span, Symbol};
+use rustc_span::{DUMMY_SP, Ident, Span, Symbol, bug, span_bug};
 use rustc_trait_selection::error_reporting::infer::need_type_info::TypeAnnotationNeeded;
 use rustc_trait_selection::infer::InferCtxtExt as _;
 use rustc_trait_selection::solve::Goal;
@@ -116,7 +117,7 @@ pub(crate) struct Candidate<'tcx> {
 pub(crate) enum CandidateKind<'tcx> {
     InherentImplCandidate { impl_def_id: DefId, receiver_steps: usize },
     ObjectCandidate(ty::PolyTraitRef<'tcx>),
-    TraitCandidate(ty::PolyTraitRef<'tcx>, bool /* lint_ambiguous */),
+    TraitCandidate { trait_ref: ty::PolyTraitRef<'tcx>, is_ambiguously_imported: bool },
     WhereClauseCandidate(ty::PolyTraitRef<'tcx>),
 }
 
@@ -237,7 +238,7 @@ pub(crate) struct Pick<'tcx> {
     /// Only applies for inherent impls.
     pub receiver_steps: Option<usize>,
 
-    /// Candidates that were shadowed by supertraits.
+    /// Candidates that were shadowed by subtraits.
     pub shadowed_candidates: Vec<ty::AssocItem>,
 }
 
@@ -245,10 +246,9 @@ pub(crate) struct Pick<'tcx> {
 pub(crate) enum PickKind<'tcx> {
     InherentImplPick,
     ObjectPick,
-    TraitPick(
-        // Is Ambiguously Imported
-        bool,
-    ),
+    TraitPick {
+        is_ambiguously_imported: bool,
+    },
     WhereClausePick(
         // Trait
         ty::PolyTraitRef<'tcx>,
@@ -501,7 +501,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // so we do a future-compat lint here for the 2015 edition
                 // (see https://github.com/rust-lang/rust/issues/46906)
                 self.tcx.emit_node_span_lint(
-                    lint::builtin::TYVAR_BEHIND_RAW_POINTER,
+                    TYVAR_BEHIND_RAW_POINTER,
                     scope_expr_id,
                     span,
                     MissingTypeAnnot,
@@ -593,8 +593,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 }
                 ProbeScope::Single(def_id, self_ty_override) => {
                     let item = self.tcx.associated_item(def_id);
-                    // FIXME(fn_delegation): Delegation to inherent methods is not yet supported.
-                    assert_eq!(item.container, AssocContainer::Trait);
+                    assert_matches!(
+                        item.container,
+                        AssocContainer::Trait | AssocContainer::InherentImpl
+                    );
 
                     let trait_def_id = self.tcx.parent(def_id);
                     let trait_span = self.tcx.def_span(trait_def_id);
@@ -606,10 +608,19 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     probe_cx.push_candidate(
                         Candidate {
                             item,
-                            kind: CandidateKind::TraitCandidate(
-                                ty::Binder::dummy(trait_ref),
-                                false,
-                            ),
+                            kind: match item.container {
+                                AssocContainer::Trait => CandidateKind::TraitCandidate {
+                                    trait_ref: ty::Binder::dummy(trait_ref),
+                                    is_ambiguously_imported: false,
+                                },
+                                AssocContainer::InherentImpl => {
+                                    CandidateKind::InherentImplCandidate {
+                                        impl_def_id: self.tcx.parent(def_id),
+                                        receiver_steps: 0,
+                                    }
+                                }
+                                _ => unreachable!(),
+                            },
                             import_ids: &[],
                         },
                         false,
@@ -1032,7 +1043,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         // We use `DeepRejectCtxt` here which may return false positive on where clauses
         // with alias self types. We need to later on reject these as inherent candidates
         // in `consider_probe`.
-        let bounds = self.param_env.caller_bounds().iter().filter_map(|clause| {
+        let bounds = self.param_env.caller_bounds().filter_map(|clause| {
             let bound_clause = clause.kind();
             match bound_clause.skip_binder() {
                 ty::ClauseKind::Trait(trait_predicate) => DeepRejectCtxt::relate_rigid_rigid(tcx)
@@ -1085,7 +1096,9 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         if let Some(applicable_traits) = opt_applicable_traits {
             for trait_candidate in applicable_traits.iter() {
                 let trait_did = trait_candidate.def_id;
-                if duplicates.insert(trait_did) {
+                // If we have the same trait in scope but one of them is ambiguous and the other
+                // is not, we should treat them differently and then handle them later on.
+                if duplicates.insert((trait_did, trait_candidate.lint_ambiguous)) {
                     self.assemble_extension_candidates_for_trait(
                         &trait_candidate.import_ids,
                         trait_did,
@@ -1128,7 +1141,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         &mut self,
         import_ids: &'tcx [LocalDefId],
         trait_def_id: DefId,
-        lint_ambiguous: bool,
+        is_ambiguously_imported: bool,
     ) {
         let trait_args = self.fresh_args_for_item(self.span, trait_def_id);
         let trait_ref = ty::TraitRef::new_from_args(self.tcx, trait_def_id, trait_args);
@@ -1138,7 +1151,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             for (bound_trait_pred, _) in
                 traits::expand_trait_aliases(self.tcx, [(trait_ref.upcast(self.tcx), self.span)]).0
             {
-                assert_eq!(bound_trait_pred.polarity(), ty::PredicatePolarity::Positive);
+                assert_eq!(bound_trait_pred.polarity(), ty::ClausePolarity::Positive);
                 let bound_trait_ref = bound_trait_pred.map_bound(|pred| pred.trait_ref);
                 for item in self.impl_or_trait_item(bound_trait_ref.def_id()) {
                     if !self.has_applicable_self(&item) {
@@ -1150,7 +1163,10 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                             Candidate {
                                 item,
                                 import_ids,
-                                kind: TraitCandidate(bound_trait_ref, lint_ambiguous),
+                                kind: TraitCandidate {
+                                    trait_ref: bound_trait_ref,
+                                    is_ambiguously_imported,
+                                },
                             },
                             false,
                         );
@@ -1173,7 +1189,10 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     Candidate {
                         item,
                         import_ids,
-                        kind: TraitCandidate(ty::Binder::dummy(trait_ref), lint_ambiguous),
+                        kind: TraitCandidate {
+                            trait_ref: ty::Binder::dummy(trait_ref),
+                            is_ambiguously_imported,
+                        },
                     },
                     false,
                 );
@@ -1580,7 +1599,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
                     ty::Adt(def, args)
                         if self.tcx.features().pin_ergonomics()
-                            && self.tcx.is_lang_item(def.did(), hir::LangItem::Pin) =>
+                            && self.tcx.is_lang_item(def.did(), LangItem::Pin) =>
                     {
                         // make sure this is a pinned reference (and not a `Pin<Box>` or something)
                         if let ty::Ref(_, _, mutbl) = args[0].expect_ty().kind() {
@@ -1649,7 +1668,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
         // make sure self is a Pin<&mut T>
         let inner_ty = match self_ty.kind() {
-            ty::Adt(def, args) if self.tcx.is_lang_item(def.did(), hir::LangItem::Pin) => {
+            ty::Adt(def, args) if self.tcx.is_lang_item(def.did(), LangItem::Pin) => {
                 match args[0].expect_ty().kind() {
                     ty::Ref(_, ty, hir::Mutability::Mut) => *ty,
                     _ => {
@@ -1909,7 +1928,7 @@ impl<'tcx> Pick<'tcx> {
             return;
         }
         tcx.emit_node_span_lint(
-            lint::builtin::UNSTABLE_NAME_COLLISIONS,
+            UNSTABLE_NAME_COLLISIONS,
             scope_expr_id,
             span,
             ItemMaybeBeAddedToStd { this: self, tcx, span },
@@ -1943,7 +1962,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             ObjectCandidate(_) | WhereClauseCandidate(_) => {
                 CandidateSource::Trait(candidate.item.container_id(self.tcx))
             }
-            TraitCandidate(trait_ref, _) => self.probe(|_| {
+            TraitCandidate { trait_ref, is_ambiguously_imported: _ } => self.probe(|_| {
                 let trait_ref = self.instantiate_binder_with_fresh_vars(
                     self.span,
                     BoundRegionConversionTime::FnCall,
@@ -1973,7 +1992,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
     fn candidate_source_from_pick(&self, pick: &Pick<'tcx>) -> CandidateSource {
         match pick.kind {
             InherentImplPick => CandidateSource::Impl(pick.item.container_id(self.tcx)),
-            ObjectPick | WhereClausePick(_) | TraitPick(_) => {
+            ObjectPick | WhereClausePick(_) | TraitPick { .. } => {
                 CandidateSource::Trait(pick.item.container_id(self.tcx))
             }
         }
@@ -2003,7 +2022,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             if self.next_trait_solver() {
                 ocx.register_obligations(instantiate_self_ty_obligations.iter().cloned());
                 let errors = ocx.try_evaluate_obligations();
-                if !errors.is_empty() {
+                if !errors.no_errors() {
                     unreachable!("unexpected autoderef error {errors:?}");
                 }
             }
@@ -2054,7 +2073,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                         impl_bounds,
                     ));
                 }
-                TraitCandidate(poly_trait_ref, _) => {
+                TraitCandidate { trait_ref: poly_trait_ref, is_ambiguously_imported: _ } => {
                     // Some trait methods are excluded for arrays before 2021.
                     // (`array.into_iter()` wants a slice iterator for compatibility.)
                     if let Some(method_name) = self.method_name {
@@ -2132,8 +2151,14 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                             for nested_obligation in candidate.nested_obligations() {
                                 if !self.infcx.predicate_may_hold(&nested_obligation) {
                                     possibly_unsatisfied_predicates.push((
-                                        self.resolve_vars_if_possible(nested_obligation.predicate),
-                                        Some(self.resolve_vars_if_possible(obligation.predicate)),
+                                        self.deeply_resolve_ignoring_regions(
+                                            nested_obligation.predicate,
+                                        ),
+                                        Some(
+                                            self.deeply_resolve_ignoring_regions(
+                                                obligation.predicate,
+                                            ),
+                                        ),
                                         Some(nested_obligation.cause),
                                     ));
                                 }
@@ -2180,34 +2205,13 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 }
             }
 
-            // See <https://github.com/rust-lang/trait-system-refactor-initiative/issues/134>.
-            //
-            // In the new solver, check the well-formedness of the return type.
-            // This emulates, in a way, the predicates that fall out of
-            // normalizing the return type in the old solver.
-            //
-            // FIXME(-Znext-solver): We alternatively could check the predicates of
-            // the method itself hold, but we intentionally do not do this in the old
-            // solver b/c of cycles, and doing it in the new solver would be stronger.
-            // This should be fixed in the future, since it likely leads to much better
-            // method winnowing.
-            if let Some(xform_ret_ty) = xform_ret_ty
-                && self.infcx.next_trait_solver()
-            {
-                ocx.register_obligation(traits::Obligation::new(
-                    self.tcx,
-                    cause.clone(),
-                    self.param_env,
-                    ty::ClauseKind::WellFormed(xform_ret_ty.into()),
-                ));
-            }
-
             // Evaluate those obligations to see if they might possibly hold.
             for error in ocx.try_evaluate_obligations() {
                 result = ProbeResult::NoMatch;
-                let nested_predicate = self.resolve_vars_if_possible(error.obligation.predicate);
+                let nested_predicate =
+                    self.deeply_resolve_ignoring_regions(error.obligation.predicate);
                 if let Some(trait_predicate) = trait_predicate
-                    && nested_predicate == self.resolve_vars_if_possible(trait_predicate)
+                    && nested_predicate == self.deeply_resolve_ignoring_regions(trait_predicate)
                 {
                     // Don't report possibly unsatisfied predicates if the root
                     // trait obligation from a `TraitCandidate` is unsatisfied.
@@ -2215,7 +2219,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 } else {
                     possibly_unsatisfied_predicates.push((
                         nested_predicate,
-                        Some(self.resolve_vars_if_possible(error.root_obligation.predicate))
+                        Some(self.deeply_resolve_ignoring_regions(error.root_obligation.predicate))
                             .filter(|root_predicate| *root_predicate != nested_predicate),
                         Some(error.obligation.cause),
                     ));
@@ -2331,12 +2335,12 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     };
                     let ocx = ObligationCtxt::new(self);
                     let self_ty = ocx.register_infer_ok_obligations(ok);
-                    if !ocx.try_evaluate_obligations().is_empty() {
+                    if !ocx.try_evaluate_obligations().no_errors() {
                         debug!("failed to prove instantiate self_ty obligations");
                         return false;
                     }
 
-                    !self.resolve_vars_if_possible(self_ty).is_ty_var()
+                    !self.deeply_resolve_ignoring_regions(self_ty).is_ty_var()
                 });
                 if constrained_opaque {
                     debug!("opaque type has been constrained");
@@ -2379,16 +2383,17 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             }
         }
 
-        let lint_ambiguous = match probes[0].0.kind {
-            TraitCandidate(_, lint) => lint,
+        // They are all the same, so if any of them is ambiguous, we report the pick as ambiguous.
+        let is_ambiguously_imported = probes.iter().any(|(p, _)| match p.kind {
+            TraitCandidate { is_ambiguously_imported, .. } => is_ambiguously_imported,
             _ => false,
-        };
+        });
 
         // FIXME: check the return type here somehow.
         // If so, just use this trait and call it a day.
         Some(Pick {
             item: probes[0].0.item,
-            kind: TraitPick(lint_ambiguous),
+            kind: TraitPick { is_ambiguously_imported },
             import_ids: probes[0].0.import_ids,
             autoderefs: 0,
             autoref_or_ptr_adjustment: None,
@@ -2463,14 +2468,14 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             }
         }
 
-        let lint_ambiguous = match probes[0].0.kind {
-            TraitCandidate(_, lint) => lint,
+        let is_ambiguously_imported = match child_candidate.kind {
+            TraitCandidate { is_ambiguously_imported, .. } => is_ambiguously_imported,
             _ => false,
         };
 
         Some(Pick {
             item: child_candidate.item,
-            kind: TraitPick(lint_ambiguous),
+            kind: TraitPick { is_ambiguously_imported },
             import_ids: child_candidate.import_ids,
             autoderefs: 0,
             autoref_or_ptr_adjustment: None,
@@ -2526,23 +2531,21 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             if applicable_close_candidates.is_empty() {
                 Ok(None)
             } else {
-                let best_name = {
-                    let names = applicable_close_candidates
-                        .iter()
-                        .map(|cand| cand.name())
-                        .collect::<Vec<Symbol>>();
-                    find_best_match_for_name_with_substrings(
-                        &names,
-                        self.method_name.unwrap().name,
-                        None,
-                    )
-                }
-                .or_else(|| {
-                    applicable_close_candidates
-                        .iter()
-                        .find(|cand| self.matches_by_doc_alias(cand.def_id))
-                        .map(|cand| cand.name())
-                });
+                let best_name = applicable_close_candidates
+                    .iter()
+                    .find(|cand| self.matches_by_doc_alias(cand.def_id))
+                    .map(|cand| cand.name())
+                    .or_else(|| {
+                        let names = applicable_close_candidates
+                            .iter()
+                            .map(|cand| cand.name())
+                            .collect::<Vec<Symbol>>();
+                        find_best_match_for_name_with_substrings(
+                            &names,
+                            self.method_name.unwrap().name,
+                            None,
+                        )
+                    });
                 Ok(best_name.and_then(|best_name| {
                     applicable_close_candidates
                         .into_iter()
@@ -2720,7 +2723,9 @@ impl<'tcx> Candidate<'tcx> {
             kind: match self.kind {
                 InherentImplCandidate { .. } => InherentImplPick,
                 ObjectCandidate(_) => ObjectPick,
-                TraitCandidate(_, lint_ambiguous) => TraitPick(lint_ambiguous),
+                TraitCandidate { is_ambiguously_imported, .. } => {
+                    TraitPick { is_ambiguously_imported }
+                }
                 WhereClauseCandidate(trait_ref) => {
                     // Only trait derived from where-clauses should
                     // appear here, so they should not contain any

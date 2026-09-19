@@ -8,7 +8,7 @@ use rustc_abi::{
 use rustc_macros::StableHash;
 
 pub use crate::spec::AbiMap;
-use crate::spec::{Arch, HasTargetSpec, HasX86AbiOpt};
+use crate::spec::{Arch, HasTargetSpec, HasX86AbiOpt, RustcAbi};
 
 mod aarch64;
 mod amdgpu;
@@ -55,8 +55,9 @@ pub enum PassMode {
     Pair(ArgAttributes, ArgAttributes),
     /// Pass the argument after casting it. See the `CastTarget` docs for details.
     ///
-    /// `pad_i32` indicates if a `Reg::i32()` dummy argument is emitted before the real argument.
-    Cast { pad_i32: bool, cast: Box<CastTarget> },
+    /// `pad_i32` indicates how many `Reg::i32()` dummy arguments are emitted before the real
+    /// argument.
+    Cast { pad_i32_count: u8, cast: Box<CastTarget> },
     /// Pass the argument indirectly via a hidden pointer.
     ///
     /// The `meta_attrs` value, if any, is for the metadata (vtable or length) of an unsized
@@ -84,8 +85,8 @@ impl PassMode {
             (PassMode::Direct(a1), PassMode::Direct(a2)) => a1.eq_abi(a2),
             (PassMode::Pair(a1, b1), PassMode::Pair(a2, b2)) => a1.eq_abi(a2) && b1.eq_abi(b2),
             (
-                PassMode::Cast { cast: c1, pad_i32: pad1 },
-                PassMode::Cast { cast: c2, pad_i32: pad2 },
+                PassMode::Cast { cast: c1, pad_i32_count: pad1 },
+                PassMode::Cast { cast: c2, pad_i32_count: pad2 },
             ) => c1.eq_abi(c2) && pad1 == pad2,
             (
                 PassMode::Indirect { attrs: a1, meta_attrs: None, on_stack: s1 },
@@ -426,20 +427,6 @@ impl<'a, Ty> ArgAbi<'a, Ty> {
         PassMode::Indirect { attrs, meta_attrs, on_stack: false }
     }
 
-    /// Pass this argument directly instead. Should NOT be used!
-    /// Only exists because of past ABI mistakes that will take time to fix
-    /// (see <https://github.com/rust-lang/rust/issues/115666>).
-    #[track_caller]
-    pub fn make_direct_deprecated(&mut self) {
-        match self.mode {
-            PassMode::Indirect { .. } => {
-                self.mode = PassMode::Direct(ArgAttributes::new());
-            }
-            PassMode::Ignore | PassMode::Direct(_) | PassMode::Pair(_, _) => {} // already direct
-            _ => panic!("Tried to make {:?} direct", self.mode),
-        }
-    }
-
     /// Pass this argument indirectly, by passing a (thin or wide) pointer to the argument instead.
     /// This is valid for both sized and unsized arguments.
     #[track_caller]
@@ -521,16 +508,36 @@ impl<'a, Ty> ArgAbi<'a, Ty> {
     }
 
     pub fn cast_to<T: Into<CastTarget>>(&mut self, target: T) {
-        self.mode = PassMode::Cast { cast: Box::new(target.into()), pad_i32: false };
+        self.mode = PassMode::Cast { cast: Box::new(target.into()), pad_i32_count: 0 };
     }
 
     pub fn cast_to_with_attrs<T: Into<CastTarget>>(&mut self, target: T, attrs: ArgAttributes) {
         self.mode =
-            PassMode::Cast { cast: Box::new(target.into().with_attrs(attrs)), pad_i32: false };
+            PassMode::Cast { cast: Box::new(target.into().with_attrs(attrs)), pad_i32_count: 0 };
     }
 
-    pub fn cast_to_and_pad_i32<T: Into<CastTarget>>(&mut self, target: T, pad_i32: bool) {
-        self.mode = PassMode::Cast { cast: Box::new(target.into()), pad_i32 };
+    /// Cast to `target`, forwarding `NoUndef` only when the layout provably has no uninit
+    /// bytes *and* the cast exactly covers the layout (`target.size(cx) == self.layout.size`).
+    /// A wider cast (e.g. `Uniform::new` rounding a 3-byte aggregate up to an `i32`) covers
+    /// undef padding bytes that must not be marked `noundef`; a narrower cast does not occur,
+    /// since a `PassMode::Cast` target always covers the whole value.
+    pub fn cast_to_maybe_noundef<T, C>(&mut self, target: T, cx: &C)
+    where
+        T: Into<CastTarget>,
+        Ty: TyAbiInterface<'a, C> + Copy,
+        C: HasDataLayout,
+    {
+        let target = target.into();
+        let attr = if layout_is_noundef(self.layout, cx) && target.size(cx) == self.layout.size {
+            ArgAttribute::NoUndef
+        } else {
+            ArgAttribute::default()
+        };
+        self.cast_to_with_attrs(target, attr.into());
+    }
+
+    pub fn cast_to_and_pad_i32<T: Into<CastTarget>>(&mut self, target: T, pad_i32_count: u8) {
+        self.mode = PassMode::Cast { cast: Box::new(target.into()), pad_i32_count };
     }
 
     pub fn is_indirect(&self) -> bool {
@@ -738,6 +745,23 @@ impl<'a, Ty> FnAbi<'a, Ty> {
             _ => {}
         };
 
+        // Decides whether we can pass the given SIMD argument via `PassMode::Direct`.
+        // May only return `true` if the target will always pass those arguments the same way,
+        // no matter what the user does with `-Ctarget-feature`! In other words, whatever
+        // target features are required to pass a SIMD value in registers must be listed in
+        // the `abi_required_features` for the current target and ABI.
+        let can_pass_simd_directly = |arg: &ArgAbi<'_, Ty>| match &spec.arch {
+            // On x86, if we have SSE2 (which we have by default for x86_64), we can always pass up
+            // to 128-bit-sized vectors.
+            Arch::X86 if spec.rustc_abi == Some(RustcAbi::X86Sse2) => arg.layout.size.bits() <= 128,
+            Arch::X86_64 if spec.rustc_abi != Some(RustcAbi::Softfloat) => {
+                // x86-64 non-softfloat targets all require SSE2 so we can use SSE registers.
+                arg.layout.size.bits() <= 128
+            }
+            // So far, we haven't implemented this logic for any other target.
+            _ => false,
+        };
+
         for (arg_idx, arg) in self
             .args
             .iter_mut()
@@ -837,13 +861,8 @@ impl<'a, Ty> FnAbi<'a, Ty> {
                         // We want to pass small aggregates as immediates, but using
                         // an LLVM aggregate type for this leads to bad optimizations,
                         // so we pick an appropriately sized integer type instead.
-                        let attr = if layout_is_noundef(arg.layout, cx) {
-                            ArgAttribute::NoUndef
-                        } else {
-                            ArgAttribute::default()
-                        };
-                        arg.cast_to_with_attrs(Reg { kind: RegKind::Integer, size }, attr.into());
-                    } else if self.conv == CanonAbi::RustTail {
+                        arg.cast_to_maybe_noundef(Reg { kind: RegKind::Integer, size }, cx);
+                    } else if self.conv == CanonAbi::RustTail && arg_idx.is_some() {
                         assert!(arg.layout.is_sized(), "extern \"tail\" arguments must be sized");
                         arg.pass_by_stack_offset(None);
                     }
@@ -860,16 +879,12 @@ impl<'a, Ty> FnAbi<'a, Ty> {
                     // enabled but the callee does, then passing an AVX argument
                     // across this boundary would cause corrupt data to show up.
                     //
-                    // This problem is fixed by unconditionally passing SIMD
-                    // arguments through memory between callers and callees
-                    // which should get them all to agree on ABI regardless of
-                    // target feature sets. Some more information about this
-                    // issue can be found in #44367.
-                    //
-                    // We *could* do better in some cases, e.g. on x86_64 targets where SSE2 is
-                    // required. However, it turns out that that makes LLVM worse at optimizing this
-                    // code, so we pass things indirectly even there. See #139029 for more on that.
-                    if spec.simd_types_indirect {
+                    // This problem is fixed by passing most SIMD arguments through memory between
+                    // callers and callees which should get them all to agree on ABI regardless of
+                    // target feature sets, except for those that rely on target features that we
+                    // know to be always available. Some more information about this issue can be
+                    // found in #44367 and the comment on `can_pass_simd_directly`.
+                    if spec.simd_types_indirect && !can_pass_simd_directly(arg) {
                         arg.make_indirect();
                     }
                 }

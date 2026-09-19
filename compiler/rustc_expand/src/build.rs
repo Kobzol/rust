@@ -628,7 +628,7 @@ impl<'a> ExtCtxt<'a> {
                 binder: ast::ClosureBinder::NotPresent,
                 capture_clause: ast::CaptureBy::Ref,
                 constness: ast::Const::No,
-                coroutine_kind: None,
+                coroutine_marker: None,
                 movability: ast::Movability::Movable,
                 fn_decl,
                 body,
@@ -707,7 +707,7 @@ impl<'a> ExtCtxt<'a> {
                     mutability,
                     expr: Some(expr),
                     define_opaque: None,
-                    eii_impls: Default::default(),
+                    eii_impl: None,
                 }
                 .into(),
             ),
@@ -720,7 +720,6 @@ impl<'a> ExtCtxt<'a> {
         ident: Ident,
         ty: Box<ast::Ty>,
         body: Option<Box<Expr>>,
-        kind: ast::ConstItemKind,
     ) -> Box<ast::Item> {
         let defaultness = ast::Defaultness::Implicit;
         self.item(
@@ -734,7 +733,6 @@ impl<'a> ExtCtxt<'a> {
                     generics: ast::Generics::default(),
                     ty,
                     body,
-                    kind,
                     define_opaque: None,
                 }
                 .into(),
@@ -766,5 +764,17 @@ impl<'a> ExtCtxt<'a> {
     pub fn attr_nested(&self, inner: AttrItem, span: Span) -> ast::Attribute {
         let g = &self.sess.psess.attr_id_generator;
         attr::mk_attr_from_item(g, inner, None, ast::AttrStyle::Outer, span)
+    }
+
+    pub fn empty_generics(&self, span: Span) -> ast::Generics {
+        ast::Generics {
+            params: ThinVec::new(),
+            where_clause: ast::WhereClause {
+                has_where_token: false,
+                predicates: ThinVec::new(),
+                span,
+            },
+            span,
+        }
     }
 }

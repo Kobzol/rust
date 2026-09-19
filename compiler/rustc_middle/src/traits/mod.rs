@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use rustc_errors::{Applicability, Diag, EmissionGuarantee, ErrorGuaranteed};
+use rustc_errors::{Applicability, Diag, ErrorGuaranteed};
 use rustc_hir as hir;
 use rustc_hir::HirId;
 use rustc_hir::def_id::DefId;
@@ -105,7 +105,7 @@ impl<'tcx> ObligationCause<'tcx> {
 
     pub fn derived_cause(
         mut self,
-        parent_trait_pred: ty::PolyTraitPredicate<'tcx>,
+        parent_trait_pred: ty::PolyTraitClause<'tcx>,
         variant: impl FnOnce(DerivedCause<'tcx>) -> ObligationCauseCode<'tcx>,
     ) -> ObligationCause<'tcx> {
         /*!
@@ -127,10 +127,10 @@ impl<'tcx> ObligationCause<'tcx> {
 
     pub fn derived_host_cause(
         mut self,
-        parent_host_pred: ty::Binder<'tcx, ty::HostEffectPredicate<'tcx>>,
+        parent_host_clause: ty::Binder<'tcx, ty::HostEffectClause<'tcx>>,
         variant: impl FnOnce(DerivedHostCause<'tcx>) -> ObligationCauseCode<'tcx>,
     ) -> ObligationCause<'tcx> {
-        self.code = variant(DerivedHostCause { parent_host_pred, parent_code: self.code }).into();
+        self.code = variant(DerivedHostCause { parent_host_clause, parent_code: self.code }).into();
         self
     }
 
@@ -374,7 +374,7 @@ pub enum ObligationCauseCode<'tcx> {
 
     AwaitableExpr(HirId),
 
-    ForLoopIterator,
+    ForLoopIterator(HirId),
 
     QuestionMark,
 
@@ -491,7 +491,7 @@ impl<'tcx> ObligationCauseCode<'tcx> {
 
     /// Returns the base obligation and the base trait predicate, if any, ignoring
     /// derived obligations.
-    pub fn peel_derives_with_predicate(&self) -> (&Self, Option<ty::PolyTraitPredicate<'tcx>>) {
+    pub fn peel_derives_with_predicate(&self) -> (&Self, Option<ty::PolyTraitClause<'tcx>>) {
         let mut base_cause = self;
         let mut base_trait_pred = None;
         while let Some((parent_code, parent_pred)) = base_cause.parent_with_predicate() {
@@ -504,7 +504,7 @@ impl<'tcx> ObligationCauseCode<'tcx> {
         (base_cause, base_trait_pred)
     }
 
-    pub fn parent_with_predicate(&self) -> Option<(&Self, Option<ty::PolyTraitPredicate<'tcx>>)> {
+    pub fn parent_with_predicate(&self) -> Option<(&Self, Option<ty::PolyTraitClause<'tcx>>)> {
         match self {
             ObligationCauseCode::FunctionArg { parent_code, .. } => Some((parent_code, None)),
             ObligationCauseCode::BuiltinDerived(derived)
@@ -577,7 +577,7 @@ pub struct DerivedCause<'tcx> {
     /// current obligation. Note that only trait obligations lead to
     /// derived obligations, so we just store the trait predicate here
     /// directly.
-    pub parent_trait_pred: ty::PolyTraitPredicate<'tcx>,
+    pub parent_trait_pred: ty::PolyTraitClause<'tcx>,
 
     /// The parent trait had this cause.
     pub parent_code: ObligationCauseCodeHandle<'tcx>,
@@ -600,11 +600,11 @@ pub struct ImplDerivedCause<'tcx> {
 #[derive(Clone, Debug, PartialEq, Eq, StableHash, TyEncodable, TyDecodable)]
 #[derive(TypeVisitable, TypeFoldable)]
 pub struct DerivedHostCause<'tcx> {
-    /// The trait predicate of the parent obligation that led to the
+    /// The trait clause of the parent obligation that led to the
     /// current obligation. Note that only trait obligations lead to
-    /// derived obligations, so we just store the trait predicate here
+    /// derived obligations, so we just store the trait clause here
     /// directly.
-    pub parent_host_pred: ty::Binder<'tcx, ty::HostEffectPredicate<'tcx>>,
+    pub parent_host_clause: ty::Binder<'tcx, ty::HostEffectClause<'tcx>>,
 
     /// The parent trait had this cause.
     pub parent_code: ObligationCauseCodeHandle<'tcx>,
@@ -837,12 +837,12 @@ impl DynCompatibilityViolation {
             Self::AssocConst(name, AssocConstViolation::FeatureNotEnabled, _) => {
                 format!("it contains associated const `{name}`").into()
             }
+            Self::AssocConst(name, AssocConstViolation::NonType, _) => format!(
+                "it contains associated const `{name}` that's not defined as `#[rustc_always_gca]`"
+            )
+            .into(),
             Self::AssocConst(name, AssocConstViolation::Generic, _) => {
                 format!("it contains generic associated const `{name}`").into()
-            }
-            Self::AssocConst(name, AssocConstViolation::NonType, _) => {
-                format!("it contains associated const `{name}` that's not defined as `type const`")
-                    .into()
             }
             Self::AssocConst(name, AssocConstViolation::TypeReferencesSelf, _) => format!(
                 "it contains associated const `{name}` whose type references the `Self` type"
@@ -914,7 +914,7 @@ pub enum DynCompatibilityViolationSolution {
 }
 
 impl DynCompatibilityViolationSolution {
-    pub fn add_to<G: EmissionGuarantee>(self, err: &mut Diag<'_, G>) {
+    pub fn add_to<G>(self, err: &mut Diag<'_, G>) {
         match self {
             DynCompatibilityViolationSolution::None => {}
             DynCompatibilityViolationSolution::AddSelfOrMakeSized {
@@ -925,7 +925,8 @@ impl DynCompatibilityViolationSolution {
                 err.span_suggestion(
                     add_self_sugg.1,
                     format!(
-                        "consider turning `{name}` into a method by giving it a `&self` argument"
+                        "consider turning `{name}` into a method by giving it a `&self` \
+                             argument, so that it is accessible through the trait object's vtable"
                     ),
                     add_self_sugg.0,
                     Applicability::MaybeIncorrect,
@@ -933,8 +934,8 @@ impl DynCompatibilityViolationSolution {
                 err.span_suggestion(
                     make_sized_sugg.1,
                     format!(
-                        "alternatively, consider constraining `{name}` so it does not apply to \
-                             trait objects"
+                        "alternatively, consider constraining `{name}` so it is explicitly \
+                             marked as not applying to trait objects"
                     ),
                     make_sized_sugg.0,
                     Applicability::MaybeIncorrect,
@@ -992,11 +993,11 @@ pub enum AssocConstViolation {
     /// Unstable feature `min_generic_const_args` wasn't enabled.
     FeatureNotEnabled,
 
+    /// Not defined as a type-level associated const.
+    NonType,
+
     /// Has own generic parameters (GAC).
     Generic,
-
-    /// Isn't defined as `type const`.
-    NonType,
 
     /// Its type mentions the `Self` type parameter.
     TypeReferencesSelf,

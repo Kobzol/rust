@@ -17,27 +17,24 @@ use rustc_errors::{
     Applicability, Diag, MultiSpan, StashKey, StringPart, listify, pluralize, struct_span_code_err,
 };
 use rustc_hir::attrs::diagnostic::CustomDiagnostic;
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::def::{CtorKind, DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::{self, Visitor};
-use rustc_hir::lang_items::LangItem;
 use rustc_hir::{
     self as hir, ExprKind, HirId, Node, PathSegment, QPath, find_attr, is_range_literal,
 };
 use rustc_infer::infer::{BoundRegionConversionTime, RegionVariableOrigin};
-use rustc_middle::bug;
 use rustc_middle::ty::fast_reject::{DeepRejectCtxt, TreatParams, simplify_type};
 use rustc_middle::ty::print::{
     PrintTraitRefExt as _, with_crate_prefix, with_forced_trimmed_paths,
     with_no_visible_paths_if_doc_hidden,
 };
-use rustc_middle::ty::{
-    self, GenericArgKind, IsSuggestable, RegionExt, Ty, TyCtxt, TypeVisitableExt,
-};
+use rustc_middle::ty::{self, GenericArgKind, IsSuggestable, Ty, TyCtxt, TypeVisitableExt};
 use rustc_span::def_id::DefIdSet;
 use rustc_span::{
-    DUMMY_SP, ErrorGuaranteed, ExpnKind, FileName, Ident, MacroKind, Span, Symbol, edit_distance,
-    kw, sym,
+    DUMMY_SP, ErrorGuaranteed, ExpnKind, FileName, Ident, MacroKind, Span, Symbol, bug,
+    edit_distance, kw, sym,
 };
 use rustc_trait_selection::error_reporting::traits::DefIdOrName;
 use rustc_trait_selection::infer::InferCtxtExt;
@@ -121,7 +118,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if let ty::PredicateKind::Clause(ty::ClauseKind::Trait(trait_pred)) =
                 predicate.kind().as_ref().skip_binder()
             {
-                let ty::TraitPredicate { trait_ref: ty::TraitRef { args, .. }, .. } = trait_pred;
+                let ty::TraitClause { trait_ref: ty::TraitRef { args, .. }, .. } = trait_pred;
                 if args.is_empty() {
                     return false;
                 }
@@ -1254,7 +1251,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         within_macro_span: Option<Span>,
     ) -> ErrorGuaranteed {
         let tcx = self.tcx;
-        let rcvr_ty = self.resolve_vars_if_possible(rcvr_ty);
+        let rcvr_ty = self.deeply_resolve_ignoring_regions(rcvr_ty);
 
         if let Err(guar) = rcvr_ty.error_reported() {
             return guar;
@@ -1949,7 +1946,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         match pred.kind().skip_binder() {
                             ty::PredicateKind::Clause(ty::ClauseKind::Trait(pred)) => {
                                 self.tcx.is_lang_item(pred.def_id(), LangItem::Sized)
-                                    && pred.polarity == ty::PredicatePolarity::Positive
+                                    && pred.polarity == ty::ClausePolarity::Positive
                             }
                             _ => false,
                         }
@@ -2256,7 +2253,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         format!("{item_kind} `{item_name}` is available on `{prev_match}`"),
                     );
                 }
-                let rcvr_ty = self.resolve_vars_if_possible(
+                let rcvr_ty = self.deeply_resolve_ignoring_regions(
                     self.typeck_results
                         .borrow()
                         .expr_ty_adjusted_opt(rcvr_expr)
@@ -3307,7 +3304,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         let field_ty = field.ty(tcx, args).skip_norm_wip();
 
                         // Skip `_`, since that'll just lead to ambiguity.
-                        if self.resolve_vars_if_possible(field_ty).is_ty_var() {
+                        if self.deeply_resolve_ignoring_regions(field_ty).is_ty_var() {
                             return None;
                         }
 
@@ -3327,7 +3324,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     if let Some(ret_ty) = self
                         .ret_coercion
                         .as_ref()
-                        .map(|c| self.resolve_vars_if_possible(c.borrow().expected_ty()))
+                        .map(|c| self.deeply_resolve_ignoring_regions(c.borrow().expected_ty()))
                         && let ty::Adt(kind, _) = ret_ty.kind()
                         && tcx.get_diagnostic_item(diagnostic_item) == Some(kind.did())
                     {
@@ -3543,7 +3540,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
 
         foreign_preds
-            .sort_by_key(|(_, pred): &(_, ty::TraitPredicate<'_>)| pred.trait_ref.to_string());
+            .sort_by_key(|(_, pred): &(_, ty::TraitClause<'_>)| pred.trait_ref.to_string());
 
         for (_, pred) in &foreign_preds {
             let ty = pred.self_ty();
@@ -3587,7 +3584,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// Returns Some(list_of_derives) if possible, or None if not.
     fn consider_suggesting_derives_for_ty(
         &self,
-        trait_pred: ty::TraitPredicate<'tcx>,
+        trait_pred: ty::TraitClause<'tcx>,
         adt: ty::AdtDef<'tcx>,
     ) -> Option<Vec<(String, Span, Symbol)>> {
         let diagnostic_name = self.tcx.get_diagnostic_name(trait_pred.def_id())?;
@@ -3812,8 +3809,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return;
         };
         let is_inclusive = match lang_item {
-            hir::LangItem::RangeTo => false,
-            hir::LangItem::RangeToInclusive | hir::LangItem::RangeInclusiveCopy => true,
+            LangItem::RangeTo => false,
+            LangItem::RangeToInclusive | LangItem::RangeInclusiveCopy => true,
             _ => return,
         };
 
@@ -3883,7 +3880,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         return_type: Option<Ty<'tcx>>,
     ) {
         let Some(output_ty) = self.tcx.get_impl_future_output_ty(ty) else { return };
-        let output_ty = self.resolve_vars_if_possible(output_ty);
+        let output_ty = self.deeply_resolve_ignoring_regions(output_ty);
         let method_exists =
             self.method_exists_for_diagnostic(item_name, output_ty, call.hir_id, return_type);
         debug!("suggest_await_before_method: is_method_exist={}", method_exists);
@@ -3911,7 +3908,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ) {
         let tcx = self.tcx;
         if tcx.sess.source_map().is_multiline(sugg_span) {
-            err.span_label(sugg_span.with_hi(span.lo()), "");
+            err.span_context(sugg_span.with_hi(span.lo()));
         }
         if let Some(within_macro_span) = within_macro_span {
             err.span_label(within_macro_span, "due to this macro variable");
@@ -4848,9 +4845,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 }
             }),
         );
-        let trait_pred = ty::Binder::dummy(ty::TraitPredicate {
+        let trait_pred = ty::Binder::dummy(ty::TraitClause {
             trait_ref,
-            polarity: ty::PredicatePolarity::Positive,
+            polarity: ty::ClausePolarity::Positive,
         });
         let obligation = Obligation::new(self.tcx, self.misc(rcvr.span), self.param_env, trait_ref);
         self.err_ctxt().note_different_trait_with_same_name(err, &obligation, trait_pred)
@@ -4947,7 +4944,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn suggest_hashmap_on_unsatisfied_hashset_buildhasher(
         &self,
         err: &mut Diag<'_>,
-        pred: &ty::TraitPredicate<'_>,
+        pred: &ty::TraitClause<'_>,
         adt: ty::AdtDef<'_>,
     ) -> bool {
         if self.tcx.is_diagnostic_item(sym::HashSet, adt.did())

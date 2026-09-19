@@ -1,5 +1,6 @@
 use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use rustc_data_structures::sorted_map::SortedMap;
+use rustc_data_structures::thin_vec::ThinVec;
 use rustc_data_structures::unord::UnordMap;
 use rustc_errors::codes::*;
 use rustc_errors::{
@@ -9,7 +10,6 @@ use rustc_errors::{
 use rustc_hir::def::{CtorOf, DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_hir::{self as hir, HirId};
-use rustc_middle::bug;
 use rustc_middle::ty::fast_reject::{TreatParams, simplify_type};
 use rustc_middle::ty::print::{PrintPolyTraitRefExt as _, PrintTraitRefExt as _};
 use rustc_middle::ty::{
@@ -18,7 +18,7 @@ use rustc_middle::ty::{
 };
 use rustc_session::diagnostics::feature_err;
 use rustc_span::edit_distance::find_best_match_for_name;
-use rustc_span::{BytePos, DUMMY_SP, Ident, Span, Symbol, kw, sym};
+use rustc_span::{BytePos, DUMMY_SP, Ident, Span, Symbol, bug, kw, sym};
 use rustc_trait_selection::error_reporting::traits::report_dyn_incompatibility;
 use rustc_trait_selection::traits::{
     FulfillmentError, dyn_compatibility_violations_for_assoc_item,
@@ -119,7 +119,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         assoc_tag: ty::AssocTag,
         assoc_ident: Ident,
         span: Span,
-        constraint: Option<&hir::AssocItemConstraint<'tcx>>,
+        constraint: Option<&hir::AssocItemConstraint<'_>>,
     ) -> ErrorGuaranteed
     where
         I: Iterator<Item = ty::PolyTraitRef<'tcx>>,
@@ -348,7 +348,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         assoc_tag: ty::AssocTag,
         ident: Ident,
         span: Span,
-        constraint: Option<&hir::AssocItemConstraint<'tcx>>,
+        constraint: Option<&hir::AssocItemConstraint<'_>>,
     ) -> ErrorGuaranteed {
         let tcx = self.tcx();
 
@@ -414,7 +414,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         assoc_tag: ty::AssocTag,
         assoc_ident: Ident,
         span: Span,
-        constraint: Option<&hir::AssocItemConstraint<'tcx>>,
+        constraint: Option<&hir::AssocItemConstraint<'_>>,
     ) -> ErrorGuaranteed {
         let tcx = self.tcx();
 
@@ -480,11 +480,10 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                                             &item_segment,
                                             trait_ref.args,
                                         );
-                                        ty::AliasTerm::new_from_def_id(
-                                            tcx,
-                                            assoc_item.def_id,
-                                            alias_args,
-                                        )
+                                        let kind = ty::AliasTermKind::ProjectionConst {
+                                            def_id: assoc_item.def_id,
+                                        };
+                                        ty::AliasTerm::new_from_args(tcx, kind, alias_args)
                                     });
 
                                     // FIXME(mgca): code duplication with other places we lower
@@ -543,7 +542,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         &self,
         trait_def_id: DefId,
         span: Span,
-        item_segment: &hir::PathSegment<'tcx>,
+        item_segment: &hir::PathSegment<'_>,
         assoc_tag: ty::AssocTag,
     ) -> ErrorGuaranteed {
         let tcx = self.tcx();
@@ -884,7 +883,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         name: Ident,
         self_ty: Ty<'tcx>,
         candidates: Vec<InherentAssocCandidate>,
-        fulfillment_errors: Vec<FulfillmentError<'tcx>>,
+        fulfillment_errors: ThinVec<FulfillmentError<'tcx>>,
         span: Span,
         assoc_tag: ty::AssocTag,
     ) -> ErrorGuaranteed {
@@ -1484,7 +1483,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
 
     pub fn report_trait_object_addition_traits(
         &self,
-        regular_traits: &Vec<(ty::PolyTraitPredicate<'tcx>, SmallVec<[Span; 1]>)>,
+        regular_traits: &Vec<(ty::PolyTraitClause<'tcx>, SmallVec<[Span; 1]>)>,
     ) -> ErrorGuaranteed {
         // we use the last span to point at the traits themselves,
         // and all other preceding spans are trait alias expansions.
@@ -1561,6 +1560,16 @@ pub fn prohibit_assoc_item_constraint(
             None
         },
     });
+
+    if let hir::AssocItemConstraintKind::Bound {
+        bounds: [hir::GenericBound::Trait(poly_trait_ref)],
+    } = constraint.kind
+        && let Res::Err = poly_trait_ref.trait_ref.path.res
+    {
+        // This was likely a `Vec<foo::Bar>` to `Vec<foo:Bar>` typo. A prior error will have been
+        // emitted during resolve, with better context.
+        err.downgrade_to_delayed_bug();
+    }
 
     // Emit a suggestion to turn the assoc item binding into a generic arg
     // if the relevant item has a generic param whose name matches the binding name;
@@ -2043,4 +2052,22 @@ fn assoc_tag_str(assoc_tag: ty::AssocTag) -> &'static str {
         ty::AssocTag::Const => "constant",
         ty::AssocTag::Type => "type",
     }
+}
+
+/// Computes the `pat.between(ty)` span for the "use `=`" suggestion on `let pat: ty`.
+/// Returns `None` if `pat` and `ty` are in incompatible macro contexts (e.g. `pat` is a
+/// metavariable from the call site while `ty` lives in the macro body), in which case no
+/// suggestion is emitted.
+pub(crate) fn eq_ctxt_suggestion_span(pat: Span, ty: Span) -> Option<Span> {
+    if let Some(ty2) = ty.find_ancestor_in_same_ctxt(pat)
+        && pat.hi() <= ty2.lo()
+    {
+        return Some(pat.between(ty2));
+    }
+    if let Some(pat2) = pat.find_ancestor_in_same_ctxt(ty)
+        && pat2.hi() <= ty.lo()
+    {
+        return Some(pat2.between(ty));
+    }
+    None
 }

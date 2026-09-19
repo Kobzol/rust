@@ -182,7 +182,7 @@ impl<'a> Parser<'a> {
                 AttrWrapper::empty(),
                 force_collect,
                 |this, _empty_attrs| {
-                    let (expr, _) = this.parse_expr_res(restrictions, attrs)?;
+                    let (expr, _) = this.parse_expr_res_after_attrs(restrictions, attrs)?;
                     Ok((expr, Trailing::No, UsePreAttrPos::Yes))
                 },
             )?;
@@ -235,7 +235,7 @@ impl<'a> Parser<'a> {
             // Perform this outside of the `collect_tokens` closure, since our
             // outer attributes do not apply to this part of the expression.
             let (expr, _) = self.with_res(Restrictions::STMT_EXPR, |this| {
-                this.parse_expr_assoc_rest_with(Bound::Unbounded, true, expr)
+                this.parse_expr_assoc_rest(Bound::Unbounded, true, expr)
             })?;
             Ok(self.mk_stmt(lo.to(self.prev_token.span), StmtKind::Expr(expr)))
         } else {
@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
             let e = self.mk_expr(lo.to(hi), ExprKind::MacCall(mac));
             let e = self.maybe_recover_from_bad_qpath(e)?;
             let e = self.parse_expr_dot_or_call_with(attrs, e, lo)?;
-            let (e, _) = self.parse_expr_assoc_rest_with(Bound::Unbounded, false, e)?;
+            let (e, _) = self.parse_expr_assoc_rest(Bound::Unbounded, false, e)?;
             StmtKind::Expr(e)
         };
         Ok(self.mk_stmt(lo.to(hi), kind))
@@ -1014,47 +1014,39 @@ impl<'a> Parser<'a> {
                                 break 'break_recover None;
                             }
 
-                            match &expr.kind {
-                                ExprKind::Path(None, ast::Path { segments, .. })
-                                    if let [segment] = segments.as_slice() =>
-                                {
-                                    if self.token == token::Colon
-                                        && self.look_ahead(1, |token| {
-                                            token.is_metavar_block()
-                                                || matches!(
-                                                    token.kind,
-                                                    token::Ident(
-                                                        kw::For | kw::Loop | kw::While,
-                                                        token::IdentIsRaw::No
-                                                    ) | token::OpenBrace
-                                                )
+                            if self.token == token::Colon
+                                && let ExprKind::Path(None, ast::Path { segments, .. }) = &expr.kind
+                                && let [segment] = segments.as_slice()
+                                && self.look_ahead(1, |t| {
+                                    t.is_metavar_block()
+                                        || t.kind == token::OpenBrace
+                                        || t.is_non_raw_ident_where(|ident| {
+                                            matches!(ident.name, kw::For | kw::Loop | kw::While)
                                         })
-                                    {
-                                        let snapshot = self.create_snapshot_for_diagnostic();
-                                        let label = Label {
-                                            ident: Ident::from_str_and_span(
-                                                &format!("'{}", segment.ident),
-                                                segment.ident.span,
-                                            ),
-                                        };
-                                        match self.parse_expr_labeled(label, false) {
-                                            Ok(labeled_expr) => {
-                                                e.cancel();
-                                                self.dcx().emit_err(MalformedLoopLabel {
-                                                    span: label.ident.span,
-                                                    suggestion: label.ident.span.shrink_to_lo(),
-                                                });
-                                                *expr = labeled_expr;
-                                                break 'break_recover None;
-                                            }
-                                            Err(err) => {
-                                                err.cancel();
-                                                self.restore_snapshot(snapshot);
-                                            }
-                                        }
+                                })
+                            {
+                                let snapshot = self.create_snapshot_for_diagnostic();
+                                let label = Label {
+                                    ident: Ident::from_str_and_span(
+                                        &format!("'{}", segment.ident),
+                                        segment.ident.span,
+                                    ),
+                                };
+                                match self.parse_expr_labeled(label, false) {
+                                    Ok(labeled_expr) => {
+                                        e.cancel();
+                                        self.dcx().emit_err(MalformedLoopLabel {
+                                            span: label.ident.span,
+                                            suggestion: label.ident.span.shrink_to_lo(),
+                                        });
+                                        *expr = labeled_expr;
+                                        break 'break_recover None;
+                                    }
+                                    Err(err) => {
+                                        err.cancel();
+                                        self.restore_snapshot(snapshot);
                                     }
                                 }
-                                _ => {}
                             }
 
                             let res =

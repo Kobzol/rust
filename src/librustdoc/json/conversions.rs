@@ -12,12 +12,12 @@ use rustc_hir::attrs::{
 };
 use rustc_hir::def::{CtorKind, DefKind};
 use rustc_hir::def_id::DefId;
-use rustc_hir::{HeaderSafety, Safety, find_attr};
+use rustc_hir::{HeaderSafety, Safety, find_attr, intravisit};
+use rustc_hir_pretty::PpAnn;
 use rustc_metadata::rendered_const;
-use rustc_middle::ty::TyCtxt;
-use rustc_middle::{bug, ty};
+use rustc_middle::ty::{self, TyCtxt};
 use rustc_span::def_id::ModId;
-use rustc_span::{Pos, Symbol, kw, sym};
+use rustc_span::{Pos, Symbol, bug, kw, sym};
 use rustdoc_json_types::*;
 
 use crate::clean::{self, ItemId};
@@ -828,7 +828,7 @@ impl FromClean<clean::Impl> for Impl {
             clean::ImplKind::Blanket(ty) => (false, Some(ty)),
         };
         let is_negative = match polarity {
-            ty::ImplPolarity::Positive | ty::ImplPolarity::Reservation => false,
+            ty::ImplPolarity::Positive => false,
             ty::ImplPolarity::Negative => true,
         };
         Impl {
@@ -1243,7 +1243,10 @@ fn maybe_from_hir_attr(attr: &hir::Attribute, item_id: ItemId, tcx: TyCtxt<'_>) 
 }
 
 fn other_attr(tcx: TyCtxt<'_>, attr: &hir::Attribute) -> Attribute {
-    let mut s = rustc_hir_pretty::attribute_to_string(&tcx, attr);
+    let mut s = rustc_hir_pretty::attribute_to_string(
+        &(&tcx as &dyn intravisit::HirTyCtxt<'_>) as &dyn PpAnn,
+        attr,
+    );
     assert_eq!(s.pop(), Some('\n'));
     Attribute::Other(s)
 }
@@ -1291,7 +1294,7 @@ fn format_integer_type(it: rustc_abi::IntegerType) -> String {
 pub(super) fn target(sess: &rustc_session::Session) -> Target {
     // Build a set of which features are enabled on this target
     let globally_enabled_features: FxHashSet<&str> =
-        sess.unstable_target_features.iter().map(|name| name.as_str()).collect();
+        sess.internal_target_features.iter().map(|name| name.as_str()).collect();
 
     // Build a map of target feature stability by feature name
     use rustc_target::target_features::Stability;

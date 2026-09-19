@@ -6,14 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rustc_ast as ast;
 use rustc_ast::token::DocFragmentKind;
 use rustc_ast::{AttrStyle, CRATE_NODE_ID, NodeId, Safety};
+use rustc_attr_ir::target::Target;
+use rustc_attr_ir::{AttrArgs, AttrItem, AttrPath, Attribute, AttributeKind, HashIgnoredAttrId};
 use rustc_data_structures::sync::{DynSend, DynSync};
 use rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level, MultiSpan};
-use rustc_feature::{BUILTIN_ATTRIBUTE_MAP, Features};
-use rustc_hir::attrs::AttributeKind;
-use rustc_hir::{AttrArgs, AttrItem, AttrPath, Attribute, HashIgnoredAttrId, Target};
-use rustc_lint_defs::RegisteredTools;
+use rustc_feature::{BUILTIN_ATTRIBUTE_SET, Features};
+use rustc_lint_defs::{LintId, RegisteredTools};
 use rustc_session::Session;
-use rustc_session::lint::LintId;
 use rustc_span::{DUMMY_SP, ErrorGuaranteed, Span, Symbol, sym};
 
 use crate::attributes::AttributeSafety;
@@ -21,10 +20,10 @@ use crate::context::{
     ATTRIBUTE_PARSERS, AcceptContext, FinalizeCheckContext, FinalizeCheckFn, FinalizeContext,
     FinalizeFn, FinalizeOutput, SharedContext,
 };
+use crate::diagnostics::ParsedDescription;
 use crate::parser::{AllowExprMetavar, ArgParser, PathParser, RefPathParser};
-use crate::session_diagnostics::ParsedDescription;
 use crate::synthetic::SyntheticAttrState;
-use crate::{AttributeTemplate, OmitDoc, ShouldEmit};
+use crate::{AttributeTemplate, ShouldEmit};
 
 pub struct EmitAttribute(
     pub  Box<
@@ -162,7 +161,7 @@ impl<'sess> AttributeParser<'sess> {
             attrs,
             target_span,
             target,
-            OmitDoc::Skip,
+            None,
             std::convert::identity,
             |lint_id, span, kind| {
                 sess.psess.dyn_buffer_lint_sess(lint_id.lint, span, target_node_id, kind.0)
@@ -292,6 +291,7 @@ impl<'sess> AttributeParser<'sess> {
         self.sess
     }
 
+    #[track_caller]
     pub(crate) fn features(&self) -> &'sess Features {
         self.features.expect("features not available at this point in the compiler")
     }
@@ -310,14 +310,13 @@ impl<'sess> AttributeParser<'sess> {
 
     /// Parse a list of attributes.
     ///
-    /// `target_span` is the span of the thing this list of attributes is applied to,
-    /// and when `omit_doc` is set, doc attributes are filtered out.
+    /// `target_span` is the span of the thing this list of attributes is applied to.
     pub fn parse_attribute_list(
         &mut self,
         attrs: &[ast::Attribute],
         target_span: Span,
         target: Target,
-        omit_doc: OmitDoc,
+        target_item: Option<&ast::Item>,
         lower_span: impl Copy + Fn(Span) -> Span,
         mut emit_lint: impl FnMut(LintId, MultiSpan, EmitAttribute),
     ) -> Vec<Attribute> {
@@ -335,23 +334,23 @@ impl<'sess> AttributeParser<'sess> {
                 }
             }
 
-            // Sometimes, for example for `#![doc = include_str!("readme.md")]`,
-            // doc still contains a non-literal. You might say, when we're lowering attributes
-            // that's expanded right? But no, sometimes, when parsing attributes on macros,
-            // we already use the lowering logic and these are still there. So, when `omit_doc`
-            // is set we *also* want to ignore these.
-            let is_doc_attribute = attr.has_name(sym::doc);
-            if omit_doc == OmitDoc::Skip && is_doc_attribute {
+            fn is_doc_non_lit_expr(attr: &ast::Attribute) -> bool {
+                if !attr.has_name(sym::doc) {
+                    return false;
+                }
+                let ast::AttrKind::Normal(n) = &attr.kind else { return false };
+                let ast::AttrArgs::Eq { expr, .. } = &n.item.args else { return false };
+                !matches!(expr.kind, ast::ExprKind::Lit(_))
+            }
+
+            // FIXME accidentally allowed on Stable Rust
+            if target == Target::MacroCall && is_doc_non_lit_expr(attr) {
                 continue;
             }
 
             let attr_span = lower_span(attr.span);
             match &attr.kind {
                 ast::AttrKind::DocComment(comment_kind, symbol) => {
-                    if omit_doc == OmitDoc::Skip {
-                        continue;
-                    }
-
                     attributes.push(Attribute::Parsed(AttributeKind::DocComment {
                         style: attr.style,
                         kind: DocFragmentKind::Sugared(*comment_kind),
@@ -379,7 +378,7 @@ impl<'sess> AttributeParser<'sess> {
                         );
                         self.check_attribute_stability(&attr_path, attr_span, accept.stability);
                         if let [part] = parts.as_slice() {
-                            debug_assert!(BUILTIN_ATTRIBUTE_MAP.contains(part));
+                            debug_assert!(BUILTIN_ATTRIBUTE_SET.contains(part));
                         }
 
                         let Some(args) = ArgParser::from_attr_args(
@@ -407,7 +406,7 @@ impl<'sess> AttributeParser<'sess> {
                         // bla
                         // blob
                         // a
-                        if is_doc_attribute
+                        if attr.has_name(sym::doc)
                             && let ArgParser::NameValue(nv) = &args
                             // If not a string key/value, it should emit an error, but to make
                             // things simpler, it's handled in `DocParser` because it's simpler to
@@ -451,6 +450,8 @@ impl<'sess> AttributeParser<'sess> {
                         if !cx.shared.has_lint_been_emitted.load(Ordering::Relaxed) {
                             cx.shared.cx.check_args_used(attr, &args)
                         }
+                    } else if let [sym::diagnostic, _unknown, ..] = &*parts {
+                        self.unknown_diagnostic_attr(&n.item.path.segments[1], &mut emit_lint);
                     } else {
                         let attr = AttrItem {
                             path: attr_path.clone(),
@@ -522,6 +523,7 @@ impl<'sess> AttributeParser<'sess> {
                     },
                     all_attrs: &attr_paths,
                     parsed_attrs: &attributes,
+                    target_item,
                 },
                 attr_span,
             );

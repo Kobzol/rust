@@ -7,8 +7,9 @@
 use std::ops::ControlFlow;
 
 use rustc_errors::FatalError;
+use rustc_hir as hir;
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::def_id::DefId;
-use rustc_hir::{self as hir, LangItem};
 use rustc_middle::query::Providers;
 use rustc_middle::ty::{
     self, EarlyBinder, GenericArgs, Ty, TyCtxt, TypeFoldable, TypeFolder, TypeSuperFoldable,
@@ -360,7 +361,7 @@ pub fn dyn_compatibility_violations_for_assoc_item(
     let span = || item.ident(tcx).span;
 
     match item.kind {
-        ty::AssocKind::Const { name, is_type_const } => {
+        ty::AssocKind::Const { name } => {
             // We will permit type associated consts if they are explicitly mentioned in the
             // trait object type. We can't check this here, as here we only check if it is
             // guaranteed to not be possible.
@@ -370,7 +371,7 @@ pub fn dyn_compatibility_violations_for_assoc_item(
             if tcx.features().min_generic_const_args() {
                 if !tcx.generics_of(item.def_id).is_own_empty() {
                     errors.push(AssocConstViolation::Generic);
-                } else if !is_type_const {
+                } else if !tcx.is_always_gca(item.def_id) && !tcx.features().generic_const_args() {
                     errors.push(AssocConstViolation::NonType);
                 }
 
@@ -563,9 +564,9 @@ fn virtual_call_violations_for_method<'tcx>(
         // only if the autotrait is one of the trait object's trait bounds, like
         // in `dyn Trait + AutoTrait`. This guarantees that trait objects only
         // implement auto traits if the underlying type does as well.
-        if let ty::ClauseKind::Trait(ty::TraitPredicate {
+        if let ty::ClauseKind::Trait(ty::TraitClause {
             trait_ref: pred_trait_ref,
-            polarity: ty::PredicatePolarity::Positive,
+            polarity: ty::ClausePolarity::Positive,
         }) = clause.kind().skip_binder()
             && pred_trait_ref.self_ty() == tcx.types.self_param
             && tcx.trait_is_auto(pred_trait_ref.def_id)
@@ -732,7 +733,7 @@ fn receiver_is_dispatchable<'tcx>(
 
         normalize_param_env_or_error(
             tcx,
-            ty::ParamEnv::new(tcx.mk_clauses(&clauses)),
+            ty::ParamEnv::new(tcx, clauses),
             ObligationCause::dummy_with_span(tcx.def_span(method.def_id)),
         )
     };

@@ -12,8 +12,8 @@ use rustc_middle::middle::dependency_format::Linkage;
 use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::ty::layout::{LayoutOf, MaybeResult, TyAndLayout};
 use rustc_middle::ty::{self, FnSigKind, IntTy, Ty, TyCtxt, UintTy};
-use rustc_session::config::CrateType;
 use rustc_span::{Span, Symbol};
+use rustc_structures::CrateType;
 use rustc_symbol_mangling::mangle_internal_symbol;
 use rustc_target::spec::Os;
 
@@ -132,15 +132,7 @@ pub fn iter_exported_symbols<'tcx>(
         if !(used || codegen_attrs.contains_extern_indicator()) {
             continue;
         }
-        // FIXME: `#[no_mangle]` makes no sense on a generic item, but still causes it to be
-        // considered "extern". Remove this once `no_mangle_generic_items` is a hard error.
-        let mono = {
-            let generics = tcx.generics_of(def_id);
-            !generics.requires_monomorphization(tcx)
-        };
-        if mono {
-            f(LOCAL_CRATE, def_id.into(), used)?;
-        }
+        f(LOCAL_CRATE, def_id.into(), used)?;
     }
 
     // Next, all our dependencies.
@@ -747,7 +739,7 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
     {
         let this = self.eval_context_ref();
         let (ptr, len) = slice.to_scalar_pair();
-        let ptr = ptr.to_pointer(this)?;
+        let ptr = ptr.to_pointer(this);
         let len = len.to_target_usize(this)?;
         let bytes = this.read_bytes_ptr_strip_provenance(ptr, Size::from_bytes(len))?;
         interp_ok(bytes)
@@ -945,7 +937,7 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
         target_feature: &str,
     ) -> InterpResult<'tcx, ()> {
         let this = self.eval_context_ref();
-        if !this.tcx.sess.unstable_target_features.contains(&Symbol::intern(target_feature)) {
+        if !this.tcx.sess.internal_target_features.contains(&Symbol::intern(target_feature)) {
             throw_ub_format!(
                 "attempted to call intrinsic `{intrinsic}` that requires missing target feature {target_feature}"
             );

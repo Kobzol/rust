@@ -5,18 +5,18 @@ use rustc_apfloat::Float;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{Diag, msg};
 use rustc_hir as hir;
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::find_attr;
 use rustc_index::Idx;
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_infer::traits::Obligation;
 use rustc_middle::mir::interpret::ErrorHandled;
-use rustc_middle::span_bug;
 use rustc_middle::thir::{FieldPat, Pat, PatKind};
 use rustc_middle::ty::{
     self, Ty, TyCtxt, TypeSuperVisitable, TypeVisitableExt, TypeVisitor, Unnormalized,
 };
 use rustc_span::def_id::DefId;
-use rustc_span::{DUMMY_SP, Span};
+use rustc_span::{DUMMY_SP, Span, span_bug};
 use rustc_trait_selection::error_reporting::traits::ambiguity::{
     CandidateSource, compute_applicable_impls_for_diagnostics,
 };
@@ -79,14 +79,16 @@ impl<'tcx> ConstToPat<'tcx> {
     fn mk_err(&self, mut err: Diag<'_>, ty: Ty<'tcx>) -> Box<Pat<'tcx>> {
         if let ty::ConstKind::Alias(_, alias_const) = self.c.kind() {
             if let ty::AliasConstKind::Projection { def_id }
-            | ty::AliasConstKind::Inherent { def_id } = alias_const.kind
+            | ty::AliasConstKind::InherentSelf { def_id }
+            | ty::AliasConstKind::InherentImpl { def_id } = alias_const.kind
                 && let Some(def_id) = def_id.as_local()
             {
                 // Include the container item in the output.
-                err.span_label(self.tcx.def_span(self.tcx.local_parent(def_id)), "");
+                err.span_context(self.tcx.def_span(self.tcx.local_parent(def_id)));
             }
             if let ty::AliasConstKind::Projection { def_id }
-            | ty::AliasConstKind::Inherent { def_id }
+            | ty::AliasConstKind::InherentSelf { def_id }
+            | ty::AliasConstKind::InherentImpl { def_id }
             | ty::AliasConstKind::Free { def_id } = alias_const.kind
             {
                 err.span_label(self.tcx.def_span(def_id), msg!("constant defined here"));
@@ -126,18 +128,25 @@ impl<'tcx> ConstToPat<'tcx> {
                     {
                         // Display the `fn` name as well in the diagnostic, as the generic isn't
                         // in the same line and it could be confusing otherwise.
-                        err.span_label(ident, "");
+                        err.span_context(ident);
                     }
                 }
             }
             return self.mk_err(err, ty);
         };
 
-        // FIXME(gca): This will become insufficient once associated constants can be
-        // implemented as `type` consts (project-const-generics#76). At that point it'll
-        // become necessary to just use type system normalization for all const patterns
-        // but that's not yet possible.
-        let const_value = if alias_const.kind.is_type_const(self.tcx) {
+        // Under generic_const_args, `alias_const` might be a regular const declared in a trait, but
+        // is `impl`d as a directly represented const. We do not know whether it is here, so we must
+        // use type system normalization for all consts under generic_const_args.
+        //
+        // We probably want to always use type system normalization on stable too, but that would be
+        // a breaking change (in addition to needing significant improvements to diagnostics), so
+        // right now, we limit this to just generic_const_args.
+        //
+        // See: https://github.com/rust-lang/project-const-generics/issues/105
+        let const_value = if self.tcx.features().generic_const_args()
+            || alias_const.kind.is_direct_const(self.tcx)
+        {
             let Ok(normalize) = self
                 .tcx
                 .try_normalize_erasing_regions(self.typing_env, Unnormalized::new_wip(self.c))
@@ -165,7 +174,8 @@ impl<'tcx> ConstToPat<'tcx> {
                         // on its use as well.
                         if let ty::ConstKind::Alias(_, alias_const) = self.c.kind()
                             && let ty::AliasConstKind::Projection { .. }
-                            | ty::AliasConstKind::Inherent { .. }
+                            | ty::AliasConstKind::InherentSelf { .. }
+                            | ty::AliasConstKind::InherentImpl { .. }
                             | ty::AliasConstKind::Free { .. } = alias_const.kind
                         {
                             err.downgrade_to_delayed_bug();
@@ -615,9 +625,8 @@ fn type_has_partial_eq_impl<'tcx>(
     // (If there isn't, then we can safely issue a hard
     // error, because that's never worked, due to compiler
     // using `PartialEq::eq` in this scenario in the past.)
-    let partial_eq_trait_id = tcx.require_lang_item(hir::LangItem::PartialEq, DUMMY_SP);
-    let structural_partial_eq_trait_id =
-        tcx.require_lang_item(hir::LangItem::StructuralPeq, DUMMY_SP);
+    let partial_eq_trait_id = tcx.require_lang_item(LangItem::PartialEq, DUMMY_SP);
+    let structural_partial_eq_trait_id = tcx.require_lang_item(LangItem::StructuralPeq, DUMMY_SP);
 
     // This *could* accept a type that isn't actually `PartialEq`, because region bounds get
     // ignored. However that should be pretty much impossible since consts that do not depend on

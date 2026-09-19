@@ -3,6 +3,7 @@
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/hir.html
 
 // tidy-alphabetical-start
+#![cfg_attr(bootstrap, feature(never_type))]
 #![feature(associated_type_defaults)]
 #![feature(closure_track_caller)]
 #![feature(const_default)]
@@ -10,36 +11,33 @@
 #![feature(default_field_values)]
 #![feature(derive_const)]
 #![feature(exhaustive_patterns)]
-#![feature(never_type)]
-#![feature(variant_count)]
+#![feature(final_associated_functions)]
 #![recursion_limit = "256"]
 // tidy-alphabetical-end
 
 mod arena;
-pub mod attrs;
 pub mod def;
-pub mod def_path_hash_map;
-pub mod definitions;
-pub mod diagnostic_items;
 mod hir;
 pub mod intravisit;
-pub mod lang_items;
 pub mod lints;
 pub mod pat_util;
-mod stability;
 mod stable_hash_impls;
-pub mod target;
-pub mod weak_lang_items;
-
-#[cfg(test)]
-mod tests;
+mod target_impls;
 
 #[doc(no_inline)]
 pub use hir::*;
-pub use lang_items::{LangItem, LanguageItems};
+pub use rustc_attr_ir::{self as attrs, find_attr};
 pub use rustc_hir_id::*;
 pub use rustc_span::def_id;
-pub use stability::*;
-pub use target::{MethodKind, Target};
+// FIXME: Remove this use tree, replace by `rustc_hir::attrs` or `rustc_attr_ir` imports
+#[doc(hidden)]
+pub use {
+    attrs::target::{self, AssocCtxt, MethodKind, Target},
+    attrs::{
+        AttrArgs, AttrItem, AttrPath, Attribute, ConstStability, DefaultBodyStability,
+        HashIgnoredAttrId, PartialConstStability, Stability, StabilityLevel, StableSince,
+        UnstableReason, VERSION_PLACEHOLDER,
+    },
+};
 
 pub use crate::arena::Arena;
