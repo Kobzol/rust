@@ -10,13 +10,12 @@ use rustc_ast::token::{self, Delimiter, NonterminalKind, Token, TokenKind};
 use rustc_ast::tokenstream::{self, DelimSpan, TokenStream};
 use rustc_ast::{self as ast, DUMMY_NODE_ID, NodeId, Safety};
 use rustc_ast_pretty::pprust;
+use rustc_attr_ir::diagnostic::Directive;
+use rustc_attr_ir::{self as attrs, find_attr};
 use rustc_data_structures::fx::{FxHashMap, FxIndexMap};
 use rustc_errors::{Applicability, Diag, ErrorGuaranteed, MultiSpan};
 use rustc_feature::Features;
-use rustc_hir as hir;
-use rustc_hir::attrs::diagnostic::Directive;
 use rustc_hir::def::MacroKinds;
-use rustc_hir::find_attr;
 use rustc_lint_defs::builtin::{
     RUST_2021_INCOMPATIBLE_OR_PATTERNS, SEMICOLON_IN_EXPRESSIONS_FROM_MACROS,
     SEMICOLON_IN_EXPRESSIONS_FROM_NON_LOCAL_MACROS,
@@ -245,7 +244,7 @@ impl MacroRulesMacroExpander {
             trace_macros_note(&mut cx.expansions, sp, msg);
         }
 
-        match try_match_macro_derive(psess, name, body, rules, &mut NoopTracker) {
+        match try_match_macro_derive(psess, body, rules, &mut NoopTracker) {
             Ok((rule_index, rule, named_matches)) => {
                 let MacroRule::Derive { rhs, .. } = rule else {
                     panic!("try_match_macro_derive returned non-derive rule");
@@ -448,7 +447,7 @@ fn expand_macro<'cx, 'a: 'cx>(
     }
 
     // Track nothing for the best performance.
-    let try_success_result = try_match_macro(psess, name, &arg, rules, &mut NoopTracker);
+    let try_success_result = try_match_macro(psess, &arg, rules, &mut NoopTracker);
 
     match try_success_result {
         Ok((rule_index, rule, named_matches)) => {
@@ -525,6 +524,10 @@ fn expand_macro_attr(
     // whereas macros from an external crate have a dummy id.
     let is_local = node_id != DUMMY_NODE_ID;
 
+    if !is_local && !cx.ecfg.features.macro_attr() {
+        feature_err(cx.sess, sym::macro_attr, sp, "`macro_rules!` attributes are unstable").emit();
+    }
+
     if cx.trace_macros() {
         let msg = format!(
             "expanding `#[{name}({})] {}`",
@@ -535,7 +538,7 @@ fn expand_macro_attr(
     }
 
     // Track nothing for the best performance.
-    match try_match_macro_attr(psess, name, &args, &body, rules, &mut NoopTracker) {
+    match try_match_macro_attr(psess, &args, &body, rules, &mut NoopTracker) {
         Ok((i, rule, named_matches)) => {
             let MacroRule::Attr { rhs, unsafe_rule, .. } = rule else {
                 panic!("try_macro_match_attr returned non-attr rule");
@@ -603,7 +606,6 @@ pub(super) enum CanRetry {
 #[instrument(level = "debug", skip(psess, arg, rules, track), fields(tracking = %T::description()))]
 pub(super) fn try_match_macro<'matcher, T: Tracker<'matcher>>(
     psess: &ParseSess,
-    name: Ident,
     arg: &TokenStream,
     rules: &'matcher [MacroRule],
     track: &mut T,
@@ -683,7 +685,6 @@ pub(super) fn try_match_macro<'matcher, T: Tracker<'matcher>>(
 #[instrument(level = "debug", skip(psess, attr_args, attr_body, rules, track), fields(tracking = %T::description()))]
 pub(super) fn try_match_macro_attr<'matcher, T: Tracker<'matcher>>(
     psess: &ParseSess,
-    name: Ident,
     attr_args: &TokenStream,
     attr_body: &TokenStream,
     rules: &'matcher [MacroRule],
@@ -740,7 +741,6 @@ pub(super) fn try_match_macro_attr<'matcher, T: Tracker<'matcher>>(
 #[instrument(level = "debug", skip(psess, body, rules, track), fields(tracking = %T::description()))]
 pub(super) fn try_match_macro_derive<'matcher, T: Tracker<'matcher>>(
     psess: &ParseSess,
-    name: Ident,
     body: &TokenStream,
     rules: &'matcher [MacroRule],
     track: &mut T,
@@ -779,7 +779,7 @@ pub fn compile_declarative_macro(
     features: &Features,
     macro_def: &ast::MacroDef,
     ident: Ident,
-    attrs: &[hir::Attribute],
+    attrs: &[attrs::Attribute],
     span: Span,
     node_id: NodeId,
     edition: Edition,
@@ -812,7 +812,7 @@ pub fn compile_declarative_macro(
         }
         let (args, is_derive) = if p.eat_keyword_noexpect(sym::attr) {
             kinds |= MacroKinds::ATTR;
-            if !features.macro_attr() {
+            if is_defined_in_current_crate(node_id) && !features.macro_attr() {
                 feature_err(sess, sym::macro_attr, span, "`macro_rules!` attributes are unstable")
                     .emit();
             }

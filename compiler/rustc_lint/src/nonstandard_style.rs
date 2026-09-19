@@ -8,14 +8,14 @@ use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::{FnKind, Visitor};
 use rustc_hir::{Attribute, GenericParamKind, PatExprKind, PatKind, find_attr};
+use rustc_lint_defs::{declare_lint, declare_lint_pass};
 use rustc_middle::hir::nested_filter::All;
 use rustc_middle::ty::AssocContainer;
-use rustc_session::config::CrateType;
-use rustc_session::{declare_lint, declare_lint_pass};
 use rustc_span::def_id::LocalDefId;
 use rustc_span::{BytePos, Ident, Span, sym};
+use rustc_structures::CrateType;
 
-use crate::lints::{
+use crate::diagnostics::{
     NonCamelCaseType, NonCamelCaseTypeSub, NonSnakeCaseDiag, NonSnakeCaseDiagSub,
     NonUpperCaseGlobal, NonUpperCaseGlobalSub, NonUpperCaseGlobalSubTool,
 };
@@ -626,7 +626,7 @@ impl<'tcx> LateLintPass<'tcx> for NonUpperCaseGlobals {
             ..
         }) = p.kind
         {
-            if let Res::Def(DefKind::Const { .. }, _) = path.res
+            if let Res::Def(DefKind::Const, _) = path.res
                 && let [segment] = path.segments
             {
                 NonUpperCaseGlobals::check_upper_case(

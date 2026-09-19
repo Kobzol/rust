@@ -9,12 +9,13 @@ use rustc_ast as ast;
 use rustc_attr_parsing::{AttributeParser, ShouldEmit};
 use rustc_codegen_ssa::traits::CodegenBackend;
 use rustc_codegen_ssa::{CompiledModules, CrateInfo};
+use rustc_crate_store::Untracked;
 use rustc_data_structures::indexmap::IndexMap;
 use rustc_data_structures::steal::Steal;
 use rustc_data_structures::sync::{
     AppendOnlyIndexVec, DynSend, DynSync, FreezeLock, WorkerLocal, par_fns,
 };
-use rustc_data_structures::{Limit, thousands};
+use rustc_data_structures::thousands;
 use rustc_errors::timings::TimingSection;
 use rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level};
 use rustc_expand::base::{ExtCtxt, LintStoreExpand};
@@ -29,21 +30,22 @@ use rustc_lint::{BufferedEarlyLint, EarlyCheckNode, LintStore, unerased_lint_sto
 use rustc_metadata::EncodedMetadata;
 use rustc_metadata::creader::CStore;
 use rustc_middle::arena::Arena;
+use rustc_middle::middle::resolve::{ResolverAstLowering, ResolverGlobalCtxt};
 use rustc_middle::ty::{self, RegisteredTools, TyCtxt};
 use rustc_middle::util::Providers;
 use rustc_parse::lexer::StripTokens;
 use rustc_parse::{new_parser_from_file, new_parser_from_source_str, unwrap_or_emit_fatal};
 use rustc_passes::{abi_test, input_stats, layout_test};
 use rustc_resolve::{Resolver, ResolverOutputs};
-use rustc_session::Session;
-use rustc_session::config::{CrateType, Input, OutFileName, OutputFilenames, OutputType};
-use rustc_session::cstore::Untracked;
+use rustc_session::config::{Input, OutFileName, OutputFilenames, OutputType};
 use rustc_session::diagnostics::feature_err;
 use rustc_session::output::{filename_for_input, invalid_output_for_target};
 use rustc_session::search_paths::PathKind;
+use rustc_session::{IncrCompSession, Session};
 use rustc_span::{
     DUMMY_SP, ErrorGuaranteed, ExpnKind, SourceFileHash, SourceFileHashAlgorithm, Span, Symbol, sym,
 };
+use rustc_structures::{CrateType, Limit};
 use rustc_trait_selection::{solve, traits};
 use tracing::{info, instrument};
 
@@ -179,7 +181,7 @@ fn configure_and_expand(
         if cfg!(windows) {
             old_path = env::var_os("PATH").unwrap_or(old_path);
             let mut new_path = Vec::from_iter(
-                sess.host_filesearch().search_paths(PathKind::Native).map(|p| p.dir.clone()),
+                sess.host_filesearch().search_paths(PathKind::Native).map(|p| p.dir.to_path_buf()),
             );
             for path in env::split_paths(&old_path) {
                 if !new_path.contains(&path) {
@@ -275,8 +277,18 @@ fn configure_and_expand(
             sess.dcx().emit_err(diagnostics::MixedProcMacroCrate);
         }
     }
+
+    if is_proc_macro_crate && sess.target.is_like_wasm && !sess.opts.unstable_opts.wasm_proc_macros
+    {
+        sess.dcx().emit_err(diagnostics::UnstableWasmProcMacro);
+    }
+
     if crate_types.contains(&CrateType::Sdylib) && !tcx.features().export_stable() {
         feature_err(sess, sym::export_stable, DUMMY_SP, "`sdylib` crate type is unstable").emit();
+    }
+
+    if is_proc_macro_crate && !sess.sanitizers().is_empty() {
+        sess.dcx().emit_err(diagnostics::CannotSanitizeProcMacro);
     }
 
     if is_proc_macro_crate && !sess.panic_strategy().unwinds() {
@@ -484,14 +496,7 @@ fn early_lint_checks(tcx: TyCtxt<'_>, (): ()) {
 fn env_var_os<'tcx>(tcx: TyCtxt<'tcx>, key: &'tcx OsStr) -> Option<&'tcx OsStr> {
     let value = env::var_os(key);
 
-    let value_tcx = value.as_ref().map(|value| {
-        let encoded_bytes = tcx.arena.alloc_slice(value.as_encoded_bytes());
-        debug_assert_eq!(value.as_encoded_bytes(), encoded_bytes);
-        // SAFETY: The bytes came from `as_encoded_bytes`, and we assume that
-        // `alloc_slice` is implemented correctly, and passes the same bytes
-        // back (debug asserted above).
-        unsafe { OsStr::from_encoded_bytes_unchecked(encoded_bytes) }
-    });
+    let value_tcx = value.as_ref().map(|value| tcx.arena.alloc_os_str(value));
 
     // Also add the variable to Cargo's dependency tracking
     //
@@ -654,7 +659,7 @@ fn write_out_deps(tcx: TyCtxt<'_>, outputs: &OutputFilenames, out_filenames: &[P
                 checksum_hash_algo,
             ));
         }
-        if let Some(ref profile_sample) = sess.opts.unstable_opts.profile_sample_use {
+        if let Some(ref profile_sample) = sess.opts.cg.profile_sample_use {
             files.extend(hash_iter_files(
                 iter::once(normalize_path(profile_sample.as_path().to_path_buf())),
                 checksum_hash_algo,
@@ -785,11 +790,7 @@ fn write_out_deps(tcx: TyCtxt<'_>, outputs: &OutputFilenames, out_filenames: &[P
 fn resolver_for_lowering_raw<'tcx>(
     tcx: TyCtxt<'tcx>,
     (): (),
-) -> (
-    &'tcx Steal<ty::ResolverAstLowering<'tcx>>,
-    &'tcx Steal<ast::Crate>,
-    &'tcx ty::ResolverGlobalCtxt,
-) {
+) -> (&'tcx Steal<ResolverAstLowering<'tcx>>, &'tcx Steal<ast::Crate>, &'tcx ResolverGlobalCtxt) {
     let arenas = WorkerLocal::new(|_| Resolver::arenas());
     let _ = tcx.registered_attr_tools(()); // Uses `crate_for_resolver`.
     let _ = tcx.registered_lint_tools(()); // Uses `crate_for_resolver`.
@@ -869,7 +870,7 @@ pub fn write_dep_info(tcx: TyCtxt<'_>) {
 }
 
 pub fn write_interface<'tcx>(tcx: TyCtxt<'tcx>) {
-    if !tcx.crate_types().contains(&rustc_session::config::CrateType::Sdylib) {
+    if !tcx.crate_types().contains(&rustc_structures::CrateType::Sdylib) {
         return;
     }
     let _timer = tcx.sess.timer("write_interface");
@@ -900,7 +901,7 @@ pub static DEFAULT_QUERY_PROVIDERS: LazyLock<Providers> = LazyLock::new(|| {
     providers.queries.proc_macro_decls_static = |tcx, _| tcx.hir_crate_items(()).proc_macro_decls();
     rustc_ast_lowering::provide(&mut providers.queries);
     limits::provide(&mut providers.queries);
-    rustc_expand::provide(&mut providers.queries);
+    rustc_expand_queries::provide(&mut providers.queries);
     rustc_const_eval::provide(providers);
     rustc_middle::hir::provide(&mut providers.queries);
     rustc_borrowck::provide(&mut providers.queries);
@@ -930,7 +931,7 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     compiler: &Compiler,
     krate: rustc_ast::Crate,
     f: F,
-) -> T {
+) -> (T, Option<IncrCompSession>) {
     let sess = &compiler.sess;
 
     let pre_configured_attrs = rustc_expand::config::pre_configure_attrs(sess, &krate.attrs);
@@ -952,7 +953,7 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
 
     let outputs = util::build_output_filenames(&pre_configured_attrs, sess);
 
-    let dep_graph = setup_dep_graph(sess, crate_name, stable_crate_id);
+    let (dep_graph, incr_comp_session) = setup_dep_graph(sess, crate_name, stable_crate_id);
 
     let cstore =
         FreezeLock::new(Box::new(CStore::new(compiler.codegen_backend.metadata_loader())) as _);
@@ -967,7 +968,8 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     // incr. comp. yet.
     dep_graph.assert_ignored();
 
-    let query_result_on_disk_cache = rustc_incremental::load_query_result_cache(sess);
+    let query_result_on_disk_cache =
+        rustc_incremental::load_query_result_cache(sess, incr_comp_session.as_ref());
 
     let codegen_backend = &compiler.codegen_backend;
     let mut providers = *DEFAULT_QUERY_PROVIDERS;
@@ -994,7 +996,7 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     let arena = WorkerLocal::new(|_| Arena::default());
     let hir_arena = WorkerLocal::new(|_| rustc_hir::Arena::default());
 
-    TyCtxt::create_global_ctxt(
+    let res = TyCtxt::create_global_ctxt(
         &gcx_cell,
         &compiler.sess,
         crate_types,
@@ -1002,9 +1004,10 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
         &arena,
         &hir_arena,
         untracked,
+        incr_comp_session.as_ref(),
         dep_graph,
-        rustc_query_impl::make_dep_kind_vtables(&arena),
         rustc_query_impl::query_system(
+            &arena,
             providers.queries,
             providers.extern_queries,
             query_result_on_disk_cache,
@@ -1047,7 +1050,9 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
             tcx.finish();
             res
         },
-    )
+    );
+
+    (res, incr_comp_session)
 }
 
 struct DiagCallback<'tcx> {
@@ -1154,7 +1159,9 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
             if not_typeck_child {
                 tcx.ensure_ok().mir_borrowck(def_id);
                 tcx.ensure_ok().check_transmutes(def_id);
-                tcx.ensure_ok().check_offloads(def_id);
+                if !tcx.sess.opts.unstable_opts.offload.is_empty() {
+                    tcx.ensure_ok().check_offloads(def_id);
+                }
             }
             tcx.ensure_ok().has_ffi_unwind_calls(def_id);
             tcx.ensure_ok().check_liveness(def_id);
@@ -1299,14 +1306,31 @@ pub(crate) fn start_codegen<'tcx>(
 
     info!("Pre-codegen\n{:?}", tcx.debug_stats());
 
-    let metadata = rustc_metadata::fs::encode_and_write_metadata(tcx);
+    let metadata = match rustc_metadata::fs::encode_and_write_metadata(tcx) {
+        Ok(metadata) => metadata,
+        Err(guar) => guar.raise_fatal(),
+    };
+
+    let is_host_metadata = tcx
+        .sess
+        .opts
+        .unstable_opts
+        .offload
+        .iter()
+        .any(|o| matches!(o, rustc_session::config::Offload::HostMetadata(_)));
 
     let codegen = tcx.sess.time("codegen_crate", || {
-        if tcx.sess.opts.unstable_opts.no_codegen || !tcx.sess.opts.output_types.should_codegen() {
-            // Skip crate items and just output metadata in -Z no-codegen mode.
+        if tcx.sess.opts.unstable_opts.no_codegen
+            || !tcx.sess.opts.output_types.should_codegen()
+            || is_host_metadata
+        {
             tcx.sess.dcx().abort_if_errors();
 
-            // Linker::link will skip join_codegen in case of a CodegenResults Any value.
+            if is_host_metadata {
+                rustc_monomorphize::write_host_metadata_offload_manifest(tcx);
+            }
+
+            // Linker::link will skip join_codegen in case of a `CompiledModules` Any value.
             Box::new(CompiledModules { modules: vec![], allocator_module: None })
         } else {
             codegen_backend.codegen_crate(tcx)

@@ -35,7 +35,7 @@
     asm_experimental_arch,
     unboxed_closures
 )]
-#![allow(unused, improper_ctypes_definitions, internal_features)]
+#![allow(unused, improper_ctypes_definitions, internal_features, non_camel_case_types)]
 #![no_std]
 #![no_core]
 
@@ -391,6 +391,19 @@ pub mod hint {
     }
 }
 
+pub mod num {
+    use super::Copy;
+
+    #[repr(C)]
+    #[lang = "complex"]
+    pub struct Complex<T> {
+        pub re: T,
+        pub im: T,
+    }
+
+    impl<T: Copy> Copy for Complex<T> {}
+}
+
 #[lang = "c_void"]
 #[repr(u8)]
 pub enum c_void {
@@ -483,4 +496,5 @@ pub mod simd {
     pub type i64x8 = Simd<i64, 8>;
 
     pub type u8x16 = Simd<u8, 16>;
+    pub type u64x2 = Simd<u8, 16>;
 }

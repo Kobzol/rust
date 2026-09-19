@@ -1,16 +1,18 @@
-use rustc_feature::AttributeStability;
-use rustc_hir::attrs::{
-    CoverageAttrKind, InstrumentFnAttr, OptimizeAttr, RtsanSetting, SanitizerSet, UsedBy,
+use rustc_attr_ir::{
+    CoverageAttrKind, InstrumentFnAttr, OptimizeAttr, RtsanSetting, UsedBy, find_attr,
 };
+use rustc_feature::AttributeStability;
 use rustc_session::diagnostics::feature_err;
 use rustc_span::edition::Edition::Edition2024;
+use rustc_structures::SanitizerSet;
 
 use super::prelude::*;
 use crate::attributes::AttributeSafety;
-use crate::session_diagnostics::{
+use crate::diagnostics::{
     EmptyExportName, EmptySection, NakedFunctionIncompatibleAttribute, NullOnExport,
     NullOnObjcClass, NullOnObjcSelector, NullOnSection, ObjcClassExpectedStringLiteral,
     ObjcSelectorExpectedStringLiteral, SanitizeInvalidStatic, TargetFeatureOnLangItem,
+    TrackCallerOnLangItem,
 };
 use crate::target_checking::Policy::AllowSilent;
 
@@ -346,6 +348,34 @@ impl NoArgsAttributeParser for TrackCallerParser {
     ]);
     const STABILITY: AttributeStability = AttributeStability::Stable;
     const CREATE: fn(Span) -> AttributeKind = AttributeKind::TrackCaller;
+
+    fn finalize_check(cx: &FinalizeCheckContext<'_, '_>, attr_span: Span) {
+        match cx.target {
+            Target::Fn => {
+                // `#[track_caller]` is not valid on weak lang items because they are called via
+                // `extern` declarations and `#[track_caller]` would alter their ABI.
+                if let Some(item) = find_attr!(cx.parsed_attrs, Lang(item) => item)
+                    && item.is_weak()
+                {
+                    cx.emit_err(TrackCallerOnLangItem {
+                        attr_span,
+                        name: item.name(),
+                        sig_span: cx.target_span,
+                    });
+                }
+            }
+            Target::Closure if !cx.features().closure_track_caller() => {
+                feature_err(
+                    cx.sess(),
+                    sym::closure_track_caller,
+                    attr_span,
+                    "`#[track_caller]` on closures is currently unstable",
+                )
+                .emit();
+            }
+            _ => {}
+        }
+    }
 }
 
 pub(crate) struct NoMangleParser;
@@ -650,6 +680,7 @@ impl SingleAttributeParser for SanitizeParser {
         r#"kcfi = "on|off""#,
         r#"memory = "on|off""#,
         r#"memtag = "on|off""#,
+        r#"safestack = "on|off""#,
         r#"shadow_call_stack = "on|off""#,
         r#"thread = "on|off""#,
         r#"realtime = "nonblocking|blocking|caller""#,
@@ -696,6 +727,7 @@ impl SingleAttributeParser for SanitizeParser {
                 sym::kcfi => apply(SanitizerSet::KCFI),
                 sym::memory => apply(SanitizerSet::MEMORY),
                 sym::memtag => apply(SanitizerSet::MEMTAG),
+                sym::safestack => apply(SanitizerSet::SAFESTACK),
                 sym::shadow_call_stack => apply(SanitizerSet::SHADOWCALLSTACK),
                 sym::thread => apply(SanitizerSet::THREAD),
                 sym::hwaddress | sym::kernel_hwaddress => {
@@ -722,6 +754,7 @@ impl SingleAttributeParser for SanitizeParser {
                             sym::kcfi,
                             sym::memory,
                             sym::memtag,
+                            sym::safestack,
                             sym::shadow_call_stack,
                             sym::thread,
                             sym::hwaddress,

@@ -15,9 +15,8 @@ use rustc_hir::definitions::{DefKey, DefPath, DefPathHash};
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::lints::DelayedLints;
 use rustc_hir::*;
-use rustc_hir_pretty as pprust_hir;
 use rustc_span::def_id::{CRATE_MOD_ID, StableCrateId};
-use rustc_span::{ErrorGuaranteed, Ident, Span, Symbol, kw, with_metavar_spans};
+use rustc_span::{ErrorGuaranteed, Ident, Span, Symbol, bug, kw, span_bug, with_metavar_spans};
 
 use crate::hir::{ModuleItems, ProjectedMaybeOwner, nested_filter};
 use crate::middle::debugger_visualizer::DebuggerVisualizerFile;
@@ -322,9 +321,7 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn hir_body_owner_kind(self, def_id: impl Into<DefId>) -> BodyOwnerKind {
         let def_id = def_id.into();
         match self.def_kind(def_id) {
-            DefKind::Const { .. } | DefKind::AssocConst { .. } => {
-                BodyOwnerKind::Const { inline: false }
-            }
+            DefKind::Const | DefKind::AssocConst => BodyOwnerKind::Const { inline: false },
             DefKind::AnonConst => BodyOwnerKind::Const {
                 inline: self.anon_const_kind(def_id) == ty::AnonConstKind::NonTypeSystemInline,
             },
@@ -729,6 +726,7 @@ impl<'tcx> TyCtxt<'tcx> {
                     ItemKind::Trait { .. } => "trait",
                     ItemKind::TraitAlias(..) => "trait alias",
                     ItemKind::Impl { .. } => "impl",
+                    ItemKind::TestBinderConstraints { .. } => "test_binder_constraints!",
                 };
                 format!("{id} ({item_str} {})", path_str(item.owner_id.def_id))
             }
@@ -795,9 +793,12 @@ impl<'tcx> TyCtxt<'tcx> {
             }
             Node::Crate(..) => String::from("(root_crate)"),
             Node::WherePredicate(_) => node_str("where predicate"),
+            Node::PreciseCapturingNonLifetimeArg(_param) => node_str("parameter"),
+            Node::TestBinderForall(_) => node_str("forall"),
+            Node::TestBinderExists(_) => node_str("exists"),
+            Node::TestBinderBoundTypeConstraint(_) => node_str("test bound type constraint"),
             Node::Synthetic => unreachable!(),
             Node::Err(_) => node_str("error"),
-            Node::PreciseCapturingNonLifetimeArg(_param) => node_str("parameter"),
         }
     }
 
@@ -1071,6 +1072,9 @@ impl<'tcx> TyCtxt<'tcx> {
             Node::Crate(item) => item.spans.inner_span,
             Node::WherePredicate(pred) => pred.span,
             Node::PreciseCapturingNonLifetimeArg(param) => param.ident.span,
+            Node::TestBinderForall(forall) => forall.span,
+            Node::TestBinderExists(exists) => exists.span,
+            Node::TestBinderBoundTypeConstraint(bound_type) => bound_type.span,
             Node::Synthetic => unreachable!(),
             Node::Err(span) => span,
         }
@@ -1153,12 +1157,6 @@ impl<'tcx> intravisit::HirTyCtxt<'tcx> for TyCtxt<'tcx> {
 
     fn hir_foreign_item(&self, id: ForeignItemId) -> &'tcx ForeignItem<'tcx> {
         (*self).hir_foreign_item(id)
-    }
-}
-
-impl<'tcx> pprust_hir::PpAnn for TyCtxt<'tcx> {
-    fn nested(&self, state: &mut pprust_hir::State<'_>, nested: pprust_hir::Nested) {
-        pprust_hir::PpAnn::nested(&(self as &dyn intravisit::HirTyCtxt<'_>), state, nested)
     }
 }
 

@@ -432,7 +432,7 @@ fn generate_item_def_id_path(
         let ty = infcx
             .at(&ObligationCause::dummy(), tcx.param_env(def_id))
             .query_normalize(ty::Binder::dummy(ty.instantiate_identity().skip_norm_wip()))
-            .map(|resolved| infcx.resolve_vars_if_possible(resolved.value).skip_binder())
+            .map(|resolved| infcx.deeply_resolve_ignoring_regions(resolved.value).skip_binder())
             .unwrap_or(ty.skip_binder());
         if let Some(new_def_id) = ty.ty_adt_def().map(|adt| adt.did()) {
             def_id = new_def_id;
@@ -547,7 +547,7 @@ pub(crate) fn href_with_root_path(
     let tcx = cx.tcx();
     let def_kind = tcx.def_kind(original_did);
     let did = match def_kind {
-        DefKind::AssocTy | DefKind::AssocFn | DefKind::AssocConst { .. } | DefKind::Variant => {
+        DefKind::AssocTy | DefKind::AssocFn | DefKind::AssocConst | DefKind::Variant => {
             // documented on their parent's page
             tcx.parent(original_did)
         }
@@ -674,11 +674,15 @@ pub(crate) fn link_tooltip(
             fqp
         };
         if let &Some(UrlFragment::Item(id)) = fragment {
-            write!(f, "{} ", cx.tcx().def_descr(id))?;
+            let tcx = cx.tcx();
+            write!(f, "{} ", tcx.def_descr(id))?;
             for component in fqp {
                 write!(f, "{component}::")?;
             }
-            write!(f, "{}", cx.tcx().item_name(id))?;
+            if *shortty == ItemType::Enum && tcx.def_kind(id) == DefKind::Field {
+                write!(f, "{}::", tcx.item_name(tcx.parent(id)))?;
+            }
+            write!(f, "{}", tcx.item_name(id))?;
         } else if !fqp.is_empty() {
             write!(f, "{shortty} ")?;
             write!(f, "{}", join_path_syms(fqp))?;
@@ -842,7 +846,7 @@ pub(crate) fn fragment(did: DefId, tcx: TyCtxt<'_>) -> impl Display {
     fmt::from_fn(move |f| {
         let def_kind = tcx.def_kind(did);
         match def_kind {
-            DefKind::AssocTy | DefKind::AssocFn | DefKind::AssocConst { .. } | DefKind::Variant => {
+            DefKind::AssocTy | DefKind::AssocFn | DefKind::AssocConst | DefKind::Variant => {
                 let item_type = ItemType::from_def_id(did, tcx);
                 write!(f, "#{}.{}", item_type.as_str(), tcx.item_name(did))
             }
@@ -1251,7 +1255,9 @@ pub(crate) fn print_params(params: &[clean::Parameter], cx: &Context<'_>) -> imp
             .iter()
             .map(|param| {
                 fmt::from_fn(|f| {
-                    if let Some(name) = param.name {
+                    if param.is_splat {
+                        write!(f, "…: ")?;
+                    } else if let Some(name) = param.name {
                         write!(f, "{name}: ")?;
                     }
                     print_type(&param.type_, cx).fmt(f)
@@ -1305,7 +1311,9 @@ fn print_parameter(parameter: &clean::Parameter, cx: &Context<'_>) -> impl fmt::
             if parameter.is_const {
                 write!(f, "const ")?;
             }
-            if let Some(name) = parameter.name {
+            if parameter.is_splat {
+                write!(f, "…: ")?;
+            } else if let Some(name) = parameter.name {
                 write!(f, "{name}: ")?;
             }
             print_type(&parameter.type_, cx).fmt(f)

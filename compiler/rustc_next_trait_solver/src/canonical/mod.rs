@@ -19,16 +19,15 @@ use rustc_type_ir::relate::{
 };
 use rustc_type_ir::{
     self as ty, Canonical, CanonicalVarKind, CanonicalVarValues, InferCtxtLike, Interner, Region,
-    TypeFoldable, TypingMode, TypingModeEqWrapper, eager_resolve_vars,
+    TypeFoldable, TypingMode, TypingModeEqWrapper,
 };
 use thin_vec::ThinVec;
 use tracing::instrument;
 
 use crate::delegate::SolverDelegate;
 use crate::solve::{
-    CanonicalInput, CanonicalResponse, Certainty, ExternalConstraintsData,
-    ExternalRegionConstraints, Goal, NestedNormalizationGoals, QueryInput, Response,
-    VisibleForLeakCheck, inspect,
+    CanonicalResponse, Certainty, ExternalConstraintsData, ExternalRegionConstraints, Goal,
+    NestedNormalizationGoals, QueryInput, Response, VisibleForLeakCheck, inspect,
 };
 
 pub mod canonicalizer;
@@ -58,7 +57,7 @@ pub(super) fn canonicalize_goal<D, I>(
     goal: Goal<I, I::Predicate>,
     opaque_types: &[(ty::OpaqueTypeKey<I>, I::Ty)],
     typing_mode: TypingMode<I>,
-) -> (ThinVec<I::GenericArg>, CanonicalInput<I, I::Predicate>)
+) -> (ThinVec<I::GenericArg>, I::CanonicalInput)
 where
     D: SolverDelegate<Interner = I>,
     I: Interner,
@@ -71,8 +70,10 @@ where
         },
     );
 
-    let query_input =
-        ty::CanonicalQueryInput { canonical, typing_mode: TypingModeEqWrapper(typing_mode) };
+    let query_input = delegate.cx().mk_canonical_input(ty::CanonicalQueryInput {
+        canonical,
+        typing_mode: TypingModeEqWrapper(typing_mode),
+    });
     (orig_values, query_input)
 }
 
@@ -99,7 +100,6 @@ where
 ///   the `normalization_nested_goals`
 pub(super) fn instantiate_and_apply_query_response<D, I>(
     delegate: &D,
-    param_env: I::ParamEnv,
     original_values: &[I::GenericArg],
     response: CanonicalResponse<I>,
     span: I::Span,
@@ -114,7 +114,7 @@ where
     let Response { var_values, external_constraints, certainty } =
         delegate.instantiate_canonical(response, instantiation);
 
-    unify_query_var_values(delegate, param_env, &original_values, var_values, span);
+    unify_query_var_values(delegate, &original_values, var_values, span);
 
     let ExternalConstraintsData { region_constraints, opaque_types, normalization_nested_goals } =
         &*external_constraints;
@@ -134,7 +134,7 @@ where
             span,
         ),
         ExternalRegionConstraints::NextGen(r) => {
-            delegate.register_solver_region_constraint(r.clone())
+            delegate.register_solver_region_constraint(r.clone(), span)
         }
     };
     register_new_opaque_types(delegate, opaque_types, span);
@@ -162,9 +162,43 @@ where
     let prev_universe = delegate.universe();
     let universes_created_in_query = response.max_universe.index();
     for _ in 0..universes_created_in_query {
-        delegate.create_next_universe();
+        let new_universe = delegate.create_next_universe();
+        if delegate.cx().assumptions_on_binders() {
+            // FIXME(-Zassumptions-on-binders): Remove this temporary workaround once
+            // opaque types no longer escape query responses with query-created placeholders.
+            // Region constraints involving query-created placeholders were handled inside
+            // the query. However, the placeholders can still escape in other response
+            // fields, such as opaque type constraints. To avoid triggering
+            // assertions, we explicitly insert empty assumptions for the
+            // recreated universes here.
+            delegate.insert_placeholder_assumptions(
+                new_universe,
+                Some(rustc_type_ir::region_constraint::Assumptions::empty()),
+            );
+        }
     }
 
+    compute_query_response_instantiation_values_in_universe(
+        delegate,
+        original_values,
+        response,
+        span,
+        prev_universe,
+    )
+}
+
+fn compute_query_response_instantiation_values_in_universe<D, I, T>(
+    delegate: &D,
+    original_values: &[I::GenericArg],
+    response: &Canonical<I, T>,
+    span: I::Span,
+    prev_universe: ty::UniverseIndex,
+) -> CanonicalVarValues<I>
+where
+    D: SolverDelegate<Interner = I>,
+    I: Interner,
+    T: ResponseT<I>,
+{
     let var_values = response.value.var_values();
     assert_eq!(original_values.len(), var_values.len());
 
@@ -294,6 +328,7 @@ where
         relate_args_invariantly(self, a_args, b_args)?;
         Ok(a_ty)
     }
+
     fn relate_with_variance<T: Relate<I>>(
         &mut self,
         _variance: ty::Variance,
@@ -454,7 +489,6 @@ where
 #[instrument(level = "trace", skip(delegate))]
 fn unify_query_var_values<D, I>(
     delegate: &D,
-    param_env: I::ParamEnv,
     original_values: &[I::GenericArg],
     var_values: CanonicalVarValues<I>,
     span: I::Span,
@@ -480,7 +514,7 @@ fn register_region_constraints<D, I>(
 {
     for (constraint, vis) in constraints {
         match constraint {
-            ty::RegionConstraint::Outlives(ty::OutlivesPredicate(lhs, rhs)) => match lhs.kind() {
+            ty::RegionConstraint::Outlives(ty::OutlivesClause(lhs, rhs)) => match lhs.kind() {
                 ty::GenericArgKind::Lifetime(lhs) => delegate.sub_regions(rhs, lhs, vis, span),
                 ty::GenericArgKind::Type(lhs) => delegate.register_ty_outlives(lhs, rhs, span),
                 ty::GenericArgKind::Const(_) => panic!("const outlives: {lhs:?}: {rhs:?}"),
@@ -532,7 +566,7 @@ where
 {
     let var_values = CanonicalVarValues { var_values: delegate.cx().mk_args(var_values) };
     let state = inspect::State { var_values, data };
-    let state = eager_resolve_vars(&**delegate, state);
+    let state = delegate.deeply_resolve_via_unification_table(state);
     Canonicalizer::canonicalize_response(delegate, max_input_universe, state)
 }
 
@@ -541,7 +575,7 @@ where
 pub fn instantiate_canonical_state<D, I, T>(
     delegate: &D,
     span: I::Span,
-    param_env: I::ParamEnv,
+    prev_universe: ty::UniverseIndex,
     orig_values: &mut ThinVec<I::GenericArg>,
     state: inspect::CanonicalState<I, T>,
 ) -> T
@@ -552,18 +586,27 @@ where
 {
     // In case any fresh inference variables have been created between `state`
     // and the previous instantiation, extend `orig_values` for it.
+    let max_universe = prev_universe + state.max_universe.index();
+    while delegate.universe() < max_universe {
+        delegate.create_next_universe();
+    }
     orig_values.extend(
         state.value.var_values.var_values.as_slice()[orig_values.len()..]
             .iter()
-            .map(|&arg| delegate.fresh_var_for_kind_with_span(arg, span)),
+            .map(|&arg| delegate.fresh_var_for_kind(arg, span, max_universe)),
     );
 
-    let instantiation =
-        compute_query_response_instantiation_values(delegate, orig_values, &state, span);
+    let instantiation = compute_query_response_instantiation_values_in_universe(
+        delegate,
+        orig_values,
+        &state,
+        span,
+        prev_universe,
+    );
 
     let inspect::State { var_values, data } = delegate.instantiate_canonical(state, instantiation);
 
-    unify_query_var_values(delegate, param_env, orig_values, var_values, span);
+    unify_query_var_values(delegate, orig_values, var_values, span);
     data
 }
 

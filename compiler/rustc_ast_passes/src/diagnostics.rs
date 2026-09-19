@@ -2,7 +2,7 @@
 
 use rustc_abi::ExternAbi;
 use rustc_errors::codes::*;
-use rustc_errors::{Applicability, Diag, EmissionGuarantee, Subdiagnostic};
+use rustc_errors::{Applicability, Diag, Subdiagnostic};
 use rustc_macros::{Diagnostic, Subdiagnostic};
 use rustc_span::{Ident, Span, Symbol};
 
@@ -36,6 +36,17 @@ pub(crate) struct ImplFnConst {
     pub span: Span,
     #[label("this declares all associated functions implicitly const")]
     pub parent_constness: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag("`feature(generic_const_exprs)` is not supported with the next-generation trait solver")]
+#[note("`-Znext-solver=globally` is currently enabled by default for testing")]
+#[note("reverted the setting to `-Znext-solver=coherence` for this crate")]
+#[note("the currently stable trait solver will be used for this crate")]
+#[note("see issues #160895 <https://github.com/rust-lang/rust/issues/160895> for more information")]
+pub(crate) struct NextSolverDisabledForGenericConstExprs {
+    #[primary_span]
+    pub span: Span,
 }
 
 #[derive(Diagnostic)]
@@ -652,7 +663,7 @@ pub(crate) struct EmptyLabelManySpans(pub Vec<Span>);
 
 // The derive for `Vec<Span>` does multiple calls to `span_label`, adding commas between each
 impl Subdiagnostic for EmptyLabelManySpans {
-    fn add_to_diag<G: EmissionGuarantee>(self, diag: &mut Diag<'_, G>) {
+    fn add_to_diag<G>(self, diag: &mut Diag<'_, G>) {
         diag.span_labels(self.0, "");
     }
 }
@@ -660,6 +671,13 @@ impl Subdiagnostic for EmptyLabelManySpans {
 #[derive(Diagnostic)]
 #[diag("patterns aren't allowed in function pointer types", code = E0561)]
 pub(crate) struct PatternFnPointer {
+    #[primary_span]
+    pub span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag("patterns aren't allowed in parenthesized argument lists", code = E0561)]
+pub(crate) struct PatternParenthesizedArgList {
     #[primary_span]
     pub span: Span,
 }
@@ -737,6 +755,13 @@ pub(crate) struct UnsafeItem {
 pub(crate) struct MissingUnsafeOnExtern {
     #[primary_span]
     pub span: Span,
+
+    #[suggestion(
+        "needs `unsafe` before the extern keyword",
+        code = "unsafe ",
+        applicability = "machine-applicable"
+    )]
+    pub unsafe_span: Span,
 }
 
 #[derive(Diagnostic)]
@@ -1244,4 +1269,50 @@ pub(crate) enum DeprecatedWhereClauseLocationSugg {
         #[primary_span]
         span: Span,
     },
+}
+
+#[derive(Diagnostic)]
+#[diag("missing pattern for `...` argument")]
+pub(crate) struct VarargsWithoutPattern {
+    #[suggestion(
+        "add a pattern for this argument",
+        applicability = "machine-applicable",
+        code = "_: ..."
+    )]
+    #[primary_span]
+    pub span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag(
+    "an `extern \"custom\"` function can only be declared externally or defined via naked functions"
+)]
+pub(crate) struct AbiCustomMustBeNaked {
+    #[primary_span]
+    pub span: Span,
+    #[suggestion(
+        "convert this to an `#[unsafe(naked)]` function",
+        applicability = "maybe-incorrect",
+        code = "#[unsafe(naked)]\n",
+        style = "short"
+    )]
+    pub naked_span: Span,
+}
+
+#[derive(Diagnostic)]
+#[diag("an `extern \"custom\"` function cannot be marked `#[cold]`")]
+pub(crate) struct AbiCustomCannotBeCold {
+    #[primary_span]
+    pub span: Span,
+
+    #[suggestion(
+        "remove the `#[cold]` attribute",
+        applicability = "maybe-incorrect",
+        code = "",
+        style = "short"
+    )]
+    pub cold_span: Span,
+
+    #[label("`extern \"custom\"` because of this")]
+    pub abi_span: Span,
 }

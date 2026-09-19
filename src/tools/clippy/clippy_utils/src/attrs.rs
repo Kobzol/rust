@@ -1,16 +1,16 @@
 //! Utility functions for attributes, including Clippy's built-in ones
 
-use crate::source::SpanExt;
+use crate::source::SpanExt as _;
 use crate::{sym, tokenize_with_text};
 use rustc_ast::attr::AttributeExt;
+use rustc_attr_ir::find_attr;
 use rustc_errors::Applicability;
-use rustc_hir::find_attr;
 use rustc_lexer::TokenKind;
 use rustc_lint::LateContext;
 use rustc_middle::ty::{AdtDef, TyCtxt};
 use rustc_session::Session;
 use rustc_span::{Span, Symbol};
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 /// Validates a single clippy attribute and emits errors for unknown or deprecated ones.
 pub fn check_clippy_attr<A: AttributeExt>(sess: &Session, attr: &A) {

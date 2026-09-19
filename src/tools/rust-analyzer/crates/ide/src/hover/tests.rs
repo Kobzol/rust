@@ -2626,7 +2626,7 @@ fn bar() { fo$0o(); }
 
             ---
 
-            \<- `　` here
+            　\<- `　` here
         "#]],
     );
 }
@@ -3829,7 +3829,7 @@ fn test_hover_tuple_has_goto_type_actions() {
 struct A(u32);
 struct B(u32);
 mod M {
-    pub struct C(u32);
+    pub struct C(pub u32);
 }
 
 fn main() { let s$0t = (A(1), B(2), M::C(3) ); }
@@ -3870,12 +3870,12 @@ fn main() { let s$0t = (A(1), B(2), M::C(3) ); }
                                 file_id: FileId(
                                     0,
                                 ),
-                                full_range: 42..60,
+                                full_range: 42..64,
                                 focus_range: 53..54,
                                 name: "C",
                                 kind: Struct,
                                 container_name: "M",
-                                description: "pub struct C(u32)",
+                                description: "pub struct C(pub u32)",
                             },
                         },
                     ],
@@ -5086,6 +5086,33 @@ fn foo$0() {}
 }
 
 #[test]
+fn hover_doc_block_style_leading_asterisks() {
+    check(
+        r#"
+/**
+ * Some docs, *not a bullet*.
+ */
+fn foo$0() {}
+"#,
+        expect![[r#"
+            *foo*
+
+            ```rust
+            ra_test_fixture
+            ```
+
+            ```rust
+            fn foo()
+            ```
+
+            ---
+
+            Some docs, *not a bullet*.
+        "#]],
+    );
+}
+
+#[test]
 fn hover_comments_dont_highlight_parent() {
     cov_mark::check!(no_highlight_on_comment_hover);
     check_hover_no_result(
@@ -5618,6 +5645,30 @@ enum E {
             ---
 
             This is a doc
+        "#]],
+    );
+    // const eval failed test
+    check(
+        r#"
+#[repr(u8)]
+enum E {
+    A$0 = {},
+}
+"#,
+        expect![[r#"
+            *A*
+
+            ```rust
+            ra_test_fixture::E
+            ```
+
+            ```rust
+            A = {}
+            ```
+
+            ---
+
+            size = 1, align = 1, no Drop
         "#]],
     );
 }
@@ -9089,6 +9140,22 @@ fn main() {
     check(
         r#"
 fn main() {
+    $01f64;
+}
+"#,
+        expect![[r#"
+            *1f64*
+            ```rust
+            f64
+            ```
+            ---
+
+            value of literal: ` 1 (bits: 0x3FF0000000000000) `
+        "#]],
+    );
+    check(
+        r#"
+fn main() {
     $00.1ea123;
 }
 "#,
@@ -9508,7 +9575,7 @@ pub fn f(x$0: impl Tr<{ 0 }>) {}
             *x*
 
             ```rust
-            x: impl Tr<{const}> + ?Sized
+            x: impl Tr<0> + ?Sized
             ```
 
             ---
@@ -11889,5 +11956,112 @@ fn foo() { foo$0(); }
             ```
         "#]],
         &HoverConfig { documentation: false, ..HOVER_BASE_CONFIG },
+    );
+}
+
+#[test]
+fn doc_attr_macro() {
+    check(
+        r#"
+//- minicore: concat
+/// Comment A
+#[macro_export]
+macro_rules! A {
+    () => {
+        "Comment B"
+    };
+}
+#[doc = concat!(A$0!())]
+fn main() {}
+    "#,
+        expect![[r#"
+            *A*
+
+            ```rust
+            ra_test_fixture
+            ```
+
+            ```rust
+            macro_rules! A
+            ```
+
+            ---
+
+            Comment A
+        "#]],
+    );
+}
+
+#[test]
+fn resolve_array_type_with_anon_const_panic() {
+    use syntax::AstNode;
+    let (analysis, position) = crate::fixture::position(
+        r#"
+fn main() {
+    let x: [u8; 2 + 2$0] = [0; 4];
+}
+"#,
+    );
+    let db = &analysis.db;
+    hir::attach_db(db, || {
+        let sema = hir::Semantics::new(db);
+        let file = sema.parse_guess_edition(position.file_id);
+        let token = file.syntax().token_at_offset(position.offset).right_biased().unwrap();
+        let type_node = token.parent_ancestors().find_map(syntax::ast::Type::cast).unwrap();
+
+        let resolved = sema.resolve_type(&type_node).unwrap();
+        let _ = resolved.as_array(db);
+    });
+}
+
+#[test]
+fn extern_c_fn_ptr_display() {
+    check(
+        r#"
+extern "C" fn foo() {}
+
+fn bar() {
+    let v$0 = foo as extern "C" fn();
+}
+    "#,
+        expect![[r#"
+            *v*
+
+            ```rust
+            let v: extern "C" fn()
+            ```
+
+            ---
+
+            size = 8, align = 8, niches = 1, no Drop
+        "#]],
+    );
+}
+
+#[test]
+fn subst_impl_trait_arg_with_const_generic() {
+    check(
+        r#"
+fn main() {
+    generic$0_tn([()], 1);
+}
+
+fn generic_tn<T, const N: usize>(_: [T; N], _: impl Sized) {}
+"#,
+        expect![[r#"
+            *generic_tn*
+
+            ```rust
+            ra_test_fixture
+            ```
+
+            ```rust
+            fn generic_tn<T, const N: usize>(_: [T; {const}], _: impl Sized)
+            ```
+
+            ---
+
+            `T` = `()`
+        "#]],
     );
 }

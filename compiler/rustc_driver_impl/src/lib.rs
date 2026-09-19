@@ -5,11 +5,11 @@
 //! This API is completely unstable and subject to change.
 
 // tidy-alphabetical-start
+#![cfg_attr(bootstrap, feature(trim_prefix_suffix))]
 #![feature(decl_macro)]
 #![feature(file_buffered)]
 #![feature(panic_backtrace_config)]
 #![feature(panic_update_hook)]
-#![feature(trim_prefix_suffix)]
 #![feature(try_blocks)]
 // tidy-alphabetical-end
 
@@ -35,7 +35,7 @@ use rustc_data_structures::profiling::{
 };
 pub use rustc_errors::catch_fatal_errors;
 use rustc_errors::emitter::stderr_destination;
-use rustc_errors::{ColorConfig, DiagCtxt, ErrCode, PResult, markdown};
+use rustc_errors::{ColorConfig, DiagCtxt, DiagCtxtHandle, ErrCode, PResult, markdown};
 use rustc_feature::find_gated_cfg;
 // This avoids a false positive with `-Wunused_crate_dependencies`.
 // `rust_index` isn't used in this crate's code, but it must be named in the
@@ -45,21 +45,22 @@ use rustc_interface::passes::collect_crate_types;
 use rustc_interface::util::{self, get_codegen_backend};
 use rustc_interface::{Linker, create_and_enter_global_ctxt, interface, passes};
 use rustc_lint::unerased_lint_store;
+use rustc_lint_defs::{Lint, LintId};
 use rustc_metadata::creader::MetadataLoader;
 use rustc_metadata::locator;
 use rustc_middle::ty::TyCtxt;
 use rustc_parse::lexer::StripTokens;
 use rustc_parse::{new_parser_from_file, new_parser_from_source_str, unwrap_or_emit_fatal};
 use rustc_session::config::{
-    CG_OPTIONS, CrateType, ErrorOutputType, Input, OptionDesc, OutFileName, OutputType, Sysroot,
+    CG_OPTIONS, ErrorOutputType, Input, OptionDesc, OutFileName, OutputType, Sysroot,
     UnstableOptions, Z_OPTIONS, nightly_options, parse_target_triple,
 };
 use rustc_session::getopts::{self, Matches};
-use rustc_session::lint::{Lint, LintId};
 use rustc_session::output::invalid_output_for_target;
 use rustc_session::{EarlyDiagCtxt, Session, config};
 use rustc_span::def_id::LOCAL_CRATE;
 use rustc_span::{DUMMY_SP, FileName};
+use rustc_structures::CrateType;
 use rustc_target::json::ToJson;
 use rustc_target::spec::{Target, TargetTuple};
 use tracing::trace;
@@ -82,12 +83,13 @@ macro do_not_use_safe_print($($t:tt)*) {
 #[allow(unused_imports)]
 use {do_not_use_print as print, do_not_use_print as println};
 
+mod allocator;
 pub mod args;
 pub mod pretty;
 #[macro_use]
 mod print;
+mod diagnostics;
 pub mod highlighter;
-mod session_diagnostics;
 
 // Keep the OS parts of this `cfg` in sync with the `cfg` on the `libc`
 // dependency in `compiler/rustc_driver/Cargo.toml`, to keep
@@ -102,7 +104,7 @@ mod signal_handler {
     pub(super) fn install() {}
 }
 
-use crate::session_diagnostics::{
+use crate::diagnostics::{
     CantEmitMIR, RLinkEmptyVersionNumber, RLinkEncodingVersionMismatch, RLinkRustcVersionMismatch,
     RLinkWrongFileType, RlinkCorruptFile, RlinkNotAFile, RlinkUnableToRead, UnstableFeatureUsage,
 };
@@ -336,8 +338,8 @@ pub fn run_compiler(at_args: &[String], callbacks: &mut (dyn Callbacks + Send)) 
 
         // Linking is done outside the `compiler.enter()` so that the
         // `GlobalCtxt` within `Queries` can be freed as early as possible.
-        if let Some(linker) = linker {
-            linker.link(sess, codegen_backend);
+        if let (Some(linker), incr_comp_session) = linker {
+            linker.link(sess, incr_comp_session, codegen_backend);
         }
     })
 }
@@ -614,7 +616,7 @@ fn list_metadata(sess: &Session, metadata_loader: &dyn MetadataLoader) {
     }
 }
 
-fn print_crate_info(
+pub fn print_crate_info(
     codegen_backend: &dyn CodegenBackend,
     sess: &Session,
     parse_attrs: bool,
@@ -658,6 +660,7 @@ fn print_crate_info(
                 println_info!("{}", targets.join("\n"));
             }
             HostTuple => println_info!("{}", rustc_session::config::host_tuple()),
+            WasmProcMacroTuple => println_info!("{}", sess.wasm_proc_macro_tuple),
             Sysroot => println_info!("{}", sess.opts.sysroot.path().display()),
             TargetLibdir => println_info!("{}", sess.target_tlib_path.dir.display()),
             TargetSpecJson => {
@@ -738,9 +741,7 @@ fn print_crate_info(
                     .iter()
                     .filter_map(|&(name, value)| {
                         // On stable, exclude unstable flags.
-                        if !sess.is_nightly_build()
-                            && find_gated_cfg(|cfg_sym| cfg_sym == name).is_some()
-                        {
+                        if !sess.is_nightly_build() && find_gated_cfg(name).is_some() {
                             return None;
                         }
 
@@ -1343,15 +1344,17 @@ fn warn_on_confusing_output_filename_flag(
             || config::CG_OPTIONS.iter().any(|option| eq_ignore_separators(option.name(), filename))
             || fake_args.iter().any(|arg| eq_ignore_separators(arg, filename))
         {
-            early_dcx.early_warn(
-                "option `-o` has no space between flag name and value, which can be confusing",
-            );
-            early_dcx.early_note(format!(
-                "output filename `-o {name}` is applied instead of a flag named `o{name}`"
-            ));
-            early_dcx.early_help(format!(
-                "insert a space between `-o` and `{name}` if this is intentional: `-o {name}`"
-            ));
+            early_dcx
+                .early_struct_warn(
+                    "option `-o` has no space between flag name and value, which can be confusing",
+                )
+                .with_note(format!(
+                    "output filename `-o {name}` is applied instead of a flag named `o{name}`"
+                ))
+                .with_help(format!(
+                    "insert a space between `-o` and `{name}` if this is intentional: `-o {name}`"
+                ))
+                .emit();
         }
     }
 }
@@ -1441,7 +1444,7 @@ pub static USING_INTERNAL_FEATURES: AtomicBool = AtomicBool::new(false);
 /// extra_info.
 ///
 /// A custom rustc driver can skip calling this to set up a custom ICE hook.
-pub fn install_ice_hook(bug_report_url: &'static str, extra_info: fn(&DiagCtxt)) {
+pub fn install_ice_hook(bug_report_url: &'static str, extra_info: fn(DiagCtxtHandle<'_>)) {
     // If the user has not explicitly overridden "RUST_BACKTRACE", then produce
     // full backtraces. When a compiler ICE happens, we want to gather
     // as much information as possible to present in the issue opened
@@ -1523,14 +1526,14 @@ pub fn install_ice_hook(bug_report_url: &'static str, extra_info: fn(&DiagCtxt))
 fn report_ice(
     info: &panic::PanicHookInfo<'_>,
     bug_report_url: &str,
-    extra_info: fn(&DiagCtxt),
+    extra_info: fn(DiagCtxtHandle<'_>),
     using_internal_features: &AtomicBool,
 ) {
     let emitter =
         Box::new(rustc_errors::annotate_snippet_emitter_writer::AnnotateSnippetEmitter::new(
             stderr_destination(rustc_errors::ColorConfig::Auto),
         ));
-    let dcx = rustc_errors::DiagCtxt::new(emitter);
+    let dcx = DiagCtxt::new(emitter);
     let dcx = dcx.handle();
 
     // a .span_bug or .bug call has already printed what
@@ -1538,17 +1541,17 @@ fn report_ice(
     if !info.payload().is::<rustc_errors::ExplicitBug>()
         && !info.payload().is::<rustc_errors::DelayedBugPanic>()
     {
-        dcx.emit_err(session_diagnostics::Ice);
+        dcx.emit_err(diagnostics::Ice);
     }
 
     if using_internal_features.load(std::sync::atomic::Ordering::Relaxed) {
-        dcx.emit_note(session_diagnostics::IceBugReportInternalFeature);
+        dcx.emit_note(diagnostics::IceBugReportInternalFeature);
     } else {
-        dcx.emit_note(session_diagnostics::IceBugReport { bug_report_url });
+        dcx.emit_note(diagnostics::IceBugReport { bug_report_url });
 
         // Only emit update nightly hint for users on nightly builds.
         if rustc_feature::UnstableFeatures::from_environment(None).is_nightly_build() {
-            dcx.emit_note(session_diagnostics::UpdateNightlyNote);
+            dcx.emit_note(diagnostics::UpdateNightlyNote);
         }
     }
 
@@ -1561,7 +1564,7 @@ fn report_ice(
         // Create the ICE dump target file.
         match crate::fs::File::options().create(true).append(true).open(path) {
             Ok(mut file) => {
-                dcx.emit_note(session_diagnostics::IcePath { path: path.clone() });
+                dcx.emit_note(diagnostics::IcePath { path: path.clone() });
                 if FIRST_PANIC.swap(false, Ordering::SeqCst) {
                     let _ = write!(file, "\n\nrustc version: {version}\nplatform: {tuple}");
                 }
@@ -1569,12 +1572,12 @@ fn report_ice(
             }
             Err(err) => {
                 // The path ICE couldn't be written to disk, provide feedback to the user as to why.
-                dcx.emit_warn(session_diagnostics::IcePathError {
+                dcx.emit_warn(diagnostics::IcePathError {
                     path: path.clone(),
                     error: err.to_string(),
                     env_var: std::env::var_os("RUSTC_ICE")
                         .map(PathBuf::from)
-                        .map(|env_var| session_diagnostics::IcePathErrorEnv { env_var }),
+                        .map(|env_var| diagnostics::IcePathErrorEnv { env_var }),
                 });
                 None
             }
@@ -1583,12 +1586,12 @@ fn report_ice(
         None
     };
 
-    dcx.emit_note(session_diagnostics::IceVersion { version, triple: tuple });
+    dcx.emit_note(diagnostics::IceVersion { version, triple: tuple });
 
     if let Some((flags, excluded_cargo_defaults)) = rustc_session::utils::extra_compiler_flags() {
-        dcx.emit_note(session_diagnostics::IceFlags { flags: flags.join(" ") });
+        dcx.emit_note(diagnostics::IceFlags { flags: flags.join(" ") });
         if excluded_cargo_defaults {
-            dcx.emit_note(session_diagnostics::IceExcludeCargoDefaults);
+            dcx.emit_note(diagnostics::IceExcludeCargoDefaults);
         }
     }
 
@@ -1601,7 +1604,7 @@ fn report_ice(
 
     // We don't trust this callback not to panic itself, so run it at the end after we're sure we've
     // printed all the relevant info.
-    extra_info(&dcx);
+    extra_info(dcx);
 
     #[cfg(windows)]
     if env::var("RUSTC_BREAK_ON_ICE").is_ok() {

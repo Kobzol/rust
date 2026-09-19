@@ -3,11 +3,11 @@ use std::iter;
 use rustc_index::IndexVec;
 use rustc_index::bit_set::DenseBitSet;
 use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
+use rustc_middle::mir;
 use rustc_middle::mir::{Body, Local, UnwindTerminateReason, traversal};
 use rustc_middle::ty::layout::{FnAbiOf, HasTyCtxt, HasTypingEnv, TyAndLayout};
 use rustc_middle::ty::{self, Instance, Ty, TyCtxt, TypeFoldable, TypeVisitableExt};
-use rustc_middle::{bug, mir, span_bug};
-use rustc_span::ErrorGuaranteed;
+use rustc_span::{ErrorGuaranteed, bug, span_bug};
 use rustc_target::callconv::{FnAbi, PassMode};
 use tracing::{debug, instrument};
 
@@ -217,14 +217,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     let fn_abi = cx.fn_abi_of_instance(instance, ty::List::empty());
     debug!("fn_abi: {:?}", fn_abi);
 
-    let nop_landing_pads = rustc_mir_transform::remove_noop_landing_pads::find_noop_landing_pads(
-        mir,
-        Some(rustc_mir_transform::remove_noop_landing_pads::ExtraInfo {
-            tcx,
-            instance,
-            typing_env: cx.typing_env(),
-        }),
-    );
+    let nop_landing_pads = tcx.find_noop_landing_pads_for_instance(mir, instance, cx.typing_env());
 
     if tcx.features().ergonomic_clones() {
         let monomorphized_mir = instance.instantiate_mir_and_normalize_erasing_regions(
@@ -245,7 +238,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         start_bx.set_personality_fn(cx.eh_personality());
     }
 
-    let cleanup_kinds = base::wants_new_eh_instructions(tcx.sess)
+    let cleanup_kinds = base::wants_new_eh_instructions(&tcx.sess.target)
         .then(|| analyze::cleanup_kinds(&mir, &nop_landing_pads));
 
     let cached_llbbs: IndexVec<mir::BasicBlock, CachedLlbb<Bx::BasicBlock>> =
@@ -301,6 +294,8 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
             }
 
             let block = &mir.basic_blocks[next];
+            let successors = block.mono_successors(tcx, instance);
+
             if let Some(mir::UnwindAction::Cleanup(target)) = block.terminator().unwind()
                 && fx.nop_landing_pads.contains(*target)
             {
@@ -309,9 +304,9 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                 // It's guaranteed that the cleanup block (`target`) occurs only in
                 // UnwindAction::Cleanup(...) -- i.e., we can't incorrectly filter too much here --
                 // because cleanup transitions must happen via UnwindAction::Cleanup.
-                to_visit.extend(block.terminator().successors().filter(|s| s != target));
+                to_visit.extend(successors.filter(|s| s != target));
             } else {
-                to_visit.extend(block.terminator().successors());
+                to_visit.extend(successors);
             }
         }
 
@@ -499,8 +494,8 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                 for i in 0..tupled_arg_tys.len() {
                     let arg = &fx.fn_abi.args[idx];
                     idx += 1;
-                    if let PassMode::Cast { pad_i32: true, .. } = arg.mode {
-                        llarg_idx += 1;
+                    if let PassMode::Cast { pad_i32_count, .. } = arg.mode {
+                        llarg_idx += usize::from(pad_i32_count);
                     }
                     let pr_field = place.project_field(bx, i);
                     bx.store_fn_arg(arg, &mut llarg_idx, pr_field);
@@ -527,8 +522,8 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 
             let arg = &fx.fn_abi.args[idx];
             idx += 1;
-            if let PassMode::Cast { pad_i32: true, .. } = arg.mode {
-                llarg_idx += 1;
+            if let PassMode::Cast { pad_i32_count, .. } = arg.mode {
+                llarg_idx += usize::from(pad_i32_count);
             }
 
             if !memory_locals.contains(local) {

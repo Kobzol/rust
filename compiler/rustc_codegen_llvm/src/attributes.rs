@@ -1,14 +1,16 @@
 //! Set and unset common attributes on LLVM values.
-use rustc_hir::attrs::{InlineAttr, InstructionSetAttr, OptimizeAttr, RtsanSetting};
+use rustc_attr_ir::{
+    InlineAttr, InstructionSetAttr, InstrumentFnAttr, OptimizeAttr, RtsanSetting, find_attr,
+};
 use rustc_hir::def_id::DefId;
-use rustc_hir::find_attr;
 use rustc_middle::middle::codegen_fn_attrs::{
-    CodegenFnAttrFlags, CodegenFnAttrs, InstrumentFnAttr, PatchableFunctionEntry, SanitizerFnAttrs,
-    TargetFeature,
+    CodegenFnAttrFlags, CodegenFnAttrs, PatchableFunctionEntry, SanitizerFnAttrs, TargetFeature,
 };
 use rustc_middle::ty::{self, Instance, TyCtxt};
+use rustc_sanitizers::ignorelist::SanitizerIgnoreList;
 use rustc_session::config::{
-    BranchProtection, FunctionReturn, InstrumentMcount, OptLevel, PAuthKey, PacRet,
+    BranchProtection, FunctionReturn, InstrumentMcount, InstrumentMcountOpts, OptLevel, PAuthKey,
+    PacRet,
 };
 use rustc_span::sym;
 use rustc_symbol_mangling::mangle_internal_symbol;
@@ -136,9 +138,24 @@ pub(crate) fn sanitize_attrs<'ll, 'tcx>(
     cx: &SimpleCx<'ll>,
     tcx: TyCtxt<'tcx>,
     sanitizer_fn_attr: SanitizerFnAttrs,
+    instance: Option<ty::Instance<'tcx>>,
+    sanitizer_ignorelist: Option<&SanitizerIgnoreList>,
 ) -> SmallVec<[&'ll Attribute; 4]> {
     let mut attrs = SmallVec::new();
-    let enabled = tcx.sess.sanitizers() - sanitizer_fn_attr.disabled;
+    let mut enabled = tcx.sess.sanitizers() - sanitizer_fn_attr.disabled;
+    if let Some(ignorelist) = sanitizer_ignorelist {
+        if let Some(instance) = instance {
+            let result = ignorelist.filter_instance_sanitizers(tcx, instance, enabled);
+            enabled = result.enabled;
+            if result.ignore_cfi {
+                attrs.push(llvm::CreateAttrString(cx.llcx, "no-sanitize-cfi"));
+            }
+            if result.ignore_kcfi {
+                attrs.push(llvm::CreateAttrString(cx.llcx, "no-sanitize-kcfi"));
+            }
+        }
+    }
+
     if enabled.contains(SanitizerSet::ADDRESS) || enabled.contains(SanitizerSet::KERNELADDRESS) {
         attrs.push(llvm::AttributeKind::SanitizeAddress.create_attr(cx.llcx));
     }
@@ -157,7 +174,7 @@ pub(crate) fn sanitize_attrs<'ll, 'tcx>(
     }
     if enabled.contains(SanitizerSet::MEMTAG) {
         // Check to make sure the mte target feature is actually enabled.
-        let features = tcx.global_backend_features(());
+        let features = &tcx.sess.global_backend_features;
         let mte_feature =
             features.iter().map(|s| &s[..]).rfind(|n| ["+mte", "-mte"].contains(&&n[..]));
         if let None | Some("-mte") = mte_feature {
@@ -201,7 +218,7 @@ pub(crate) fn frame_pointer(sess: &Session) -> FramePointer {
     let opts = &sess.opts;
     // "mcount" function relies on stack pointer.
     // See <https://sourceware.org/binutils/docs/gprof/Implementation.html>.
-    if opts.unstable_opts.instrument_mcount == InstrumentMcount::Mcount {
+    if let InstrumentMcount::Mcount(_) = opts.unstable_opts.instrument_mcount {
         fp.ratchet(FramePointer::Always);
     }
     fp.ratchet(opts.cg.force_frame_pointers);
@@ -235,7 +252,7 @@ fn function_return_attr<'ll>(cx: &SimpleCx<'ll>, sess: &Session) -> Option<&'ll 
 fn instrument_function_attr<'ll>(
     cx: &SimpleCx<'ll>,
     sess: &Session,
-    instrument_fn: InstrumentFnAttr,
+    instrument_fn: Option<InstrumentFnAttr>,
 ) -> SmallVec<[&'ll Attribute; 4]> {
     let mut attrs = SmallVec::new();
     if sess.opts.unstable_opts.instrument_mcount != InstrumentMcount::Disabled {
@@ -243,13 +260,14 @@ fn instrument_function_attr<'ll>(
         // `post-inline-ee-instrument` LLVM pass.
 
         let instrument_entry = match instrument_fn {
-            InstrumentFnAttr::Default | InstrumentFnAttr::On => true,
-            InstrumentFnAttr::Off => false,
+            Some(InstrumentFnAttr::On) | None => true,
+            Some(InstrumentFnAttr::Off) => false,
         };
 
         if instrument_entry {
+            let mut opts = InstrumentMcountOpts::default();
             match sess.opts.unstable_opts.instrument_mcount {
-                InstrumentMcount::Mcount => {
+                InstrumentMcount::Mcount(mopts) => {
                     // The function name varies on platforms.
                     // See test/CodeGen/mcount.c in clang.
                     let mcount_name = match &sess.target.llvm_mcount_intrinsic {
@@ -262,11 +280,19 @@ fn instrument_function_attr<'ll>(
                         "instrument-function-entry-inlined",
                         mcount_name,
                     ));
+                    opts = mopts;
                 }
-                InstrumentMcount::Fentry => {
+                InstrumentMcount::Fentry(fopts) => {
                     attrs.push(llvm::CreateAttrStringValue(cx.llcx, "fentry-call", "true"));
+                    opts = fopts;
                 }
                 InstrumentMcount::Disabled => {}
+            }
+            if opts.no_call {
+                attrs.push(llvm::CreateAttrString(cx.llcx, "mnop-mcount"));
+            }
+            if opts.record {
+                attrs.push(llvm::CreateAttrString(cx.llcx, "mrecord-mcount"));
             }
         }
     }
@@ -280,13 +306,13 @@ fn instrument_function_attr<'ll>(
 
         // always and never may be overridden by the #[instrument_fn = ...] attribute.
         match instrument_fn {
-            InstrumentFnAttr::Default => {}
-            InstrumentFnAttr::On => {
+            Some(InstrumentFnAttr::On) => {
                 always = true;
             }
-            InstrumentFnAttr::Off => {
+            Some(InstrumentFnAttr::Off) => {
                 never = true;
             }
+            None => {}
         }
 
         if never {
@@ -383,9 +409,9 @@ fn packed_stack_attr<'ll>(
 
     // The backchain and softfloat flags can be set via -Ctarget-features=...
     // or via #[target_features(enable = ...)] so we have to check both possibilities
-    let have_backchain = sess.unstable_target_features.contains(&sym::backchain)
+    let have_backchain = sess.internal_target_features.contains(&sym::backchain)
         || function_attributes.iter().any(|feature| feature.name == sym::backchain);
-    let have_softfloat = sess.unstable_target_features.contains(&sym::soft_float)
+    let have_softfloat = sess.internal_target_features.contains(&sym::soft_float)
         || function_attributes.iter().any(|feature| feature.name == sym::soft_float);
 
     // If both, backchain and packedstack, are enabled LLVM cannot generate valid function entry points
@@ -415,7 +441,7 @@ pub(crate) fn target_features_attr<'ll, 'tcx>(
     tcx: TyCtxt<'tcx>,
     function_features: Vec<String>,
 ) -> Option<&'ll Attribute> {
-    let global_features = tcx.global_backend_features(()).iter().map(String::as_str);
+    let global_features = tcx.sess.global_backend_features.iter().map(String::as_str);
     let function_features = function_features.iter().map(String::as_str);
     let target_features =
         global_features.chain(function_features).intersperse(",").collect::<String>();
@@ -466,6 +492,7 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
     llfn: &'ll Value,
     codegen_fn_attrs: &CodegenFnAttrs,
     instance: Option<ty::Instance<'tcx>>,
+    sanitizer_ignorelist: Option<&SanitizerIgnoreList>,
 ) {
     let sess = tcx.sess;
     let mut to_add = SmallVec::<[_; 16]>::new();
@@ -492,7 +519,7 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
         to_add.push(uwtable_attr(cx.llcx, sess.opts.unstable_opts.use_sync_unwind));
     }
 
-    if sess.opts.unstable_opts.profile_sample_use.is_some() {
+    if sess.opts.cg.profile_sample_use.is_some() {
         to_add.push(llvm::CreateAttrString(cx.llcx, "use-sample-profile"));
     }
 
@@ -527,7 +554,13 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
         // not used.
     } else {
         // Do not set sanitizer attributes for naked functions.
-        to_add.extend(sanitize_attrs(cx, tcx, codegen_fn_attrs.sanitizers));
+        to_add.extend(sanitize_attrs(
+            cx,
+            tcx,
+            codegen_fn_attrs.sanitizers,
+            instance,
+            sanitizer_ignorelist,
+        ));
 
         // For non-naked functions, set branch protection attributes on aarch64.
         if let Some(BranchProtection { bti, pac_ret, gcs }) = sess.branch_protection() {
@@ -639,7 +672,7 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
     let function_features = function_features
         .iter()
         // Convert to LLVMFeatures and filter out unavailable ones
-        .flat_map(|feat| llvm_util::to_llvm_features(sess, feat))
+        .flat_map(|feat| llvm_util::to_llvm_features(&sess.target, feat))
         // Convert LLVMFeatures & dependencies to +<feats>s
         .flat_map(|feat| feat.into_iter().map(|f| format!("+{f}")))
         .chain(codegen_fn_attrs.instruction_set.iter().map(|x| match x {

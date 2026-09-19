@@ -6,9 +6,9 @@ use rustc_codegen_ssa::mir::operand::OperandRef;
 use rustc_codegen_ssa::traits::{
     BaseTypeCodegenMethods, BuilderMethods, ConstCodegenMethods, LayoutTypeCodegenMethods,
 };
-use rustc_middle::bug;
 use rustc_middle::ty::Ty;
 use rustc_middle::ty::layout::{HasTyCtxt, LayoutOf, TyAndLayout};
+use rustc_span::bug;
 use rustc_target::spec::{Arch, Env, LlvmAbi, RustcAbi};
 
 use crate::builder::Builder;
@@ -474,7 +474,19 @@ fn emit_s390x_va_arg<'ll, 'tcx>(
     let padded_size = 8;
     let padding = padded_size - unpadded_size;
 
-    let gpr_type = indirect || !layout.is_single_fp_element(bx.cx);
+    // NOTE: if we ever allow aggregate types, this should handle structs with a single fp element.
+    let is_single_fp_element = |layout: TyAndLayout<'_>| -> bool {
+        match layout.layout.backend_repr() {
+            BackendRepr::Scalar(scalar) => match scalar.primitive() {
+                Primitive::Float(Float::F16 | Float::F32 | Float::F64) => true,
+                Primitive::Float(Float::F128) => false,
+                Primitive::Int(_, _) | Primitive::Pointer(_) => false,
+            },
+            _ => false,
+        }
+    };
+
+    let gpr_type = indirect || !is_single_fp_element(layout);
     let (max_regs, reg_count, reg_save_index, reg_padding) =
         if gpr_type { (5, gpr, 2, padding) } else { (4, fpr, 16, 0) };
 
@@ -1233,6 +1245,28 @@ pub(super) fn emit_va_arg<'ll, 'tcx>(
             // sparc64 is a big-endian target and stores variable arguments right-adjusted.
             ForceRightAdjust::Yes,
         ),
+        Arch::Sparc => {
+            std::assert_matches!(stability, CVariadicStatus::Unstable { .. });
+
+            // f128 is passed indirectly.
+            let pass_mode = match layout.layout.backend_repr() {
+                BackendRepr::Scalar(scalar) => match scalar.primitive() {
+                    Primitive::Float(Float::F128) => PassMode::Indirect,
+                    _ => PassMode::Direct,
+                },
+                _ => PassMode::Direct,
+            };
+
+            emit_ptr_va_arg(
+                bx,
+                addr,
+                target_ty,
+                pass_mode,
+                SlotSize::Bytes4,
+                AllowHigherAlign::No,
+                ForceRightAdjust::Yes,
+            )
+        }
         Arch::Mips | Arch::Mips32r6 | Arch::Mips64 | Arch::Mips64r6 => emit_ptr_va_arg(
             bx,
             addr,
@@ -1256,7 +1290,7 @@ pub(super) fn emit_va_arg<'ll, 'tcx>(
         Arch::Bpf => bug!("bpf does not support c-variadic functions"),
         Arch::SpirV => bug!("spirv does not support c-variadic functions"),
 
-        Arch::Sparc | Arch::Avr | Arch::M68k | Arch::Msp430 => {
+        Arch::Avr | Arch::M68k | Arch::Msp430 => {
             std::assert_matches!(stability, CVariadicStatus::Unstable { .. });
 
             // Clang uses the LLVM implementation for these architectures.

@@ -55,7 +55,7 @@
 //! `specialization` or `min_specialization` is enabled to implement these
 //! traits.
 //!
-//! ### rustc_unsafe_specialization_marker
+//! ### rustc_allow_lifetime_dependent_specialization
 //!
 //! There are also some specialization on traits with no methods, including the
 //! stable `FusedIterator` trait. We allow marking marker traits with an
@@ -68,12 +68,11 @@
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_infer::infer::TyCtxtInferExt;
-use rustc_infer::traits::ObligationCause;
 use rustc_infer::traits::specialization_graph::Node;
+use rustc_infer::traits::{ObligationCause, TraitErrors};
 use rustc_middle::ty::trait_def::TraitSpecializationKind;
 use rustc_middle::ty::{
-    self, GenericArg, GenericArgs, GenericArgsRef, RegionUtilitiesExt, TyCtxt, TypeVisitableExt,
-    TypingMode,
+    self, GenericArg, GenericArgs, GenericArgsRef, TyCtxt, TypeVisitableExt, TypingMode,
 };
 use rustc_span::{ErrorGuaranteed, Span};
 use rustc_trait_selection::error_reporting::InferCtxtErrorExt;
@@ -185,14 +184,14 @@ fn get_impl_args(
     );
 
     let errors = ocx.evaluate_obligations_error_on_ambiguity();
-    if !errors.is_empty() {
+    if let TraitErrors::HasErrors(errors) = errors {
         let guar = ocx.infcx.err_ctxt().report_fulfillment_errors(errors);
         return Err(guar);
     }
 
     let assumed_wf_types = ocx.assumed_wf_types_and_report_errors(param_env, impl1_def_id)?;
     ocx.resolve_regions_and_report_errors(impl1_def_id, param_env, assumed_wf_types)?;
-    let Ok(impl2_args) = infcx.fully_resolve(impl2_args) else {
+    let Ok(impl2_args) = infcx.deeply_resolve_via_region_graph(impl2_args) else {
         let span = tcx.def_span(impl1_def_id);
         let guar = tcx.dcx().emit_err(GenericArgsOnOverriddenImpl { span });
         return Err(guar);
@@ -415,7 +414,7 @@ fn check_specialization_on<'tcx>(
         _ if clause.is_global() => Ok(()),
         // We allow specializing on explicitly marked traits with no associated
         // items.
-        ty::ClauseKind::Trait(ty::TraitPredicate { trait_ref, polarity: _ }) => {
+        ty::ClauseKind::Trait(ty::TraitClause { trait_ref, polarity: _ }) => {
             if matches!(
                 trait_specialization_kind(tcx, clause),
                 Some(TraitSpecializationKind::Marker)
@@ -434,7 +433,7 @@ fn check_specialization_on<'tcx>(
                     .emit())
             }
         }
-        ty::ClauseKind::Projection(ty::ProjectionPredicate { projection_term, term }) => Err(tcx
+        ty::ClauseKind::Projection(ty::ProjectionClause { projection_term, term }) => Err(tcx
             .dcx()
             .struct_span_err(
                 span,
@@ -464,7 +463,7 @@ fn trait_specialization_kind<'tcx>(
     clause: ty::Clause<'tcx>,
 ) -> Option<TraitSpecializationKind> {
     match clause.kind().skip_binder() {
-        ty::ClauseKind::Trait(ty::TraitPredicate { trait_ref, polarity: _ }) => {
+        ty::ClauseKind::Trait(ty::TraitClause { trait_ref, polarity: _ }) => {
             Some(tcx.trait_def(trait_ref.def_id).specialization_kind)
         }
         ty::ClauseKind::RegionOutlives(_)

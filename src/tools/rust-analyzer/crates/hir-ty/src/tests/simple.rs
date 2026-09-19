@@ -4163,6 +4163,27 @@ extern "C" fn foo() -> ! {
 }
 
 #[test]
+fn asm_label_can_diverge() {
+    check_no_mismatches(
+        r#"
+//- minicore: asm
+fn foo() {
+    loop {
+        unsafe {
+            core::arch::asm!(
+                "/* {} */",
+                label {
+                    break;
+                }
+            );
+        }
+    }
+}
+    "#,
+    );
+}
+
+#[test]
 fn regression_21478() {
     check_infer(
         r#"
@@ -4201,8 +4222,6 @@ fn foo() {
             248..282 'LazyLo..._LOCK)': &'? [u32; 0]
             264..281 '&VALUE...Y_LOCK': &'? LazyLock<[u32; 0]>
             265..281 'VALUES...Y_LOCK': LazyLock<[u32; 0]>
-            197..202 '{ 0 }': usize
-            199..200 '0': usize
         "#]],
     );
 }
@@ -4308,9 +4327,8 @@ enum Enum {
 }
     "#,
         expect![[r#"
-            29..34 '{ 2 }': usize
-            31..32 '2': usize
-        "#]],
+
+"#]],
     );
 }
 
@@ -4377,7 +4395,7 @@ fn hrtb_fn_ptr() {
 fn foo<'b>(f: for <'a> fn(&'a u32, &'b u32)) {}
 "#,
         expect![[r#"
-            12..13 'f': fn(&'_ u32, &'_ u32)
+            12..13 'f': fn(&'?0.0 u32, &'_ u32)
             46..48 '{}': ()
         "#]],
     );

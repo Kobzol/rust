@@ -24,16 +24,17 @@ use rustc_hir::def::{CtorOf, DefKind, Res};
 use rustc_hir::def_id::{DefId, LocalDefId, LocalModId};
 use rustc_hir::intravisit::{self, InferKind, Visitor};
 use rustc_hir::{self as hir, AmbigArg, ForeignItemId, ItemId, OwnerId, PatKind, find_attr};
+use rustc_lint_defs::builtin::{
+    EXPORTED_PRIVATE_DEPENDENCIES, PRIVATE_BOUNDS, PRIVATE_INTERFACES, UNNAMEABLE_TYPES,
+};
 use rustc_middle::middle::privacy::{EffectiveVisibilities, EffectiveVisibility, Level};
 use rustc_middle::query::Providers;
 use rustc_middle::ty::print::PrintTraitRefExt as _;
 use rustc_middle::ty::{
-    self, AssocContainer, Const, GenericParamDefKind, TraitRef, Ty, TyCtxt, TypeSuperVisitable,
-    TypeVisitable, TypeVisitor,
+    self, AssocContainer, Const, GenericParamDefKind, PredicateProxy, TraitRef, Ty, TyCtxt,
+    TypeSuperVisitable, TypeVisitable, TypeVisitor,
 };
-use rustc_middle::{bug, span_bug};
-use rustc_session::lint;
-use rustc_span::{Ident, Span, Symbol, sym};
+use rustc_span::{Ident, Span, Symbol, bug, span_bug, sym};
 use tracing::debug;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -54,7 +55,7 @@ impl<'tcx> fmt::Display for LazyDefPathStr<'tcx> {
 /// Implemented to visit all `DefId`s in a type.
 /// Visiting `DefId`s is useful because visibilities and reachabilities are attached to them.
 /// The idea is to visit "all components of a type", as documented in
-/// <https://github.com/rust-lang/rfcs/blob/master/text/2145-type-privacy.md#how-to-determine-visibility-of-a-type>.
+/// <https://rust-lang.github.io/rfcs/2145-type-privacy.html#how-to-determine-visibility-of-a-type>.
 /// The default type visitor (`TypeVisitor`) does most of the job, but it has some shortcomings.
 /// First, it doesn't have overridable `fn visit_trait_ref`, so we have to catch trait `DefId`s
 /// manually. Second, it doesn't visit some type components like signatures of fn types, or traits
@@ -128,23 +129,23 @@ where
         }
     }
 
-    fn visit_clause(&mut self, clause: ty::Clause<'tcx>) -> V::Result {
-        match clause.kind().skip_binder() {
-            ty::ClauseKind::Trait(ty::TraitPredicate { trait_ref, polarity: _ }) => {
+    fn visit_clause(&mut self, clause: ty::Binder<'tcx, ty::ClauseKind<'tcx>>) -> V::Result {
+        match clause.skip_binder() {
+            ty::ClauseKind::Trait(ty::TraitClause { trait_ref, polarity: _ }) => {
                 self.visit_trait(trait_ref)
             }
-            ty::ClauseKind::HostEffect(pred) => {
-                try_visit!(self.visit_trait(pred.trait_ref));
-                pred.constness.visit_with(self)
+            ty::ClauseKind::HostEffect(clause) => {
+                try_visit!(self.visit_trait(clause.trait_ref));
+                clause.constness.visit_with(self)
             }
-            ty::ClauseKind::Projection(ty::ProjectionPredicate {
+            ty::ClauseKind::Projection(ty::ProjectionClause {
                 projection_term: projection_ty,
                 term,
             }) => {
                 try_visit!(term.visit_with(self));
                 self.visit_projection_term(projection_ty)
             }
-            ty::ClauseKind::TypeOutlives(ty::OutlivesPredicate(ty, _region)) => ty.visit_with(self),
+            ty::ClauseKind::TypeOutlives(ty::OutlivesClause(ty, _region)) => ty.visit_with(self),
             ty::ClauseKind::RegionOutlives(..) => V::Result::output(),
             ty::ClauseKind::ConstArgHasType(ct, ty) => {
                 try_visit!(ct.visit_with(self));
@@ -158,7 +159,7 @@ where
 
     fn visit_clauses(&mut self, clauses: &[(ty::Clause<'tcx>, Span)]) -> V::Result {
         for &(clause, _) in clauses {
-            try_visit!(self.visit_clause(clause));
+            try_visit!(self.visit_clause(clause.kind()));
         }
         V::Result::output()
     }
@@ -170,8 +171,8 @@ where
 {
     type Result = V::Result;
 
-    fn visit_predicate(&mut self, p: ty::Predicate<'tcx>) -> Self::Result {
-        self.visit_clause(p.as_clause().unwrap())
+    fn visit_predicate<P: PredicateProxy<TyCtxt<'tcx>>>(&mut self, p: P) -> Self::Result {
+        self.visit_clause(p.clause_kind_unchecked().unwrap())
     }
 
     fn visit_ty(&mut self, ty: Ty<'tcx>) -> Self::Result {
@@ -579,13 +580,16 @@ impl<'tcx> EmbargoVisitor<'tcx> {
         let def_kind = self.tcx.def_kind(def_id);
         match def_kind {
             // The interface is empty, and no nested items.
-            DefKind::Use | DefKind::ExternCrate | DefKind::GlobalAsm => {}
+            DefKind::Use
+            | DefKind::ExternCrate
+            | DefKind::GlobalAsm
+            | DefKind::TestBinderConstraints => {}
             // The interface is empty, and all nested items are processed by `check_def_id`.
             DefKind::Mod => {}
             // Effective visibilities for macros are processed earlier.
             DefKind::Macro { .. } => {}
             DefKind::ForeignTy
-            | DefKind::Const { .. }
+            | DefKind::Const
             | DefKind::Static { .. }
             | DefKind::Fn
             | DefKind::TyAlias => {
@@ -707,7 +711,7 @@ impl<'tcx> EmbargoVisitor<'tcx> {
             | DefKind::Variant
             | DefKind::AssocFn
             | DefKind::AssocTy
-            | DefKind::AssocConst { .. }
+            | DefKind::AssocConst
             | DefKind::TyParam
             | DefKind::AnonConst
             | DefKind::OpaqueTy
@@ -785,7 +789,7 @@ impl ReachEverythingInTheInterfaceVisitor<'_, '_> {
                 self.ev.queue.insert(def_id);
             }
 
-            DefKind::AssocConst { .. } | DefKind::AssocFn | DefKind::AssocTy => {
+            DefKind::AssocConst | DefKind::AssocFn | DefKind::AssocTy => {
                 // Traverse the whole impl/trait.
                 self.ev.queue.insert(self.ev.tcx.local_parent(def_id));
             }
@@ -820,7 +824,8 @@ impl ReachEverythingInTheInterfaceVisitor<'_, '_> {
             | DefKind::ExternCrate
             | DefKind::GlobalAsm
             | DefKind::ForeignMod
-            | DefKind::Const { .. } => {
+            | DefKind::Const
+            | DefKind::TestBinderConstraints => {
                 span_bug!(
                     self.tcx().def_span(def_id),
                     "{def_kind:?} unexpectedly reached by `ReachEverythingInTheInterfaceVisitor`"
@@ -1129,11 +1134,25 @@ struct TypePrivacyVisitor<'tcx> {
     mod_id: LocalModId,
     maybe_typeck_results: Option<&'tcx ty::TypeckResults<'tcx>>,
     span: Span,
+    /// Types already walked clean (no privacy error). A walk's result depends only on the
+    /// interned type and `mod_id`, which is fixed for the whole visit, so a type that walks
+    /// clean once walks clean everywhere and we can skip it. Errored walks are never cached,
+    /// so their error still fires at every span.
+    accessible_tys: FxHashSet<Ty<'tcx>>,
 }
 
 impl<'tcx> TypePrivacyVisitor<'tcx> {
     fn item_is_accessible(&self, did: DefId) -> bool {
         self.tcx.visibility(did).is_accessible_from(self.mod_id, self.tcx)
+    }
+
+    fn check_ty(&mut self, ty: Ty<'tcx>) -> ControlFlow<()> {
+        if self.accessible_tys.contains(&ty) {
+            return ControlFlow::Continue(());
+        }
+        self.visit(ty)?;
+        self.accessible_tys.insert(ty);
+        ControlFlow::Continue(())
     }
 
     // Take node-id of an expression or pattern and check its type for privacy.
@@ -1143,10 +1162,10 @@ impl<'tcx> TypePrivacyVisitor<'tcx> {
             .maybe_typeck_results
             .unwrap_or_else(|| span_bug!(span, "`hir::Expr` or `hir::Pat` outside of a body"));
         try {
-            self.visit(typeck_results.node_type(id))?;
+            self.check_ty(typeck_results.node_type(id))?;
             self.visit(typeck_results.node_args(id))?;
             if let Some(adjustments) = typeck_results.adjustments().get(id) {
-                adjustments.iter().try_for_each(|adjustment| self.visit(adjustment.target))?;
+                adjustments.iter().try_for_each(|adjustment| self.check_ty(adjustment.target))?;
             }
         }
         .is_break()
@@ -1161,7 +1180,7 @@ impl<'tcx> TypePrivacyVisitor<'tcx> {
     }
 }
 
-impl<'tcx> rustc_ty_utils::sig_types::SpannedTypeVisitor<'tcx> for TypePrivacyVisitor<'tcx> {
+impl<'tcx> rustc_ty_walk::SpannedTypeVisitor<'tcx> for TypePrivacyVisitor<'tcx> {
     type Result = ControlFlow<()>;
     fn visit(&mut self, span: Span, value: impl TypeVisitable<TyCtxt<'tcx>>) -> Self::Result {
         self.span = span;
@@ -1179,14 +1198,11 @@ impl<'tcx> Visitor<'tcx> for TypePrivacyVisitor<'tcx> {
 
     fn visit_ty(&mut self, hir_ty: &'tcx hir::Ty<'tcx, AmbigArg>) {
         self.span = hir_ty.span;
-        if self
-            .visit(
-                self.maybe_typeck_results
-                    .unwrap_or_else(|| span_bug!(hir_ty.span, "`hir::Ty` outside of a body"))
-                    .node_type(hir_ty.hir_id),
-            )
-            .is_break()
-        {
+        let ty = self
+            .maybe_typeck_results
+            .unwrap_or_else(|| span_bug!(hir_ty.span, "`hir::Ty` outside of a body"))
+            .node_type(hir_ty.hir_id);
+        if self.check_ty(ty).is_break() {
             return;
         }
 
@@ -1205,7 +1221,7 @@ impl<'tcx> Visitor<'tcx> for TypePrivacyVisitor<'tcx> {
             .unwrap_or_else(|| span_bug!(inf_span, "Inference variable outside of a body"))
             .node_type_opt(inf_id)
         {
-            if self.visit(ty).is_break() {
+            if self.check_ty(ty).is_break() {
                 return;
             }
         } else {
@@ -1236,7 +1252,7 @@ impl<'tcx> Visitor<'tcx> for TypePrivacyVisitor<'tcx> {
                     .unwrap_or_else(|| span_bug!(self.span, "`hir::Expr` outside of a body"));
                 if let Some(def_id) = typeck_results.type_dependent_def_id(expr.hir_id) {
                     if self
-                        .visit(self.tcx.type_of(def_id).instantiate_identity().skip_norm_wip())
+                        .check_ty(self.tcx.type_of(def_id).instantiate_identity().skip_norm_wip())
                         .is_break()
                     {
                         return;
@@ -1276,10 +1292,7 @@ impl<'tcx> Visitor<'tcx> for TypePrivacyVisitor<'tcx> {
         let def = def.filter(|(kind, _)| {
             matches!(
                 kind,
-                DefKind::AssocFn
-                    | DefKind::AssocConst { .. }
-                    | DefKind::AssocTy
-                    | DefKind::Static { .. }
+                DefKind::AssocFn | DefKind::AssocConst | DefKind::AssocTy | DefKind::Static { .. }
             )
         });
         if let Some((kind, def_id)) = def {
@@ -1413,7 +1426,7 @@ impl SearchInterfaceForPrivateItemsVisitor<'_> {
     fn check_def_id(&self, def_id: DefId, kind: &str, descr: &dyn fmt::Display) -> bool {
         if self.leaks_private_dep(def_id) {
             self.tcx.emit_node_span_lint(
-                lint::builtin::EXPORTED_PRIVATE_DEPENDENCIES,
+                EXPORTED_PRIVATE_DEPENDENCIES,
                 self.tcx.local_def_id_to_hir_id(self.item_def_id),
                 self.tcx.def_span(self.item_def_id.to_def_id()),
                 FromPrivateDependencyInPublicInterface {
@@ -1462,11 +1475,7 @@ impl SearchInterfaceForPrivateItemsVisitor<'_> {
         let reachable_at_vis = *effective_vis.at_level(Level::Reachable);
 
         if reachable_at_vis.greater_than(vis, self.tcx) {
-            let lint = if self.in_primary_interface {
-                lint::builtin::PRIVATE_INTERFACES
-            } else {
-                lint::builtin::PRIVATE_BOUNDS
-            };
+            let lint = if self.in_primary_interface { PRIVATE_INTERFACES } else { PRIVATE_BOUNDS };
             let span = self.tcx.def_span(self.item_def_id.to_def_id());
             let vis_span = self.tcx.def_span(def_id);
             self.tcx.emit_node_span_lint(
@@ -1560,7 +1569,7 @@ impl<'tcx> PrivateItemsInPublicInterfacesChecker<'_, 'tcx> {
             let hir_id = self.tcx.local_def_id_to_hir_id(def_id);
             let span = self.tcx.def_span(def_id.to_def_id());
             self.tcx.emit_node_span_lint(
-                lint::builtin::UNNAMEABLE_TYPES,
+                UNNAMEABLE_TYPES,
                 hir_id,
                 span,
                 UnnameableTypesLint {
@@ -1608,7 +1617,7 @@ impl<'tcx> PrivateItemsInPublicInterfacesChecker<'_, 'tcx> {
         let def_kind = tcx.def_kind(def_id);
 
         match def_kind {
-            DefKind::Const { .. } | DefKind::Static { .. } | DefKind::Fn | DefKind::TyAlias => {
+            DefKind::Const | DefKind::Static { .. } | DefKind::Fn | DefKind::TyAlias => {
                 if let DefKind::TyAlias = def_kind {
                     self.check_unnameable(def_id, effective_vis);
                 }
@@ -1750,11 +1759,17 @@ fn check_mod_privacy(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     // Check privacy of explicitly written types and traits as well as
     // inferred types of expressions and patterns.
     let span = tcx.def_span(mod_id);
-    let mut visitor = TypePrivacyVisitor { tcx, mod_id, maybe_typeck_results: None, span };
+    let mut visitor = TypePrivacyVisitor {
+        tcx,
+        mod_id,
+        maybe_typeck_results: None,
+        span,
+        accessible_tys: Default::default(),
+    };
 
     let module = tcx.hir_module_items(mod_id);
     for def_id in module.definitions() {
-        let _ = rustc_ty_utils::sig_types::walk_types(tcx, def_id, &mut visitor);
+        let _ = rustc_ty_walk::walk_types(tcx, def_id, &mut visitor);
 
         if let Some(body_id) = tcx.hir_maybe_body_owned_by(def_id) {
             visitor.visit_nested_body(body_id.id());

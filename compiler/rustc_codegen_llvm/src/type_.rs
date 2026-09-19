@@ -7,9 +7,9 @@ use rustc_abi::{AddressSpace, Align, Integer, Reg, Size};
 use rustc_codegen_ssa::common::TypeKind;
 use rustc_codegen_ssa::traits::*;
 use rustc_data_structures::small_c_str::SmallCStr;
-use rustc_middle::bug;
 use rustc_middle::ty::layout::TyAndLayout;
 use rustc_middle::ty::{self, Ty};
+use rustc_span::bug;
 use rustc_target::callconv::{CastTarget, FnAbi};
 
 use crate::abi::{FnAbiLlvmExt, LlvmType};
@@ -64,8 +64,8 @@ impl<'ll, CX: Borrow<SCx<'ll>>> GenericCx<'ll, CX> {
         llvm::LLVMIntTypeInContext(self.llcx(), num_bits as c_uint)
     }
 
-    pub(crate) fn type_vector(&self, ty: &'ll Type, len: u64) -> &'ll Type {
-        unsafe { llvm::LLVMVectorType(ty, len as c_uint) }
+    pub(crate) fn type_vector(&self, ty: &'ll Type, count: u64) -> &'ll Type {
+        unsafe { llvm::LLVMVectorType(ty, count as c_uint) }
     }
 
     pub(crate) fn type_scalable_vector(&self, ty: &'ll Type, count: u64) -> &'ll Type {

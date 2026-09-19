@@ -2,13 +2,13 @@ use rustc_errors::codes::*;
 use rustc_errors::formatting::DiagMessageAddArg;
 use rustc_errors::{
     Applicability, Diag, DiagArgValue, DiagCtxtHandle, Diagnostic, ElidedLifetimeInPathSubdiag,
-    EmissionGuarantee, IntoDiagArg, Level, MultiSpan, Subdiagnostic, msg,
+    IntoDiagArg, Level, MultiSpan, Subdiagnostic, msg,
 };
 use rustc_macros::{Diagnostic, Subdiagnostic};
 use rustc_span::{Ident, Span, Spanned, Symbol};
 
 use crate::Res;
-use crate::late::{PatternSource, ResolvingRestrictionKind};
+use crate::late::PatternSource;
 
 pub(crate) mod impls;
 
@@ -288,19 +288,33 @@ pub(crate) struct AttemptToUseNonConstantValueInConstant<'a> {
 }
 
 #[derive(Subdiagnostic)]
-#[multipart_suggestion(
-    "consider using `{$suggestion}` instead of `{$current}`",
-    style = "verbose",
-    applicability = "has-placeholders"
-)]
-pub(crate) struct AttemptToUseNonConstantValueInConstantWithSuggestion<'a> {
-    // #[primary_span]
-    #[suggestion_part(code = "{suggestion} ")]
-    pub(crate) span: Span,
-    pub(crate) suggestion: &'a str,
-    #[suggestion_part(code = ": /* Type */")]
-    pub(crate) type_span: Option<Span>,
-    pub(crate) current: &'a str,
+pub(crate) enum AttemptToUseNonConstantValueInConstantWithSuggestion<'a> {
+    #[multipart_suggestion(
+        "consider using `{$suggestion}` instead of `{$current}`",
+        style = "verbose",
+        applicability = "has-placeholders"
+    )]
+    Placeholder {
+        #[suggestion_part(code = "{suggestion} ")]
+        span: Span,
+        suggestion: &'a str,
+        #[suggestion_part(code = ": /* Type */")]
+        type_span: Option<Span>,
+        current: &'a str,
+    },
+    #[multipart_suggestion(
+        "consider using `{$suggestion}` instead of `{$current}`",
+        style = "verbose",
+        applicability = "machine-applicable"
+    )]
+    Usize {
+        #[suggestion_part(code = "{suggestion} ")]
+        span: Span,
+        suggestion: &'a str,
+        #[suggestion_part(code = ": usize")]
+        type_span: Option<Span>,
+        current: &'a str,
+    },
 }
 
 #[derive(Subdiagnostic)]
@@ -386,6 +400,10 @@ pub(crate) struct SelfInGenericParamDefault {
 pub(crate) struct SelfInConstGenericTy {
     #[primary_span]
     pub(crate) span: Span,
+    #[help(
+        "add `#![feature(min_adt_const_params)]` to the crate attributes to enable `Self` as a const parameter type"
+    )]
+    pub(crate) enable_feature: bool,
 }
 
 #[derive(Diagnostic)]
@@ -546,19 +564,6 @@ pub(crate) struct ExpectedModuleFound {
 #[derive(Diagnostic)]
 #[diag("cannot determine resolution for the visibility", code = E0578)]
 pub(crate) struct Indeterminate(#[primary_span] pub(crate) Span);
-
-#[derive(Diagnostic)]
-#[diag(
-    "{$kind ->
-    [impl] trait implementation
-    *[mut] field mutation
-} can only be restricted to ancestor modules"
-)]
-pub(crate) struct RestrictionAncestorOnly {
-    #[primary_span]
-    pub(crate) span: Span,
-    pub(crate) kind: ResolvingRestrictionKind,
-}
 
 #[derive(Diagnostic)]
 #[diag("cannot use a tool module through an import")]
@@ -1232,14 +1237,14 @@ pub(crate) struct CannotFindBuiltinMacroWithName {
 
 #[derive(Subdiagnostic)]
 pub(crate) enum DefinedHere {
-    #[label("similarly named {$candidate_descr} `{$candidate}` defined here")]
+    #[note("similarly named {$candidate_descr} `{$candidate}` defined here")]
     SimilarlyNamed {
         #[primary_span]
         span: Span,
         candidate_descr: &'static str,
         candidate: Symbol,
     },
-    #[label("{$candidate_descr} `{$candidate}` defined here")]
+    #[note("{$candidate_descr} `{$candidate}` defined here")]
     SingleItem {
         #[primary_span]
         span: Span,
@@ -1375,7 +1380,7 @@ pub(crate) enum ItemWas {
 }
 
 impl Subdiagnostic for FoundItemConfigureOut {
-    fn add_to_diag<G: EmissionGuarantee>(self, diag: &mut Diag<'_, G>) {
+    fn add_to_diag<G>(self, diag: &mut Diag<'_, G>) {
         let mut multispan: MultiSpan = self.span.into();
         match self.item_was {
             ItemWas::BehindFeature { feature, span } => {
@@ -1503,30 +1508,6 @@ pub(crate) struct RedundantImportVisibility {
     pub max_vis: String,
 }
 
-#[derive(Diagnostic)]
-#[diag("unknown diagnostic attribute")]
-pub(crate) struct UnknownDiagnosticAttribute {
-    #[subdiagnostic]
-    pub help: Option<UnknownDiagnosticAttributeHelp>,
-}
-
-#[derive(Subdiagnostic)]
-pub(crate) enum UnknownDiagnosticAttributeHelp {
-    #[suggestion(
-        "an attribute with a similar name exists",
-        style = "verbose",
-        code = "{typo_name}",
-        applicability = "machine-applicable"
-    )]
-    Typo {
-        #[primary_span]
-        span: Span,
-        typo_name: Symbol,
-    },
-    #[help("add `#![feature({$feature})]` to the crate attributes to enable")]
-    UseFeature { feature: Symbol },
-}
-
 // FIXME: Make this properly translatable.
 pub(crate) struct Ambiguity {
     pub ident: Ident,
@@ -1541,7 +1522,7 @@ pub(crate) struct Ambiguity {
     pub is_error: bool,
 }
 
-impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for Ambiguity {
+impl<'a, G> Diagnostic<'a, G> for Ambiguity {
     fn into_diag(self, dcx: DiagCtxtHandle<'a>, level: Level) -> Diag<'a, G> {
         let Self {
             ident,

@@ -5,17 +5,16 @@ use std::str;
 
 use rustc_abi::Align;
 use rustc_ast::attr::version::RustcVersion;
-use rustc_data_structures::fx::FxIndexMap;
 use rustc_data_structures::profiling::TimePassesFormat;
 use rustc_data_structures::stable_hash::StableHasher;
 use rustc_errors::{ColorConfig, TerminalUrl};
 use rustc_feature::UnstableFeatures;
 use rustc_hashes::Hash64;
-use rustc_hir::attrs::CollapseMacroDebuginfo;
 use rustc_macros::{BlobDecodable, Encodable};
 use rustc_span::edit_distance::edit_distance;
 use rustc_span::edition::Edition;
 use rustc_span::{RealFileName, RemapPathScopeComponents, SourceFileHashAlgorithm};
+use rustc_structures::{CollapseMacroDebuginfo, CrateType};
 use rustc_target::spec::{
     CodeModel, FramePointer, LinkerFlavorCli, MergeFunctions, OnBrokenPipe, PanicStrategy,
     RelocModel, RelroLevel, SanitizerSet, SplitDebuginfo, StackProtector, SymbolVisibility,
@@ -90,14 +89,20 @@ pub mod mitigation_coverage;
 
 mod target_modifier_consistency_check {
     use super::*;
-    pub(super) fn sanitizer(l: &TargetModifier, r: Option<&TargetModifier>) -> bool {
-        let mut lparsed: SanitizerSet = Default::default();
+    pub(super) fn sanitizer(
+        sess: &Session,
+        l: &TargetModifier,
+        r: Option<&TargetModifier>,
+    ) -> bool {
+        let mut lparsed: SanitizerSet = SanitizerSet::empty();
         let lval = if l.value_name.is_empty() { None } else { Some(l.value_name.as_str()) };
         parse::parse_sanitizers(&mut lparsed, lval);
+        let lparsed = lparsed.combine_with_defaults(sess.target.options.default_sanitizers);
 
-        let mut rparsed: SanitizerSet = Default::default();
+        let mut rparsed: SanitizerSet = SanitizerSet::empty();
         let rval = r.filter(|v| !v.value_name.is_empty()).map(|v| v.value_name.as_str());
         parse::parse_sanitizers(&mut rparsed, rval);
+        let rparsed = rparsed.combine_with_defaults(sess.target.options.default_sanitizers);
 
         // Some sanitizers need to be target modifiers, and some do not.
         // For now, we should mark all sanitizers as target modifiers except for these:
@@ -166,7 +171,7 @@ impl TargetModifier {
         match self.opt {
             OptionsTargetModifiers::UnstableOptions(unstable) => match unstable {
                 UnstableOptionsTargetModifiers::Sanitizer => {
-                    return target_modifier_consistency_check::sanitizer(self, other);
+                    return target_modifier_consistency_check::sanitizer(sess, self, other);
                 }
                 UnstableOptionsTargetModifiers::SanitizerCfiNormalizeIntegers => {
                     return target_modifier_consistency_check::sanitizer_cfi_normalize_integers(
@@ -350,9 +355,6 @@ top_level_options!(
 
         target_triple: TargetTuple [TRACKED],
 
-        /// Effective logical environment used by `env!`/`option_env!` macros
-        logical_env: FxIndexMap<String, String> [TRACKED],
-
         test: bool [TRACKED],
         error_format: ErrorOutputType [UNTRACKED],
         diagnostic_width: Option<usize> [UNTRACKED],
@@ -433,10 +435,9 @@ top_level_options!(
         /// The (potentially remapped) working directory
         #[rustc_lint_opt_deny_field_access("use `SourceMap::working_dir` instead of this field")]
         working_dir: RealFileName [TRACKED],
-
         color: ColorConfig [UNTRACKED],
-
         verbose: bool [TRACKED_NO_CRATE_HASH],
+        jobs: Jobs [UNTRACKED],
     }
 );
 
@@ -507,7 +508,7 @@ macro_rules! options {
                 $( { TARGET_MODIFIER: $tmod_variant:ident } )?
                 $( { MITIGATION: $mitigation_variant:ident } )?
                 ,
-                $desc:literal
+                $desc:expr
                 $(, removed: $removed:ident )?
             ),
         )*
@@ -820,14 +821,12 @@ mod desc {
         "a comma-separated list of strings, with elements beginning with + or -";
     pub(crate) const parse_pointer_authentication_list_with_polarity: &str = "a comma-separated list of options, each of the form `+<name>` or `-<name>`, where `<name>` is one of: `aarch64-jump-table-hardening`, `auth-traps`, `calls`, `elf-got`, `function-pointer-type-discrimination`, `indirect-gotos`, `init-fini`, `init-fini-address-discrimination`, `intrinsics`, `return-addresses`, `typeinfo-vt-ptr-discrimination`, `vt-ptr-addr-discrimination` or `vt-ptr-type-discrimination`";
     pub(crate) const parse_autodiff: &str = "a comma separated list of settings: `Enable`, `PrintSteps`, `PrintTA`, `PrintTAFn`, `PrintAA`, `PrintPerf`, `PrintModBefore`, `PrintModAfter`, `PrintModFinal`, `PrintPasses`, `NoPostopt`, `LooseTypes`, `Inline`, `NoTT`";
-    pub(crate) const parse_offload: &str =
-        "a comma separated list of settings: `Host=<Absolute-Path>`, `Device`, `Test`";
+    pub(crate) const parse_offload: &str = "a comma separated list of settings: `Host=<Absolute-Path>`, `HostMetadata=<Absolute-Path>`, `Device` (empty manifest) or `Device=<Absolute-Path>`, `Test`";
     pub(crate) const parse_comma_list: &str = "a comma-separated list of strings";
     pub(crate) const parse_opt_comma_list: &str = parse_comma_list;
     pub(crate) const parse_number: &str = "a number";
     pub(crate) const parse_opt_number: &str = parse_number;
     pub(crate) const parse_frame_pointer: &str = "one of `true`/`yes`/`on`, `false`/`no`/`off`, or (with -Zunstable-options) `non-leaf` or `always`";
-    pub(crate) const parse_threads: &str = "a number or `sync`";
     pub(crate) const parse_time_passes_format: &str = "`text` (default) or `json`";
     pub(crate) const parse_passes: &str = "a space-separated list of passes, or `all`";
     pub(crate) const parse_panic_strategy: &str = "either `unwind`, `abort`, or `immediate-abort`";
@@ -852,8 +851,7 @@ mod desc {
     pub(crate) const parse_coverage_options: &str = "`block` | `branch` | `condition`";
     pub(crate) const parse_codegen_retag_options: &str =
         "either no value or a comma-separated list of settings: `no-precise-im`, `no-precise-pin`";
-    pub(crate) const parse_instrument_mcount: &str =
-        "either a boolean (`yes`, `no`, `on`, `off`, etc), or `fentry` on supported targets.";
+    pub(crate) const parse_instrument_mcount: &str = "either a boolean (`yes`, `no`, `on`, `off`, etc), or `fentry`, `fentry-record`, `fentry-nop-record` on supported targets";
     pub(crate) const parse_instrument_xray: &str = "either a boolean (`yes`, `no`, `on`, `off`, etc), or a comma separated list of settings: `always` or `never` (mutually exclusive), `ignore-loops`, `instruction-threshold=N`, `skip-entry`, `skip-exit`";
     pub(crate) const parse_unpretty: &str = "`string` or `string=string`";
     pub(crate) const parse_treat_err_as_bug: &str = "either no value or a non-negative number";
@@ -894,7 +892,8 @@ mod desc {
         components: `crto`, `libc`, `unwind`, `linker`, `sanitizers`, `mingw`";
     pub(crate) const parse_linker_features: &str =
         "a list of enabled (`+` prefix) and disabled (`-` prefix) features: `lld`";
-    pub(crate) const parse_polonius: &str = "either no value or `legacy` (the default), or `next`";
+    pub(crate) const parse_polonius: &str =
+        "either no value or one of `legacy` (the default), `off`, or `next`";
     pub(crate) const parse_annotate_moves: &str =
         "either a boolean (`yes`, `no`, `on`, `off`, etc.), or a size limit in bytes";
     pub(crate) const parse_stack_protector: &str =
@@ -922,7 +921,6 @@ pub mod parse {
     use std::str::FromStr;
 
     pub(crate) use super::*;
-    pub(crate) const MAX_THREADS_CAP: usize = 256;
 
     /// Ignore the value. Used for removed options where we don't actually want to store
     /// anything in the session.
@@ -987,6 +985,10 @@ pub mod parse {
             }
             Some("next") => {
                 *slot = Polonius::Next;
+                true
+            }
+            Some("off") | Some("no") => {
+                *slot = Polonius::Off;
                 true
             }
             _ => false,
@@ -1169,25 +1171,6 @@ pub mod parse {
             }
             None => false,
         }
-    }
-
-    pub(crate) fn parse_threads(slot: &mut Option<usize>, v: Option<&str>) -> bool {
-        let Some(s) = v else { return false };
-        if s == "sync" {
-            // Enable synchronization despite only using one thread.
-            *slot = Some(1);
-            return true;
-        }
-        let n = match s.parse().ok() {
-            Some(0) => std::thread::available_parallelism().map_or(1, NonZero::<usize>::get),
-            Some(i) => i,
-            None => return false,
-        };
-        // We want to cap the number of threads here to avoid large numbers like 999999 and compiler panics.
-        // This solution was suggested here https://github.com/rust-lang/rust/issues/117638#issuecomment-1800925067
-        let n = n.min(MAX_THREADS_CAP);
-        *slot = (n > 1).then_some(n); // Enable synchronization if we're using more than one thread.
-        true
     }
 
     /// Use this for any numeric option that has a static default.
@@ -1532,12 +1515,17 @@ pub mod parse {
                         return false;
                     }
                 }
-                "Device" => {
-                    if let Some(_) = arg {
-                        // Device does not accept a value
+                "HostMetadata" => {
+                    if let Some(p) = arg {
+                        Offload::HostMetadata(p.to_string())
+                    } else {
                         return false;
                     }
-                    Offload::Device
+                }
+                "Device" => {
+                    // Without an argument, `Device` uses an empty manifest and all kernel
+                    // instantiations are discovered via monomorphization.
+                    Offload::Device(arg.unwrap_or_default().to_string())
                 }
                 "Test" => {
                     if let Some(_) = arg {
@@ -1670,15 +1658,33 @@ pub mod parse {
 
     pub(crate) fn parse_instrument_mcount(slot: &mut InstrumentMcount, v: Option<&str>) -> bool {
         let mut use_mcount = false;
+        let mut opts = InstrumentMcountOpts::default();
         if parse_bool(&mut use_mcount, v) {
-            *slot = if use_mcount { InstrumentMcount::Mcount } else { InstrumentMcount::Disabled };
-            true
-        } else if let Some("fentry") = v {
-            *slot = InstrumentMcount::Fentry;
-            true
-        } else {
-            false
+            *slot = if use_mcount {
+                InstrumentMcount::Mcount(opts)
+            } else {
+                InstrumentMcount::Disabled
+            };
+            return true;
         }
+        match v {
+            Some("fentry") => {
+                *slot = InstrumentMcount::Fentry(opts);
+            }
+            Some("fentry-record") => {
+                opts.record = true;
+                *slot = InstrumentMcount::Fentry(opts);
+            }
+            Some("fentry-nop-record") => {
+                opts.record = true;
+                opts.no_call = true;
+                *slot = InstrumentMcount::Fentry(opts);
+            }
+            _ => {
+                return false;
+            }
+        }
+        true
     }
 
     pub(crate) fn parse_instrument_xray(
@@ -2298,6 +2304,8 @@ options! {
     profile_generate: SwitchWithOptPath = (SwitchWithOptPath::Disabled,
         parse_switch_with_opt_path, [TRACKED],
         "compile the program with profiling instrumentation"),
+    profile_sample_use: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
+        "use the given `.prof` file for sample-based profile-guided optimization"),
     profile_use: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
         "use the given `.profdata` file for profile-guided optimization"),
     #[rustc_lint_opt_deny_field_access("use `Session::relocation_model` instead of this field")]
@@ -2325,10 +2333,12 @@ options! {
         parse_symbol_mangling_version, [TRACKED],
         "which mangling version to use for symbol names ('legacy', 'v0' (default), or 'hashed')"),
     target_cpu: Option<String> = (None, parse_opt_string, [TRACKED] { TARGET_MODIFIER: TargetCpu },
-        "select target processor (`rustc --print target-cpus` for details)"),
+        "select target processor (`rustc --print target-cpus` for details) \
+        The resulting binary must only be executed on CPUs that have all the features \
+        of the given CPU."),
     target_feature: String = (String::new(), parse_target_feature, [TRACKED],
-        "target specific attributes. (`rustc --print target-features` for details). \
-        This feature is unsafe."),
+        "target-specific attributes (`rustc --print target-features` for details). \
+        The resulting binary must only be executed on CPUs that have all the given features."),
     unsafe_allow_abi_mismatch: Vec<String> = (Vec::new(), parse_comma_list, [UNTRACKED],
         "Allow incompatible target modifiers in dependency crates (comma separated list)"),
     // tidy-alphabetical-end
@@ -2337,6 +2347,12 @@ options! {
     // - compiler/rustc_interface/src/tests.rs
     // - src/doc/rustc/src/codegen-options/index.md
 }
+
+const POLONIUS_HELP: &str = match Polonius::DEFAULT {
+    Polonius::Off => "enable polonius-based borrow-checker (default: no)",
+    Polonius::Next => "enable polonius-based borrow-checker (default: next)",
+    Polonius::Legacy => panic!("Polonius::Legacy is not a valid default value"),
+};
 
 options! {
     UnstableOptions, UnstableOptionsTargetModifiers, Z_OPTIONS, dbopts, "Z", "unstable",
@@ -2363,7 +2379,8 @@ options! {
     assume_incomplete_release: bool = (false, parse_bool, [TRACKED],
         "make cfg(version) treat the current version as incomplete (default: no)"),
     assumptions_on_binders: bool = (false, parse_bool, [TRACKED],
-        "allow deducing higher-ranked outlives assumptions from all binders (`for<'a>`)"),
+        "allow deducing higher-ranked outlives assumptions from all binders (`for<'a>`); \
+         implies `-Znext-solver=globally`"),
     autodiff: Vec<crate::config::AutoDiff> = (Vec::new(), parse_autodiff, [TRACKED],
         "a list of autodiff flags to enable
         Mandatory setting:
@@ -2421,7 +2438,7 @@ options! {
     debuginfo_compression: DebugInfoCompression = (DebugInfoCompression::None, parse_debuginfo_compression, [TRACKED],
         "compress debug info sections (none, zlib, zstd, default: none)"),
     debuginfo_for_profiling: bool = (false, parse_bool, [TRACKED],
-        "emit discriminators and other data necessary for AutoFDO"),
+        "emit extra debug info to make sample profile more accurate"),
     deduplicate_diagnostics: bool = (true, parse_bool, [UNTRACKED],
         "deduplicate identical diagnostics (default: yes)"),
     default_visibility: Option<SymbolVisibility> = (None, parse_opt_symbol_visibility, [TRACKED],
@@ -2442,7 +2459,7 @@ options! {
     dual_proc_macros: bool = (false, parse_bool, [TRACKED],
         "load proc macros for both target and host, but only link to the target (default: no)"),
     dump_dep_graph: bool = (false, parse_bool, [UNTRACKED],
-        "dump the dependency graph to $RUST_DEP_GRAPH (default: /tmp/dep_graph.gv) \
+        "dump the dependency graph to `$RUST_DEP_GRAPH` as both a text file and a GraphViz dot file (default: ./dep_graph.{dot, txt}) \
         (default: no)"),
     dump_mir: Option<String> = (None, parse_opt_string, [UNTRACKED],
         "dump MIR state to file.
@@ -2604,6 +2621,10 @@ options! {
         "a list of module flags to pass to LLVM (space separated)"),
     llvm_plugins: Vec<String> = (Vec::new(), parse_list, [TRACKED],
         "a list LLVM plugins to enable (space separated)"),
+    llvm_target_feature: String = (String::new(), parse_target_feature, [TRACKED] { TARGET_MODIFIER: LlvmTargetFeature },
+        "enable/disable LLVM-level target features. \
+        This feature is unsafe and can cause ABI issues and compiler crashes, \
+        because LLVM does not support all target feature combinations."),
     llvm_time_trace: bool = (false, parse_bool, [UNTRACKED],
         "generate JSON tracing data file from LLVM data (default: no)"),
     llvm_writable: bool = (false, parse_bool, [TRACKED],
@@ -2675,7 +2696,7 @@ options! {
     no_link: bool = (false, parse_no_value, [TRACKED],
         "compile without linking"),
     no_parallel_backend: bool = (false, parse_no_value, [UNTRACKED],
-        "run LLVM in non-parallel mode (while keeping codegen-units and ThinLTO)"),
+        "use `--jobs-backend=1` instead"),
     no_profiler_runtime: bool = (false, parse_no_value, [TRACKED],
         "prevent automatic injection of the profiler_builtins crate"),
     no_steal_thir: bool = (false, parse_bool, [UNTRACKED],
@@ -2733,7 +2754,7 @@ options! {
         `vt-ptr-type-discrimination - incorporate type discrimination in authenticated vtable pointers
         Example: `-Zpointer-authentication=+calls,-init-fini`."),
     polonius: Polonius = (Polonius::default(), parse_polonius, [TRACKED],
-        "enable polonius-based borrow-checker (default: no)"),
+        POLONIUS_HELP),
     pre_link_arg: (/* redirected to pre_link_args */) = ((), parse_string_push, [UNTRACKED],
         "a single extra argument to prepend the linker invocation (can be used several times)"),
     pre_link_args: Vec<String> = (Vec::new(), parse_list, [UNTRACKED],
@@ -2761,8 +2782,6 @@ options! {
         "how to run proc-macro code (default: same-thread)"),
     profile_closures: bool = (false, parse_no_value, [UNTRACKED],
         "profile size of closures"),
-    profile_sample_use: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
-        "use the given `.prof` file for sampled profile-guided optimization (also known as AutoFDO)"),
     profiler_runtime: String = (String::from("profiler_builtins"), parse_string, [TRACKED],
         "name of the profiler runtime crate to automatically inject (default: `profiler_builtins`)"),
     query_dep_graph: bool = (false, parse_bool, [UNTRACKED],
@@ -2794,6 +2813,8 @@ written to standard error output)"),
     #[rustc_lint_opt_deny_field_access("use `Session::sanitizers()` instead of this field")]
     sanitizer: SanitizerSet = (SanitizerSet::empty(), parse_sanitizers, [TRACKED] { TARGET_MODIFIER: Sanitizer },
         "use a sanitizer"),
+    sanitizer_ignorelist: Vec<String> = (vec![], parse_list, [TRACKED],
+        "list of files providing ignorelists for sanitizers"),
     sanitizer_cfi_canonical_jump_tables: Option<bool> = (Some(true), parse_opt_bool, [TRACKED],
         "enable canonical jump tables (default: yes)"),
     sanitizer_cfi_generalize_pointers: Option<bool> = (None, parse_opt_bool, [TRACKED],
@@ -2812,9 +2833,6 @@ written to standard error output)"),
         "enable origins tracking in MemorySanitizer"),
     sanitizer_recover: SanitizerSet = (SanitizerSet::empty(), parse_sanitizers, [TRACKED],
         "enable recovery for selected sanitizers"),
-    saturating_float_casts: Option<bool> = (None, parse_opt_bool, [TRACKED],
-        "make float->int casts UB-free: numbers outside the integer type's range are clipped to \
-        the max/min integer respectively, and NaN is mapped to 0 (default: yes)"),
     self_profile: SwitchWithOptPath = (SwitchWithOptPath::Disabled,
         parse_switch_with_opt_path, [UNTRACKED],
         "run the self profiler and output the raw event data"),
@@ -2824,12 +2842,15 @@ written to standard error output)"),
         `instructions:u` (retired instructions, userspace-only)
         `instructions-minus-irqs:u` (subtracting hardware interrupt counts for extra accuracy)"
     ),
-    /// keep this in sync with the event filter names in librustc_data_structures/profiling.rs
+    /// keep this in sync with the event filter names and defaults in rustc_data_structures/src/profiling.rs
     self_profile_events: Option<Vec<String>> = (None, parse_opt_comma_list, [UNTRACKED],
         "specify the events recorded by the self profiler;
         for example: `-Z self-profile-events=default,query-keys`
-        all options: none, all, default, generic-activity, query-provider, query-cache-hit
-                     query-blocked, incr-cache-load, incr-result-hashing, query-keys, function-args, args, llvm, artifact-sizes"),
+        all option groups: none, all, default, args
+          `default` contains: generic-activity, query-provider, query-cache-hit-count, \
+                            query-blocked, incr-cache-load, incr-result-hashing, artifact-sizes
+             `args` contains: query-keys, function-args
+        remaining (ungrouped) options: query-cache-hit, llvm"),
     share_generics: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "make the current crate share its generic instantiations"),
     shell_argfiles: bool = (false, parse_bool, [UNTRACKED],
@@ -2884,13 +2905,8 @@ written to standard error output)"),
     #[rustc_lint_opt_deny_field_access("use `Session::lto` instead of this field")]
     thinlto: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "enable ThinLTO when possible"),
-    /// We default to None here since we want to behave like
-    /// a sequential compiler for now. This'll likely be adjusted
-    /// in the future. Note that -Zthreads=0 is the way to get
-    /// the num_cpus behavior.
-    #[rustc_lint_opt_deny_field_access("use `Session::threads` instead of this field")]
-    threads: Option<usize> = (None, parse_threads, [UNTRACKED],
-        "use a thread pool with N threads"),
+    threads: Option<String> = (None, parse_opt_string, [UNTRACKED],
+        "use `--jobs-frontend` instead"),
     time_llvm_passes: bool = (false, parse_bool, [UNTRACKED],
         "measure time of each LLVM pass (default: no)"),
     time_passes: bool = (false, parse_bool, [UNTRACKED],
@@ -2979,6 +2995,8 @@ written to standard error output)"),
     // FIXME remove this after a couple releases
     wasm_c_abi: () = ((), parse_wasm_c_abi, [TRACKED],
         "use spec-compliant C ABI for `wasm32-unknown-unknown` (deprecated, always enabled)"),
+    wasm_proc_macros: bool = (false, parse_bool, [TRACKED],
+        "enable support for compiling and loading wasm proc macros"),
     write_long_types_to_disk: bool = (true, parse_bool, [UNTRACKED],
         "whether long type names should be written to files instead of being printed in errors"),
     // tidy-alphabetical-end
