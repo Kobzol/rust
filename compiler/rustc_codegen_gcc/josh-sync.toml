@@ -1,0 +1,4 @@
+repo = "rustc_codegen_gcc"
+filter = ":~(history=\"keep-trivial-merges,no-splice\")[:rev(<=8c858fb5fbb077eaa776302b9601cf084f12aa46:prefix=compiler/rustc_codegen_gcc,<=f2d2a9ddf38302731f9b37445c9f6f6d03b4c7a3:SQUASH)]:/compiler/rustc_codegen_gcc"
+filter-version = 2
+pull-mode = "Latest"
