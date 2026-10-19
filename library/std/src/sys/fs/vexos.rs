@@ -12,8 +12,8 @@ use crate::sys::{unsupported, unsupported_err};
 #[path = "unsupported.rs"]
 mod unsupported_fs;
 pub use unsupported_fs::{
-    Dir, DirBuilder, FileTimes, canonicalize, link, readlink, remove_dir_all, rename, rmdir,
-    symlink, unlink,
+    Dir, DirBuilder, FileTimes, canonicalize, link, readlink, remove_dir_all, rename,
+    rename_noreplace, rmdir, symlink, unlink,
 };
 
 pub use crate::sys::fs::common::{ExtraHomeDirs, ExtraMediaDirs};
@@ -476,6 +476,13 @@ impl fmt::Debug for File {
 impl Drop for File {
     fn drop(&mut self) {
         unsafe { vex_sdk::vexFileClose(self.fd.0) };
+    }
+}
+
+impl Drop for ReadDir {
+    fn drop(&mut self) {
+        // Dummy Drop so that `needs_drop::<ReadDir>()` is true independent of platform.
+        self.0
     }
 }
 
