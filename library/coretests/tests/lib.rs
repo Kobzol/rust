@@ -10,7 +10,7 @@
 #![feature(async_iterator)]
 #![feature(atomic_volatile)]
 #![feature(borrowed_buf_init)]
-#![feature(bstr)]
+#![feature(byte_str)]
 #![feature(casefold)]
 #![feature(cfg_overflow_checks)]
 #![feature(cfg_target_has_reliable_f16_f128)]
@@ -47,7 +47,6 @@
 #![feature(core_io_borrowed_buf)]
 #![feature(core_private_bignum)]
 #![feature(core_private_diy_float)]
-#![feature(debug_closure_helpers)]
 #![feature(dec2flt)]
 #![feature(duration_constants)]
 #![feature(duration_constructors)]
@@ -180,7 +179,7 @@ mod asserting;
 mod async_iter;
 mod atomic;
 mod bool;
-mod bstr;
+mod byte_str;
 mod cell;
 mod char;
 mod clone;

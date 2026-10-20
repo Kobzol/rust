@@ -239,7 +239,7 @@ late_lint_methods!(
             ImplTraitOvercaptures: ImplTraitOvercaptures,
             ImplicitAutorefs: ImplicitAutorefs,
             ImplicitProvenanceCasts: ImplicitProvenanceCasts,
-            ImproperCTypesLint: ImproperCTypesLint,
+            ImproperCTypesLint: ImproperCTypesLint::default(),
             ImproperGpuKernelLint: ImproperGpuKernelLint,
             InteriorMutableConsts: InteriorMutableConsts,
             InternalEqTraitMethodImpls: InternalEqTraitMethodImpls,
@@ -298,9 +298,9 @@ late_lint_methods!(
             BadOptAccess: BadOptAccess,
             DefaultHashTypes: DefaultHashTypes,
             DisallowedPassByRef: DisallowedPassByRef,
+            MissingGenericTypeVisitableDerive: MissingGenericTypeVisitableDerive,
             QueryStability: QueryStability,
             RustcMustMatchExhaustively: RustcMustMatchExhaustively,
-            SpanUseEqCtxt: SpanUseEqCtxt,
             SymbolInternStringLiteral: SymbolInternStringLiteral,
             TyTyKind: TyTyKind,
             TypeIr: TypeIr,
@@ -758,8 +758,6 @@ fn register_internals(store: &mut LintStore) {
             LintId::of(BAD_OPT_ACCESS),
             // Late pass: DisallowedPassByRef
             LintId::of(DISALLOWED_PASS_BY_REF),
-            // Late pass: SpanUseEqCtxt
-            LintId::of(SPAN_USE_EQ_CTXT),
             // Late pass: SymbolInternStringLiteral
             // Note: this one is not included in rustc::internal because rustc_driver crates
             // outside the compiler can't/shouldn't add preinterned symbols. For rustc itself,
@@ -769,6 +767,11 @@ fn register_internals(store: &mut LintStore) {
             //
             // Late pass: RustcMustMatchExhaustively
             LintId::of(RUSTC_MUST_MATCH_EXHAUSTIVELY),
+            // Late pass: MissingGenericTypeVisitableDerive
+            // Note: this one is not included so that it doesn't become effectively warn-by-default
+            // (since `rustc::internal` is warn-by-default). Instead, it's enabled manually in
+            // each relevant crate.
+            // LintId::of(MISSING_GENERIC_TYPE_VISITABLE_DERIVE),
         ],
     );
 }

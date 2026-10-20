@@ -1657,6 +1657,8 @@ supported_targets! {
 
     ("aarch64-unknown-teeos", aarch64_unknown_teeos),
 
+    ("aarch64-unknown-qtee", aarch64_unknown_qtee),
+
     ("mips64-openwrt-linux-musl", mips64_openwrt_linux_musl),
 
     ("aarch64-unknown-nto-qnx700", aarch64_unknown_nto_qnx700),
@@ -1878,6 +1880,7 @@ crate::target_spec_enum! {
         Psp = "psp",
         Psx = "psx",
         Qnx = "qnx",
+        Qtee = "qtee",
         Qurt = "qurt",
         Redox = "redox",
         Rtems = "rtems",
@@ -2541,7 +2544,7 @@ pub struct TargetOptions {
     /// rustc and not forwarded to LLVM.
     pub rustc_abi: Option<RustcAbi>,
 
-    /// Whether or not RelaxElfRelocation flag will be passed to the linker
+    /// Whether or not X86RelaxRelocations flag will be passed to LLVM (x86 only).
     pub relax_elf_relocations: bool,
 
     /// Additional arguments to pass to LLVM, similar to the `-C llvm-args` codegen option.
