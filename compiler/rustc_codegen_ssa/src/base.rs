@@ -808,6 +808,21 @@ pub fn codegen_crate<
     let mut total_codegen_time = Duration::new(0, 0);
     let start_rss = tcx.sess.opts.unstable_opts.time_passes.then(|| get_resident_set_size());
 
+    let compile_batch = |start: usize, threads: usize| {
+        let cgus: Vec<_> = cgu_reuse
+            .iter()
+            .enumerate()
+            .skip(start)
+            .filter(|&(_, reuse)| reuse == &CguReuse::No)
+            .take(threads)
+            .collect();
+
+        par_map(cgus, |(i, _)| {
+            let module = backend.compile_codegen_unit(tcx, codegen_units[i].name(), bitcode_needed);
+            (i, IntoDynSyncSend(module))
+        })
+    };
+
     // The non-parallel compiler can only translate codegen units to LLVM IR
     // on a single thread, leading to a staircase effect where the N LLVM
     // threads have to wait on the single codegen threads to generate work
@@ -820,25 +835,9 @@ pub fn codegen_crate<
     // parallel and get rid of the complicated scheduling logic.
     let mut pre_compiled_cgus = if let JobsMode::Parallel(threads) = tcx.sess.opts.jobs.frontend {
         tcx.sess.time("compile_first_CGU_batch", || {
-            // Try to find one CGU to compile per thread.
-            let cgus: Vec<_> = cgu_reuse
-                .iter()
-                .enumerate()
-                .filter(|&(_, reuse)| reuse == &CguReuse::No)
-                .take(threads.get())
-                .collect();
-
-            // Compile the found CGUs in parallel.
             let start_time = Instant::now();
-
-            let pre_compiled_cgus = par_map(cgus, |(i, _)| {
-                let module =
-                    backend.compile_codegen_unit(tcx, codegen_units[i].name(), bitcode_needed);
-                (i, IntoDynSyncSend(module))
-            });
-
+            let pre_compiled_cgus = compile_batch(0, threads.get());
             total_codegen_time += start_time.elapsed();
-
             pre_compiled_cgus
         })
     } else {
@@ -853,6 +852,14 @@ pub fn codegen_crate<
 
         match cgu_reuse {
             CguReuse::No => {
+                // Refill after submitting the previous batch, keeping pending IR bounded.
+                if pre_compiled_cgus.is_empty() && tcx.sess.opts.jobs.frontend.limit().get() > 1 {
+                    let start_time = Instant::now();
+                    pre_compiled_cgus =
+                        compile_batch(i, tcx.sess.opts.jobs.frontend.limit().get().min(2));
+                    total_codegen_time += start_time.elapsed();
+                }
+
                 let (module, cost) = if let Some(cgu) = pre_compiled_cgus.remove(&i) {
                     cgu.0
                 } else {
