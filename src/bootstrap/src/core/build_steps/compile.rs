@@ -2371,7 +2371,7 @@ impl CommandLineStep for Assemble {
                 }
             })
             .collect::<HashSet<_>>();
-
+xxxx
         let sysroot = builder.sysroot(target_compiler);
         let rustc_libdir = builder.rustc_libdir(target_compiler);
         t!(fs::create_dir_all(&rustc_libdir));
